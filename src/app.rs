@@ -12,7 +12,9 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-    config, git, history,
+    config, git,
+    gitview::GitView,
+    history,
     registry::{self, RegistryEntry},
     session::{label_for, PtySession},
     supervise, update, usage,
@@ -33,9 +35,10 @@ const GIT_REFRESH: Duration = Duration::from_secs(2);
 /// It is one `stat` and nobody rebuilds twice a second.
 const EXE_CHECK: Duration = Duration::from_millis(1000);
 
-/// How often GitHub is asked about a newer release. Releases come days apart,
-/// and an unauthenticated client gets sixty API calls an hour.
-const UPDATE_CHECK: Duration = Duration::from_secs(6 * 60 * 60);
+/// How often GitHub is asked about a newer release. Every push to main is a
+/// release, so they can come hours apart; an unauthenticated client gets sixty
+/// API calls an hour, and this spends two.
+const UPDATE_CHECK: Duration = Duration::from_secs(30 * 60);
 
 /// The shortest gap between two refreshes of the limit cache, used while our own
 /// sessions are burning through it.
@@ -81,6 +84,8 @@ pub enum Mode {
     ConfirmMkdir,
     /// Picking a past conversation to carry on.
     Resume,
+    /// Keys move around the git panel; the pane shows what is under its cursor.
+    Git,
 }
 
 /// The list of past conversations, and where in it the cursor is.
@@ -316,11 +321,19 @@ pub struct App {
     git_rx: mpsc::Receiver<(PathBuf, git::State)>,
     /// When the last read was started, and for which directory.
     last_git_read: Option<(PathBuf, Instant)>,
+    /// The cursor, opened commits and loaded diffs of the git panel.
+    pub git_view: GitView,
+    /// Whether the terminal is wide enough for the panel, as of the last
+    /// layout.
+    pub git_fits: bool,
 }
 
 /// What the update thread reports back.
 enum UpdateEvent {
     Found(update::Release),
+    /// A check someone asked for found nothing newer. The periodic ones say
+    /// nothing in that case.
+    UpToDate,
     Installed(String),
     Failed(String),
 }
@@ -370,6 +383,8 @@ impl App {
             git_tx,
             git_rx,
             last_git_read: None,
+            git_view: GitView::new(),
+            git_fits: true,
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -670,7 +685,7 @@ impl App {
     }
 
     /// Ask GitHub about a newer release, on a thread of its own.
-    fn check_for_update(&mut self) {
+    fn check_for_update(&mut self, asked: bool) {
         self.last_update_check = Some(Instant::now());
         if self.update_target().is_err() || self.update_busy.swap(true, Ordering::Relaxed) {
             return;
@@ -680,9 +695,19 @@ impl App {
         let dirty = Arc::clone(&self.dirty);
         std::thread::spawn(move || {
             // No network is an ordinary state for a laptop, and nothing worth
-            // a status line: the next check is a few hours away regardless.
-            if let Ok(Some(rel)) = update::check() {
-                let _ = tx.send(UpdateEvent::Found(rel));
+            // a status line unless someone pressed `i` and is waiting to hear:
+            // the next periodic check is half an hour away regardless.
+            match update::check() {
+                Ok(Some(rel)) => {
+                    let _ = tx.send(UpdateEvent::Found(rel));
+                }
+                Ok(None) if asked => {
+                    let _ = tx.send(UpdateEvent::UpToDate);
+                }
+                Err(e) if asked => {
+                    let _ = tx.send(UpdateEvent::Failed(format!("update check failed: {e:#}")));
+                }
+                _ => {}
             }
             busy.store(false, Ordering::Relaxed);
             dirty.store(true, Ordering::Relaxed);
@@ -695,19 +720,35 @@ impl App {
         self.default_cwd()
     }
 
-    /// The git read for the directory the panel is about, if one has come back
-    /// for it yet.
-    pub fn git_state(&self) -> Option<&git::State> {
-        let target = self.git_target();
-        self.git
-            .as_ref()
-            .filter(|(cwd, _)| *cwd == target)
-            .map(|(_, state)| state)
-    }
-
     pub fn toggle_git(&mut self) {
         self.show_git = !self.show_git;
+        if !self.show_git && self.mode == Mode::Git {
+            self.mode = Mode::Nav;
+        }
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Put the keyboard on the git panel, showing it first if it was hidden.
+    pub fn focus_git(&mut self) {
+        if !self.git_fits {
+            self.notify("the terminal is too narrow for the git panel");
+            return;
+        }
+        self.show_git = true;
+        self.mode = Mode::Git;
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Run `f` on the panel's state and the snapshot it is about, when there
+    /// is a repository to be about.
+    pub fn with_git(&mut self, f: impl FnOnce(&mut GitView, &git::Snapshot)) {
+        let target = self.git_target();
+        if let Some((cwd, git::State::Repo(snap))) = &self.git
+            && *cwd == target
+        {
+            f(&mut self.git_view, snap);
+            self.dirty.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Take in finished reads, and start the next one when the selection has
@@ -716,6 +757,7 @@ impl App {
         while let Ok((cwd, state)) = self.git_rx.try_recv() {
             if self.git.as_ref() != Some(&(cwd.clone(), state.clone())) {
                 self.git = Some((cwd, state));
+                self.git_view.worktree_changed();
                 self.dirty.store(true, Ordering::Relaxed);
             }
         }
@@ -723,6 +765,12 @@ impl App {
             return;
         }
         let target = self.git_target();
+        if let Some((cwd, git::State::Repo(snap))) = &self.git
+            && *cwd == target
+            && self.git_view.poll(snap)
+        {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
         let due = match &self.last_git_read {
             Some((cwd, at)) => *cwd != target || at.elapsed() >= GIT_REFRESH,
             None => true,
@@ -746,16 +794,23 @@ impl App {
     /// the supervisor starts. The restart that picks it up is asked for once
     /// the file is there.
     pub fn install_update(&mut self) {
-        let Some(rel) = self.release.clone() else {
-            self.notify(format!("no newer release — this is v{}", update::CURRENT));
-            return;
-        };
         let origin = match self.update_target() {
             Ok(o) => o,
             Err(why) => {
                 self.notify(why);
                 return;
             }
+        };
+        let Some(rel) = self.release.clone() else {
+            // Nothing found yet may only mean nothing asked since it came out,
+            // so the key asks now instead of saying no.
+            if self.update_busy() {
+                self.notify("already talking to GitHub — a moment");
+            } else {
+                self.check_for_update(true);
+                self.notify("asking GitHub for a newer release…");
+            }
+            return;
         };
         if self.update_busy.swap(true, Ordering::Relaxed) {
             self.notify("already talking to GitHub — a moment");
@@ -803,6 +858,9 @@ impl App {
                         self.request_restart();
                     }
                 }
+                UpdateEvent::UpToDate => {
+                    self.notify(format!("no newer release — this is v{}", update::CURRENT));
+                }
                 UpdateEvent::Failed(e) => self.notify(e),
             }
         }
@@ -810,7 +868,7 @@ impl App {
             .last_update_check
             .is_none_or(|at| at.elapsed() >= UPDATE_CHECK);
         if due && config::check_updates() {
-            self.check_for_update();
+            self.check_for_update(false);
         }
     }
 

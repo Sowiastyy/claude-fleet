@@ -8,6 +8,7 @@ mod app;
 mod config;
 mod dsr;
 mod git;
+mod gitview;
 mod history;
 mod input;
 mod keys;
@@ -906,7 +907,9 @@ fn drain_key_burst(input: &Input, first: char) -> Burst {
 /// Keep every PTY the same size as the pane, so switching sessions never shows
 /// a stale layout.
 fn sync_pane_size(terminal: &Tui, app: &mut App) -> Result<()> {
-    let area = ui::pane_area(terminal.size()?.into(), app.show_git);
+    let size = terminal.size()?.into();
+    app.git_fits = ui::git_fits(size);
+    let area = ui::pane_area(size, app.show_git);
     let inner = ui::pane_inner_rect(area);
     app.pane_x = inner.x;
     app.pane_y = inner.y;
@@ -962,6 +965,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             _ => app.resolve_mkdir(false)?,
         },
         Mode::Resume => handle_resume(app, key)?,
+        Mode::Git => handle_git(app, key),
     }
     Ok(())
 }
@@ -1070,10 +1074,42 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
         }
         // `U` would read better, but it has belonged to the limits for longer.
         KeyCode::Char('i') => app.install_update(),
-        KeyCode::Char('g') => app.toggle_git(),
+        KeyCode::Char('g') => app.focus_git(),
+        KeyCode::Char('G') => app.toggle_git(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         _ => {}
     }
+}
+
+/// The git panel with the keyboard on it. The pane beside it shows the diff or
+/// the commit under the cursor, and scrolls with the page keys.
+fn handle_git(app: &mut App, key: KeyEvent) {
+    let page = app.pane_rows.saturating_sub(2).max(1) as isize;
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') => app.mode = Mode::Nav,
+        KeyCode::Char('G') => app.toggle_git(),
+        KeyCode::Char('j') | KeyCode::Down => app.with_git(|v, s| v.move_cursor(s, 1)),
+        KeyCode::Char('k') | KeyCode::Up => app.with_git(|v, s| v.move_cursor(s, -1)),
+        KeyCode::Home => app.with_git(|v, s| v.home(s)),
+        KeyCode::End => app.with_git(|v, s| v.end(s)),
+        KeyCode::Enter | KeyCode::Char(' ') => app.with_git(|v, _| v.toggle()),
+        KeyCode::Char('l') | KeyCode::Right => app.with_git(|v, _| v.open()),
+        KeyCode::Char('h') | KeyCode::Left => {
+            let mut closed = false;
+            app.with_git(|v, _| closed = v.close());
+            // Nothing left to close: left leaves the panel, the way it leaves
+            // the input box of a session.
+            if !closed {
+                app.mode = Mode::Nav;
+            }
+        }
+        KeyCode::PageDown => app.git_view.scroll_preview(page),
+        KeyCode::PageUp => app.git_view.scroll_preview(-page),
+        KeyCode::Char('J') => app.git_view.scroll_preview(1),
+        KeyCode::Char('K') => app.git_view.scroll_preview(-1),
+        _ => {}
+    }
+    app.dirty.store(true, Ordering::Relaxed);
 }
 
 /// The list of past conversations. Moves, opens, or closes; nothing here
@@ -1226,8 +1262,21 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         app.dirty.store(true, Ordering::Relaxed);
         return;
     }
-    // Past the pane's right border is the git panel, which does not scroll.
-    if m.column > app.pane_x + app.pane_cols {
+    // With the keyboard on the git panel, the wheel moves its cursor over the
+    // panel and scrolls the preview over the pane.
+    let over_git = m.column > app.pane_x + app.pane_cols;
+    if app.mode == Mode::Git {
+        let delta = if up { -SCROLL_STEP } else { SCROLL_STEP };
+        if over_git {
+            app.with_git(|v, s| v.move_cursor(s, delta.signum()));
+        } else {
+            app.git_view.scroll_preview(delta);
+        }
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
+    // Otherwise the panel does not scroll.
+    if over_git {
         return;
     }
 

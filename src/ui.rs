@@ -14,7 +14,9 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
     app::{App, Mode},
-    config, git, theme, usage,
+    config, git,
+    gitview::{GitView, Row},
+    theme, usage,
 };
 
 pub const SIDEBAR_WIDTH: u16 = 36;
@@ -46,7 +48,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let (sidebar, pane, git) = columns(body, app.show_git);
 
     draw_sidebar(f, app, sidebar);
-    draw_pane(f, app, pane);
+    if app.mode == Mode::Git {
+        draw_git_preview(f, app, pane);
+    } else {
+        draw_pane(f, app, pane);
+    }
     if let Some(git) = git {
         draw_git(f, app, git);
     }
@@ -75,10 +81,15 @@ pub fn pane_area(full: Rect, show_git: bool) -> Rect {
     columns(body, show_git).1
 }
 
-/// Sidebar, pane, and the git panel when it is wanted and there is room for
-/// it next to a pane still worth typing into.
+/// Whether a terminal this size has room for the git panel next to a pane
+/// still worth typing into.
+pub fn git_fits(full: Rect) -> bool {
+    full.width >= SIDEBAR_WIDTH + PANE_MIN_WITH_GIT + GIT_WIDTH
+}
+
+/// Sidebar, pane, and the git panel when it is wanted and fits.
 fn columns(body: Rect, show_git: bool) -> (Rect, Rect, Option<Rect>) {
-    if show_git && body.width >= SIDEBAR_WIDTH + PANE_MIN_WITH_GIT + GIT_WIDTH {
+    if show_git && git_fits(body) {
         let [sidebar, pane, git] = Layout::horizontal([
             Constraint::Length(SIDEBAR_WIDTH),
             Constraint::Min(20),
@@ -590,9 +601,20 @@ fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
 /// The repository the selected session works in: branch, what is not
 /// committed yet, and the history. It follows the selection, so switching
 /// sessions switches repositories.
-fn draw_git(f: &mut Frame, app: &App, area: Rect) {
+///
+/// With the keyboard on it (`g`), it is a list with a cursor: commits open up
+/// to show their files, and the pane beside it previews what the cursor is on.
+fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.mode == Mode::Git;
     let target = app.git_target();
-    let state = app.git_state();
+    let since = app
+        .selected_session()
+        .map(|s| SystemTime::now() - s.started.elapsed());
+    let App { git, git_view, .. } = app;
+    let state = git
+        .as_ref()
+        .filter(|(cwd, _)| *cwd == target)
+        .map(|(_, s)| s);
 
     let mut title = vec![Span::styled(" GIT ", Style::default().fg(theme::accent()).bold())];
     if let Some(git::State::Repo(snap)) = state
@@ -603,14 +625,16 @@ fn draw_git(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::muted()),
         ));
     }
+    let hint = if focused {
+        " enter opens · esc leaves "
+    } else {
+        " g browse · G hide "
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::faint()))
+        .border_style(Style::default().fg(if focused { theme::accent() } else { theme::faint() }))
         .title(Line::from(title))
-        .title_bottom(Line::from(Span::styled(
-            " g hides ",
-            Style::default().fg(theme::faint()),
-        )));
+        .title_bottom(Line::from(Span::styled(hint, Style::default().fg(theme::faint()))));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -639,12 +663,7 @@ fn draw_git(f: &mut Frame, app: &App, area: Rect) {
             )),
         ],
         Some(git::State::Repo(snap)) => {
-            // Commits made since the session started happened while it was
-            // running — most likely its own work — and get a mark.
-            let since = app
-                .selected_session()
-                .map(|s| SystemTime::now() - s.started.elapsed());
-            git_lines(snap, since, width, inner.height as usize)
+            git_lines(git_view, snap, since, width, inner.height as usize, focused)
         }
     };
     f.render_widget(Paragraph::new(lines), inner);
@@ -652,59 +671,225 @@ fn draw_git(f: &mut Frame, app: &App, area: Rect) {
 
 /// The panel's rows for a repository, fitted to `height`.
 ///
-/// The changes get up to a third of the panel and the history the rest: the
-/// changes are what one glances at, the history is what fills the column.
+/// At rest the changes get up to a third of the panel and the history the
+/// rest. Focused, everything is listed and the list scrolls with the cursor.
 fn git_lines(
+    view: &mut GitView,
     snap: &git::Snapshot,
     since: Option<SystemTime>,
     width: usize,
     height: usize,
+    focused: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![branch_line(snap, width), Line::from("")];
-
-    // What is not committed yet.
-    if snap.changes_total == 0 {
-        lines.push(Line::from(vec![
-            Span::styled(" CHANGES", Style::default().fg(theme::muted())),
-            Span::raw(" ".repeat(width.saturating_sub(" CHANGES".len() + "clean ".len()))),
-            Span::styled("clean ", Style::default().fg(theme::idle())),
-        ]));
-    } else {
-        lines.push(Line::from(Span::styled(
-            format!(" CHANGES {}", snap.changes_total),
-            Style::default().fg(theme::muted()),
-        )));
-        let room = (height / 3).max(3);
-        // The "+N more" row takes the place of the last file it stands for.
-        let shown = if snap.changes_total > room { room - 1 } else { room };
-        for c in snap.changes.iter().take(shown) {
-            lines.push(change_line(c, width));
-        }
-        if snap.changes_total > shown {
-            lines.push(Line::from(Span::styled(
-                format!("   +{} more", snap.changes_total - shown),
-                Style::default().fg(theme::faint()),
-            )));
-        }
-    }
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled(
-        " HISTORY",
-        Style::default().fg(theme::muted()),
-    )));
-    if snap.log.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "   no commits yet",
-            Style::default().fg(theme::faint()),
-        )));
-    }
-    let now = SystemTime::now();
     let room = height.saturating_sub(lines.len());
-    for (i, c) in snap.log.iter().take(room).enumerate() {
-        lines.push(commit_line(c, i, snap, since, now, width));
+
+    let limit = (!focused).then(|| (height / 3).max(3));
+    let rows = view.rows(snap, limit);
+    let cursor = focused.then(|| view.cursor_index(&rows));
+
+    view.list_scroll = match cursor {
+        Some(c) => {
+            let top = view.list_scroll.min(rows.len().saturating_sub(room));
+            if c < top {
+                c
+            } else if c >= top + room {
+                c + 1 - room
+            } else {
+                top
+            }
+        }
+        None => 0,
+    };
+
+    let now = SystemTime::now();
+    for (i, row) in rows.iter().enumerate().skip(view.list_scroll).take(room) {
+        let line = row_line(row, snap, view, since, now, width);
+        if Some(i) == cursor {
+            let pad = width.saturating_sub(line.width());
+            let mut spans = line.spans;
+            spans.push(Span::raw(" ".repeat(pad)));
+            lines.push(
+                Line::from(spans).style(
+                    Style::default()
+                        .bg(theme::surface())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            );
+        } else {
+            lines.push(line);
+        }
     }
     lines
+}
+
+fn row_line(
+    row: &Row,
+    snap: &git::Snapshot,
+    view: &GitView,
+    since: Option<SystemTime>,
+    now: SystemTime,
+    width: usize,
+) -> Line<'static> {
+    match row {
+        Row::Changes => changes_head(snap, view.changes_open, width),
+        Row::Change(path) => snap
+            .changes
+            .iter()
+            .find(|c| &c.path == path)
+            .map(|c| change_line(c, width))
+            .unwrap_or_default(),
+        Row::More(n) => Line::from(Span::styled(
+            format!("     +{n} more"),
+            Style::default().fg(theme::faint()),
+        )),
+        Row::Gap => Line::from(""),
+        Row::History => fit(
+            vec![
+                Span::raw(" "),
+                Span::styled(open_mark(view.history_open), Style::default().fg(theme::faint())),
+                Span::styled(" HISTORY", Style::default().fg(theme::muted())),
+            ],
+            String::new(),
+            Style::default(),
+            vec![Span::styled(
+                format!("{} ", snap.log.len()),
+                Style::default().fg(theme::faint()),
+            )],
+            width,
+            false,
+        ),
+        Row::Commit(hash) => snap
+            .log
+            .iter()
+            .enumerate()
+            .find(|(_, c)| &c.hash == hash)
+            .map(|(i, c)| commit_line(c, i, snap, view.expanded.contains(hash), since, now, width))
+            .unwrap_or_default(),
+        Row::CommitFile(hash, path) => {
+            let stat = view
+                .details
+                .get(hash)
+                .and_then(|d| d.files.iter().find(|f| &f.path == path));
+            let mut right = stat.map_or_else(Vec::new, |s| stat_spans(s.added, s.removed));
+            right.push(Span::raw(" "));
+            fit(
+                vec![Span::raw("      ")],
+                path.clone(),
+                Style::default().fg(theme::text()),
+                right,
+                width,
+                true,
+            )
+        }
+        Row::Loading(_) => Line::from(Span::styled(
+            "      loading…",
+            Style::default().fg(theme::faint()),
+        )),
+    }
+}
+
+/// A row with a fixed start, a middle cut to whatever is left, and a fixed
+/// end pushed to the right edge.
+fn fit(
+    prefix: Vec<Span<'static>>,
+    text: String,
+    text_style: Style,
+    right: Vec<Span<'static>>,
+    width: usize,
+    cut_left: bool,
+) -> Line<'static> {
+    let pw: usize = prefix.iter().map(Span::width).sum();
+    let rw: usize = right.iter().map(Span::width).sum();
+    let room = width.saturating_sub(pw + rw + 1);
+    let text = if cut_left {
+        truncate_left(&text, room)
+    } else {
+        truncate(&text, room)
+    };
+    let pad = width.saturating_sub(pw + rw + text.chars().count());
+    let mut spans = prefix;
+    spans.push(Span::styled(text, text_style));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.extend(right);
+    Line::from(spans)
+}
+
+fn open_mark(open: bool) -> &'static str {
+    if open { "\u{25be}" } else { "\u{25b8}" }
+}
+
+/// `+12 −3`, green and red; `bin` for a file git would not count.
+fn stat_spans(added: Option<u32>, removed: Option<u32>) -> Vec<Span<'static>> {
+    match (added, removed) {
+        (Some(a), Some(r)) => {
+            let mut spans = Vec::new();
+            if a > 0 || r == 0 {
+                spans.push(Span::styled(format!("+{a}"), Style::default().fg(theme::idle())));
+            }
+            if r > 0 {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(format!("\u{2212}{r}"), Style::default().fg(theme::dead())));
+            }
+            spans
+        }
+        _ => vec![Span::styled("bin", Style::default().fg(theme::faint()))],
+    }
+}
+
+/// Five cells split between added and removed, the way GitHub draws it: the
+/// share of each, not the size.
+fn share_bar(added: u32, removed: u32) -> Vec<Span<'static>> {
+    const CELLS: u32 = 5;
+    let total = added + removed;
+    if total == 0 {
+        return vec![Span::styled(
+            "\u{25a0}".repeat(CELLS as usize),
+            Style::default().fg(theme::faint()),
+        )];
+    }
+    let green = ((added * CELLS + total / 2) / total).min(CELLS);
+    vec![
+        Span::styled("\u{25a0}".repeat(green as usize), Style::default().fg(theme::idle())),
+        Span::styled(
+            "\u{25a0}".repeat((CELLS - green) as usize),
+            Style::default().fg(theme::dead()),
+        ),
+    ]
+}
+
+/// The heading over the changes: how many files, and how many lines in and
+/// out, with the share bar.
+fn changes_head(snap: &git::Snapshot, open: bool, width: usize) -> Line<'static> {
+    let prefix = vec![
+        Span::raw(" "),
+        Span::styled(open_mark(open), Style::default().fg(theme::faint())),
+        Span::styled(" CHANGES ", Style::default().fg(theme::muted())),
+    ];
+    if snap.changes_total == 0 {
+        return fit(
+            prefix,
+            String::new(),
+            Style::default(),
+            vec![Span::styled("clean ", Style::default().fg(theme::idle()))],
+            width,
+            false,
+        );
+    }
+    let mut right = stat_spans(Some(snap.added), Some(snap.removed));
+    right.push(Span::raw(" "));
+    right.extend(share_bar(snap.added, snap.removed));
+    right.push(Span::raw(" "));
+    fit(
+        prefix,
+        snap.changes_total.to_string(),
+        Style::default().fg(theme::text()).bold(),
+        right,
+        width,
+        false,
+    )
 }
 
 /// The branch, and how it stands against its upstream.
@@ -733,18 +918,19 @@ fn branch_line(snap: &git::Snapshot, width: usize) -> Line<'static> {
     } else {
         theme::faint()
     };
-    let branch = truncate(&branch, width.saturating_sub(sync.chars().count() + 4));
-    let used = 3 + branch.chars().count() + sync.chars().count();
-    Line::from(vec![
-        Span::styled(" \u{2387} ", Style::default().fg(theme::accent())),
-        Span::styled(branch, Style::default().fg(theme::text()).bold()),
-        Span::raw(" ".repeat(width.saturating_sub(used))),
-        Span::styled(sync, Style::default().fg(sync_color)),
-    ])
+    fit(
+        vec![Span::styled(" \u{2387} ", Style::default().fg(theme::accent()))],
+        branch,
+        Style::default().fg(theme::text()).bold(),
+        vec![Span::styled(sync, Style::default().fg(sync_color))],
+        width,
+        false,
+    )
 }
 
-/// One changed file: its porcelain code coloured by what happened to it, and
-/// the path cut from the left, since the file name is the end worth keeping.
+/// One changed file: its porcelain code coloured by what happened to it, the
+/// path cut from the left since the file name is the end worth keeping, and
+/// its lines in and out.
 fn change_line(c: &git::Change, width: usize) -> Line<'static> {
     let color = match c.code.as_str() {
         "??" => theme::faint(),
@@ -753,23 +939,34 @@ fn change_line(c: &git::Change, width: usize) -> Line<'static> {
         _ if c.staged() => theme::idle(),
         _ => theme::busy(),
     };
-    Line::from(vec![
-        Span::raw("   "),
-        Span::styled(c.code.clone(), Style::default().fg(color).bold()),
-        Span::raw(" "),
-        Span::styled(
-            truncate_left(&c.path, width.saturating_sub(6)),
-            Style::default().fg(theme::text()),
-        ),
-    ])
+    let mut right = if c.added.is_none() && c.untracked() {
+        vec![Span::styled("new", Style::default().fg(theme::faint()))]
+    } else {
+        stat_spans(c.added, c.removed)
+    };
+    right.push(Span::raw(" "));
+    fit(
+        vec![
+            Span::raw("   "),
+            Span::styled(c.code.clone(), Style::default().fg(color).bold()),
+            Span::raw(" "),
+        ],
+        c.path.clone(),
+        Style::default().fg(theme::text()),
+        right,
+        width,
+        true,
+    )
 }
 
-/// One commit: a mark for the ones made during the session, the hash (in the
-/// warning colour while it is not pushed yet), the subject, and its age.
+/// One commit: open or closed, a mark for the ones made during the session,
+/// the hash (in the warning colour while it is not pushed yet), the subject,
+/// who made it and how long ago.
 fn commit_line(
     c: &git::Commit,
     index: usize,
     snap: &git::Snapshot,
+    open: bool,
     since: Option<SystemTime>,
     now: SystemTime,
     width: usize,
@@ -779,24 +976,282 @@ fn commit_line(
     // The log starts at HEAD, so the first `ahead` of it are what the
     // upstream has not got.
     let unpushed = snap.upstream.is_some() && index < snap.ahead as usize;
-    let age = fmt_age(now, at);
-    // Mark, hash, the gaps and the age are fixed; the subject takes the rest.
-    let fixed = 2 + c.hash.chars().count() + 1 + 1 + age.chars().count() + 1;
-    let subject = truncate(&c.subject, width.saturating_sub(fixed));
-    let pad = width.saturating_sub(fixed + subject.chars().count());
     let hash_color = if unpushed { theme::ask() } else { theme::accent_dim() };
-    Line::from(vec![
-        Span::styled(
-            if fresh { " \u{2022}" } else { "  " },
-            Style::default().fg(theme::accent()),
+    let author = c.author.split_whitespace().next().unwrap_or("");
+    fit(
+        vec![
+            Span::raw(" "),
+            Span::styled(open_mark(open), Style::default().fg(theme::faint())),
+            Span::styled(
+                if fresh { "\u{2022}" } else { " " },
+                Style::default().fg(theme::accent()),
+            ),
+            Span::styled(c.hash.clone(), Style::default().fg(hash_color)),
+            Span::raw(" "),
+        ],
+        c.subject.clone(),
+        Style::default().fg(theme::text()),
+        vec![
+            Span::styled(truncate(author, 9), Style::default().fg(theme::muted())),
+            Span::raw(" "),
+            Span::styled(format!("{:>3}", fmt_age(now, at)), Style::default().fg(theme::faint())),
+            Span::raw(" "),
+        ],
+        width,
+        false,
+    )
+}
+
+/// The pane while the keyboard is on the git panel: the diff of the file under
+/// the cursor, the whole of the commit under it, or a summary of the changes.
+fn draw_git_preview(f: &mut Frame, app: &mut App, area: Rect) {
+    let target = app.git_target();
+    let App { git, git_view, .. } = app;
+    let snap = match git.as_ref().filter(|(cwd, _)| *cwd == target) {
+        Some((_, git::State::Repo(snap))) => Some(snap),
+        _ => None,
+    };
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::faint()));
+    let inner = block.inner(area);
+    let width = inner.width as usize;
+
+    let (title, lines) = match snap {
+        None => (
+            " git ".to_string(),
+            vec![Line::from(Span::styled(
+                " nothing to show",
+                Style::default().fg(theme::faint()),
+            ))],
         ),
-        Span::styled(c.hash.clone(), Style::default().fg(hash_color)),
-        Span::raw(" "),
-        Span::styled(subject, Style::default().fg(theme::text())),
-        Span::raw(" ".repeat(pad + 1)),
-        Span::styled(age, Style::default().fg(theme::faint())),
-        Span::raw(" "),
-    ])
+        Some(snap) => preview_content(git_view, snap, width),
+    };
+
+    let height = inner.height as usize;
+    let top = git_view.preview_scroll.min(lines.len().saturating_sub(height));
+    git_view.preview_scroll = top;
+    let position = if lines.len() > height {
+        format!(
+            " {}-{} of {} · pgup/pgdn ",
+            top + 1,
+            (top + height).min(lines.len()),
+            lines.len()
+        )
+    } else {
+        String::new()
+    };
+    let block = block
+        .title(Line::from(Span::styled(
+            title,
+            Style::default().fg(theme::text()).bold(),
+        )))
+        .title_bottom(
+            Line::from(Span::styled(position, Style::default().fg(theme::faint()))).right_aligned(),
+        );
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let visible: Vec<Line> = lines.into_iter().skip(top).take(height).collect();
+    f.render_widget(Paragraph::new(visible), inner);
+}
+
+/// Title and lines for the preview, by the row under the cursor.
+fn preview_content(
+    view: &GitView,
+    snap: &git::Snapshot,
+    width: usize,
+) -> (String, Vec<Line<'static>>) {
+    let loading = || vec![Line::from(Span::styled(" loading…", Style::default().fg(theme::faint())))];
+    match view.cursor.as_ref() {
+        Some(Row::Change(path)) | Some(Row::CommitFile(_, path)) => {
+            let lines = view
+                .wanted_diff(snap)
+                .and_then(|src| view.diff_for(&src).map(|l| diff_lines(l, width)))
+                .unwrap_or_else(loading);
+            let title = match view.cursor.as_ref() {
+                Some(Row::CommitFile(hash, _)) => format!(" {path} @ {hash} "),
+                _ => format!(" {path} "),
+            };
+            (title, lines)
+        }
+        Some(Row::Commit(hash)) => {
+            let lines = view
+                .details
+                .get(hash)
+                .map(|d| commit_preview(hash, d, width))
+                .unwrap_or_else(loading);
+            (format!(" commit {hash} "), lines)
+        }
+        Some(Row::History) => {
+            let mut lines = vec![Line::from("")];
+            let mut authors: Vec<(&str, usize)> = Vec::new();
+            for c in &snap.log {
+                match authors.iter_mut().find(|(a, _)| *a == c.author) {
+                    Some((_, n)) => *n += 1,
+                    None => authors.push((&c.author, 1)),
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                format!(" the last {} commits, by author:", snap.log.len()),
+                Style::default().fg(theme::muted()),
+            )));
+            lines.push(Line::from(""));
+            for (a, n) in authors {
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {n:>4}  "), Style::default().fg(theme::accent()).bold()),
+                    Span::styled(a.to_string(), Style::default().fg(theme::text())),
+                ]));
+            }
+            (" history ".to_string(), lines)
+        }
+        _ => {
+            let mut lines = vec![Line::from("")];
+            if snap.changes_total == 0 {
+                lines.push(Line::from(Span::styled(
+                    " nothing uncommitted — the work tree matches HEAD",
+                    Style::default().fg(theme::muted()),
+                )));
+            } else {
+                lines.push(summary_line(snap.changes_total, snap.added, snap.removed));
+                lines.push(Line::from(""));
+                lines.extend(stat_graph(
+                    snap.changes.iter().map(|c| (c.path.as_str(), c.added, c.removed)),
+                    width,
+                ));
+            }
+            (" uncommitted changes ".to_string(), lines)
+        }
+    }
+}
+
+/// `3 files changed, +120 −33` and the share bar.
+fn summary_line(files: usize, added: u32, removed: u32) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!(" {files} file{} changed  ", if files == 1 { "" } else { "s" }),
+        Style::default().fg(theme::text()).bold(),
+    )];
+    spans.extend(stat_spans(Some(added), Some(removed)));
+    spans.push(Span::raw("  "));
+    spans.extend(share_bar(added, removed));
+    Line::from(spans)
+}
+
+/// Every file with a bar of `+` and `-` scaled to the busiest one, the way
+/// `git diff --stat` draws it.
+fn stat_graph<'a>(
+    files: impl Iterator<Item = (&'a str, Option<u32>, Option<u32>)>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let files: Vec<_> = files.collect();
+    let most = files
+        .iter()
+        .map(|(_, a, r)| a.unwrap_or(0) + r.unwrap_or(0))
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let bar = (width / 3).clamp(5, 40) as u32;
+    let path_room = width.saturating_sub(bar as usize + 12).max(8);
+    files
+        .into_iter()
+        .map(|(path, a, r)| {
+            let mut spans = vec![Span::styled(
+                format!(" {:<path_room$} ", truncate_left(path, path_room)),
+                Style::default().fg(theme::text()),
+            )];
+            match (a, r) {
+                (Some(a), Some(r)) => {
+                    let total = a + r;
+                    // At least one cell for any change, so a one-line edit
+                    // next to a rewrite is still visible.
+                    let cells = if total == 0 { 0 } else { (total * bar / most).max(1) };
+                    let plus = (a * cells + total / 2).checked_div(total).unwrap_or(0);
+                    spans.push(Span::styled(
+                        format!("{total:>5} "),
+                        Style::default().fg(theme::muted()),
+                    ));
+                    spans.push(Span::styled("+".repeat(plus as usize), Style::default().fg(theme::idle())));
+                    spans.push(Span::styled(
+                        "-".repeat((cells - plus) as usize),
+                        Style::default().fg(theme::dead()),
+                    ));
+                }
+                _ => spans.push(Span::styled("  bin", Style::default().fg(theme::faint()))),
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// A commit in full: who, when, the whole message, and what it touched.
+fn commit_preview(hash: &str, d: &git::CommitDetail, width: usize) -> Vec<Line<'static>> {
+    let label = |k: &str| Span::styled(format!(" {k:<8}"), Style::default().fg(theme::muted()));
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            label("commit"),
+            Span::styled(hash.to_string(), Style::default().fg(theme::accent()).bold()),
+        ]),
+        Line::from(vec![
+            label("author"),
+            Span::styled(d.author.clone(), Style::default().fg(theme::text()).bold()),
+            Span::styled(format!(" <{}>", d.email), Style::default().fg(theme::faint())),
+        ]),
+        Line::from(vec![
+            label("date"),
+            Span::styled(d.date.clone(), Style::default().fg(theme::text())),
+        ]),
+        Line::from(""),
+    ];
+    for l in d.message.lines() {
+        lines.push(Line::from(Span::styled(
+            format!("   {}", truncate(&l.replace('\t', "    "), width.saturating_sub(4))),
+            Style::default().fg(theme::text()),
+        )));
+    }
+    lines.push(Line::from(""));
+    let added = d.files.iter().filter_map(|f| f.added).sum();
+    let removed = d.files.iter().filter_map(|f| f.removed).sum();
+    lines.push(summary_line(d.files.len(), added, removed));
+    lines.push(Line::from(""));
+    lines.extend(stat_graph(
+        d.files.iter().map(|f| (f.path.as_str(), f.added, f.removed)),
+        width,
+    ));
+    lines
+}
+
+/// A unified diff, coloured the way a terminal `git diff` is.
+fn diff_lines(lines: &[String], width: usize) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .map(|l| {
+            let style = if l.starts_with("+++") || l.starts_with("---") {
+                Style::default().fg(theme::muted()).bold()
+            } else if l.starts_with('+') {
+                Style::default().fg(theme::idle())
+            } else if l.starts_with('-') {
+                Style::default().fg(theme::dead())
+            } else if l.starts_with("@@") {
+                Style::default().fg(theme::accent())
+            } else if l.starts_with("diff ")
+                || l.starts_with("index ")
+                || l.starts_with("new file")
+                || l.starts_with("deleted file")
+                || l.starts_with("similarity")
+                || l.starts_with("rename ")
+                || l.starts_with('(')
+            {
+                Style::default().fg(theme::faint())
+            } else {
+                Style::default().fg(theme::text())
+            };
+            Line::from(Span::styled(
+                truncate(&format!(" {}", l.replace('\t', "    ")), width),
+                style,
+            ))
+        })
+        .collect()
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -833,7 +1288,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("n", "new"),
             ("R", "resume a conversation"),
             ("u", "understand project"),
-            ("g", "git panel"),
+            ("g", "git"),
             ("x", "kill"),
             ("?", "help"),
             ("q", "quit"),
@@ -859,6 +1314,14 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("enter", "resume"),
             ("up/dn", "pick a conversation"),
             ("esc", "close"),
+        ],
+        Mode::Git => vec![
+            ("esc", "back"),
+            ("up/dn", "move"),
+            ("enter", "open/close"),
+            ("left", "close"),
+            ("pgup/pgdn", "scroll the preview"),
+            ("G", "hide the panel"),
         ],
         Mode::Understand => vec![
             ("F1-F9", "that session"),
@@ -1175,11 +1638,10 @@ fn draw_help(f: &mut Frame) {
         ("r", "restart into a new build (when a newer exe exists)"),
         ("", "(sessions come back with their conversations, --resume)"),
         ("i", "install a newer release from GitHub, then restart"),
-        ("", "(checked every few hours; [updates] in fleet.toml)"),
+        ("", "(checked every half hour, or now when none is known)"),
         ("R", "resume an old conversation (transcript list)"),
-        ("g", "show or hide the git panel on the right"),
-        ("", "(the selected session's repository: branch,"),
-        ("", " changes, history; \u{2022} = made during the session)"),
+        ("g", "browse the git panel (see below)"),
+        ("G", "show or hide the git panel"),
         ("U", "refresh the account limits now"),
         ("", "(a hidden /usage session, no tokens)"),
         ("q", "quit"),
@@ -1209,6 +1671,17 @@ fn draw_help(f: &mut Frame) {
         ("F1..F9, then u", "the same thing, the other way round"),
         ("", "(a lone u counts for 2 s after entering a session)"),
         ("", "the text lands in the prompt, enter sends it"),
+        ("", ""),
+        ("", "-- GIT PANEL (g) --"),
+        ("", "the selected session's repository: branch, changes"),
+        ("", "with lines +added -removed, history with authors"),
+        ("up/down, j/k", "move; the pane previews the diff or commit"),
+        ("enter / space", "open or close a commit or a section"),
+        ("right / left", "open / close (left at the top leaves)"),
+        ("pgup/pgdn, J/K", "scroll the preview (the wheel works too)"),
+        ("", "\u{2022} = committed while the session ran"),
+        ("", "yellow hash = not pushed yet"),
+        ("esc / g", "back to the list"),
         ("", ""),
         ("", "-- FOREIGN SESSIONS --"),
         ("!", "started outside fleet, view only"),
@@ -1367,23 +1840,39 @@ mod tests {
                 .map(|i| git::Change {
                     code: " M".into(),
                     path: format!("src/some/deeply/nested/directory/file_{i}.rs"),
+                    added: Some(123_456),
+                    removed: (i % 2 == 0).then_some(98_765),
                 })
                 .collect(),
             changes_total: 50,
+            added: 4_000_000,
+            removed: 3_000_000,
             log: (0..60)
                 .map(|i| git::Commit {
                     hash: "41c45ad".into(),
                     subject: "a subject line that goes on well past the panel's edge".repeat(i % 3 + 1),
                     time: 1_700_000_000,
+                    author: "Bartholomew Longname".into(),
                 })
                 .collect(),
         };
         let width = usize::from(GIT_WIDTH) - 2;
         let height = 40;
-        let lines = git_lines(&snap, Some(SystemTime::now()), width, height);
-        assert!(lines.len() <= height, "{} rows for {height}", lines.len());
-        for l in &lines {
-            assert!(l.width() <= width, "a row takes {} of {width}", l.width());
+        for focused in [false, true] {
+            let mut view = GitView::new();
+            let lines = git_lines(&mut view, &snap, Some(SystemTime::now()), width, height, focused);
+            assert!(lines.len() <= height, "{} rows for {height}", lines.len());
+            for l in &lines {
+                assert!(l.width() <= width, "a row takes {} of {width}", l.width());
+            }
+        }
+    }
+
+    #[test]
+    fn the_share_bar_is_always_five_cells() {
+        for (a, r) in [(0, 0), (1, 0), (0, 1), (1, 1000), (999, 1), (3, 3)] {
+            let w: usize = share_bar(a, r).iter().map(Span::width).sum();
+            assert_eq!(w, 5, "+{a} -{r}");
         }
     }
 

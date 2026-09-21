@@ -7,6 +7,8 @@
 //! every couple of seconds is cheap next to what the sessions are doing.
 
 use std::{
+    collections::HashMap,
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -23,6 +25,13 @@ const CHANGES_LIMIT: usize = 200;
 /// in a subject line, so a subject with tabs or pipes in it stays whole.
 const SEP: char = '\u{1f}';
 
+/// The longest diff kept for the preview. Past this it is a generated file or
+/// a lockfile, and the first few thousand lines say what it is.
+const DIFF_LIMIT: usize = 5000;
+
+/// Untracked files larger than this are not read to count their lines.
+const COUNT_LIMIT: u64 = 512 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     /// The top of the work tree, which may be above the session's directory.
@@ -36,7 +45,18 @@ pub struct Snapshot {
     pub changes: Vec<Change>,
     /// How many changes there were before `changes` was cut to the limit.
     pub changes_total: usize,
+    /// Lines added and removed across all of `changes`, text files only.
+    pub added: u32,
+    pub removed: u32,
     pub log: Vec<Commit>,
+}
+
+impl Snapshot {
+    /// Whether HEAD points at a commit. A fresh repository has none, and
+    /// diffing against it is then an error.
+    pub fn has_head(&self) -> bool {
+        !self.log.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,9 +64,17 @@ pub struct Change {
     /// The two-letter porcelain code: index then work tree, e.g. `M `, ` M`, `??`.
     pub code: String,
     pub path: String,
+    /// Lines added and removed against HEAD. `None` for a binary file, or one
+    /// nothing could be counted for (an untracked directory, a huge file).
+    pub added: Option<u32>,
+    pub removed: Option<u32>,
 }
 
 impl Change {
+    pub fn untracked(&self) -> bool {
+        self.code == "??"
+    }
+
     /// Staged, as in: something is in the index for it.
     pub fn staged(&self) -> bool {
         let x = self.code.chars().next().unwrap_or(' ');
@@ -60,6 +88,40 @@ pub struct Commit {
     pub subject: String,
     /// Committer time, in seconds since the epoch.
     pub time: u64,
+    pub author: String,
+}
+
+/// Lines added and removed in one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileStat {
+    pub path: String,
+    /// `None` for a binary file.
+    pub added: Option<u32>,
+    pub removed: Option<u32>,
+}
+
+/// Everything about one commit the preview shows: who, when, the whole
+/// message, and the files it touched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitDetail {
+    pub author: String,
+    pub email: String,
+    pub date: String,
+    pub message: String,
+    pub files: Vec<FileStat>,
+}
+
+/// What a diff in the preview is of.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DiffSource {
+    /// A file with uncommitted changes, against HEAD.
+    Worktree {
+        path: String,
+        untracked: bool,
+        has_head: bool,
+    },
+    /// A file as one commit changed it, against its first parent.
+    Commit { hash: String, path: String },
 }
 
 /// What a read of the directory found.
@@ -87,16 +149,179 @@ pub fn read(cwd: &Path) -> State {
         .unwrap_or_else(|| cwd.to_path_buf());
 
     let mut snap = parse_status(&status);
-    snap.root = root;
 
     // An empty repository has no HEAD, and `git log` says so on stderr with a
     // failing exit code. That is a repository with no history, not an error.
-    let format = format!("--format=%h{SEP}%s{SEP}%ct");
+    let format = format!("--format=%h{SEP}%s{SEP}%ct{SEP}%an");
     let limit = format!("-n{LOG_LIMIT}");
     if let Ok(Some(log)) = git(cwd, &["log", &limit, &format]) {
         snap.log = parse_log(&log);
     }
+
+    // Staged and unstaged together, against HEAD: what committing everything
+    // would add up to. Paths in both outputs are relative to the root.
+    let diff_args: &[&str] = if snap.has_head() {
+        &["diff", "HEAD", "--numstat", "-z", "--no-ext-diff"]
+    } else {
+        &["diff", "--cached", "--numstat", "-z", "--no-ext-diff"]
+    };
+    let stats: HashMap<String, FileStat> = git(&root, diff_args)
+        .ok()
+        .flatten()
+        .map(|out| parse_numstat(&out))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s.path.clone(), s))
+        .collect();
+    for c in &mut snap.changes {
+        if c.untracked() {
+            c.added = count_lines(&root.join(&c.path));
+            c.removed = c.added.map(|_| 0);
+        } else if let Some(s) = stats.get(&c.path) {
+            c.added = s.added;
+            c.removed = s.removed;
+        }
+        snap.added += c.added.unwrap_or(0);
+        snap.removed += c.removed.unwrap_or(0);
+    }
+
+    snap.root = root;
     State::Repo(snap)
+}
+
+/// Who made a commit, when, what it says, and what it touched.
+pub fn commit_detail(root: &Path, hash: &str) -> Option<CommitDetail> {
+    let format = format!("--format=%an{SEP}%ae{SEP}%ad{SEP}%B");
+    let head = git(
+        root,
+        &["show", "-s", "--date=format:%Y-%m-%d %H:%M", &format, hash],
+    )
+    .ok()??;
+    let mut f = head.splitn(4, SEP);
+    let author = f.next()?.to_string();
+    let email = f.next()?.to_string();
+    let date = f.next()?.to_string();
+    let message = f.next().unwrap_or("").trim_end().to_string();
+    // Against the first parent, so a merge shows what it brought in; `--root`
+    // makes the first commit show its files instead of nothing.
+    let files = git(
+        root,
+        &[
+            "diff-tree", "--no-commit-id", "-r", "--root", "-m", "--first-parent",
+            "--numstat", "-z", "--no-ext-diff", hash,
+        ],
+    )
+    .ok()
+    .flatten()
+    .map(|out| parse_numstat(&out))
+    .unwrap_or_default();
+    Some(CommitDetail {
+        author,
+        email,
+        date,
+        message,
+        files,
+    })
+}
+
+/// The diff behind one row of the panel, as plain lines.
+pub fn diff(root: &Path, src: &DiffSource) -> Vec<String> {
+    let out = match src {
+        DiffSource::Worktree {
+            path,
+            untracked: true,
+            ..
+        } => return untracked_diff(&root.join(path)),
+        DiffSource::Worktree { path, has_head, .. } => {
+            let spec = format!(":(top){path}");
+            let base = if *has_head { "HEAD" } else { "--cached" };
+            git(root, &["diff", base, "--no-color", "--no-ext-diff", "--", &spec])
+        }
+        DiffSource::Commit { hash, path } => {
+            let spec = format!(":(top){path}");
+            git(
+                root,
+                &[
+                    "diff-tree", "-p", "--no-commit-id", "-r", "--root", "-m",
+                    "--first-parent", "--no-color", "--no-ext-diff", hash, "--", &spec,
+                ],
+            )
+        }
+    };
+    let out = out.ok().flatten().unwrap_or_default();
+    let mut lines: Vec<String> = out.lines().take(DIFF_LIMIT).map(str::to_string).collect();
+    if lines.is_empty() {
+        lines.push("(no textual changes)".to_string());
+    }
+    lines
+}
+
+/// An untracked file has nothing to diff against, so all of it is new.
+fn untracked_diff(path: &Path) -> Vec<String> {
+    if path.is_dir() {
+        return vec!["(an untracked directory)".to_string()];
+    }
+    let Ok(meta) = fs::metadata(path) else {
+        return vec!["(gone)".to_string()];
+    };
+    if meta.len() > COUNT_LIMIT * 4 {
+        return vec![format!("(new file, {} KB — too big to show)", meta.len() / 1024)];
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return vec!["(could not be read)".to_string()];
+    };
+    if bytes.contains(&0) {
+        return vec!["(new binary file)".to_string()];
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = vec!["new file".to_string()];
+    lines.extend(text.lines().take(DIFF_LIMIT).map(|l| format!("+{l}")));
+    lines
+}
+
+/// Lines in a new text file, or `None` when it is not one worth reading.
+fn count_lines(path: &Path) -> Option<u32> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > COUNT_LIMIT {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    let newlines = bytes.iter().filter(|&&b| b == b'\n').count();
+    let unterminated = !bytes.is_empty() && !bytes.ends_with(b"\n");
+    Some((newlines + usize::from(unterminated)) as u32)
+}
+
+/// `--numstat -z`: `added TAB removed TAB path NUL`, or for a rename an empty
+/// path followed by the old and the new one, each ended by a NUL. A binary
+/// file has `-` for both counts.
+fn parse_numstat(out: &str) -> Vec<FileStat> {
+    let mut stats = Vec::new();
+    let mut it = out.split('\0');
+    while let Some(e) = it.next() {
+        let e = e.trim_start_matches('\n');
+        if e.is_empty() {
+            continue;
+        }
+        let mut f = e.splitn(3, '\t');
+        let (Some(a), Some(r), Some(p)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let path = if p.is_empty() {
+            it.next();
+            it.next().unwrap_or("").to_string()
+        } else {
+            p.to_string()
+        };
+        stats.push(FileStat {
+            path,
+            added: a.parse().ok(),
+            removed: r.parse().ok(),
+        });
+    }
+    stats
 }
 
 /// Run git in `cwd`. `Ok(None)` is git refusing (not a repository, no HEAD);
@@ -138,6 +363,8 @@ fn parse_status(out: &str) -> Snapshot {
         upstream: None,
         changes: Vec::new(),
         changes_total: 0,
+        added: 0,
+        removed: 0,
         log: Vec::new(),
     };
 
@@ -158,7 +385,12 @@ fn parse_status(out: &str) -> Snapshot {
         }
         snap.changes_total += 1;
         if snap.changes.len() < CHANGES_LIMIT {
-            snap.changes.push(Change { code, path });
+            snap.changes.push(Change {
+                code,
+                path,
+                added: None,
+                removed: None,
+            });
         }
     }
     snap
@@ -200,6 +432,7 @@ fn parse_log(out: &str) -> Vec<Commit> {
                 hash: f.next()?.to_string(),
                 subject: f.next()?.to_string(),
                 time: f.next()?.parse().unwrap_or(0),
+                author: f.next().unwrap_or("").to_string(),
             })
         })
         .collect()
@@ -248,9 +481,19 @@ mod tests {
 
     #[test]
     fn a_subject_with_pipes_and_tabs_stays_whole() {
-        let line = format!("41c45ad{SEP}fix a | b\tc{SEP}1700000000");
+        let line = format!("41c45ad{SEP}fix a | b\tc{SEP}1700000000{SEP}Ann Lee");
         let log = parse_log(&line);
         assert_eq!(log[0].subject, "fix a | b\tc");
         assert_eq!(log[0].time, 1_700_000_000);
+        assert_eq!(log[0].author, "Ann Lee");
+    }
+
+    #[test]
+    fn numstat_counts_renames_under_the_new_name_and_binaries_as_unknown() {
+        let s = parse_numstat("3\t1\tsrc/a.rs\0-\t-\tlogo.png\0\x30\t0\t\0old.rs\0new.rs\0");
+        assert_eq!(s.len(), 3);
+        assert_eq!((s[0].added, s[0].removed), (Some(3), Some(1)));
+        assert_eq!((s[1].added, s[1].removed), (None, None));
+        assert_eq!(s[2].path, "new.rs");
     }
 }
