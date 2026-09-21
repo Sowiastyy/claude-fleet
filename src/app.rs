@@ -128,6 +128,8 @@ pub enum GitHit {
     Commit,
     Push,
     Generate,
+    /// The name of the model Generate uses; a click moves to the next one.
+    Model,
 }
 
 /// What a background git job came back with.
@@ -443,6 +445,10 @@ pub struct App {
     pub git_fits: bool,
     /// The message in the box at the foot of the git panel.
     pub commit_msg: String,
+    /// Where typing goes in `commit_msg`, as a byte offset.
+    pub commit_cursor: usize,
+    /// The model Generate asks, picked with `M` or the model button.
+    pub commit_model: String,
     /// The commit, push or message being worked on right now. One at a time:
     /// a push racing the commit it is meant to carry would push without it.
     pub git_job: Option<GitJob>,
@@ -525,6 +531,8 @@ impl App {
             git_view: GitView::new(),
             git_fits: true,
             commit_msg: String::new(),
+            commit_cursor: 0,
+            commit_model: commitmsg::saved_model().unwrap_or_else(config::commit_model),
             git_job: None,
             job_tx,
             job_rx,
@@ -880,8 +888,20 @@ impl App {
             return;
         }
         self.show_git = true;
+        if !self.mode.on_git() {
+            // Coming onto the panel leaves the session on the pane until a
+            // change or a commit is entered.
+            self.git_view.preview_open = false;
+        }
         self.mode = Mode::Git;
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Move Generate on to the next model, and remember it for next time.
+    pub fn cycle_commit_model(&mut self) {
+        self.commit_model = commitmsg::next_model(&self.commit_model, &config::commit_model());
+        commitmsg::save_model(&self.commit_model);
+        self.notify(format!("commit messages now come from {}", self.commit_model));
     }
 
     /// Put the keyboard in the commit message box.
@@ -970,7 +990,8 @@ impl App {
             return;
         }
         let root = snap.root.clone();
-        self.start_job(GitJob::Generate, move || match commitmsg::generate(&root) {
+        let model = self.commit_model.clone();
+        self.start_job(GitJob::Generate, move || match commitmsg::generate(&root, &model) {
             Ok(m) => JobDone::Generated(m),
             Err(e) => JobDone::Failed(GitJob::Generate, e),
         });
@@ -982,6 +1003,7 @@ impl App {
             match done {
                 JobDone::Committed(hash) => {
                     self.commit_msg.clear();
+                    self.commit_cursor = 0;
                     if self.mode == Mode::Commit {
                         self.mode = Mode::Git;
                     }
@@ -989,6 +1011,7 @@ impl App {
                 }
                 JobDone::Pushed => self.notify("pushed"),
                 JobDone::Generated(m) => {
+                    self.commit_cursor = m.len();
                     self.commit_msg = m;
                     self.notify("message written — enter commits, or edit it first");
                 }

@@ -14,6 +14,7 @@ mod gitview;
 mod history;
 mod input;
 mod keys;
+mod msgedit;
 mod registry;
 mod session;
 mod supervise;
@@ -1121,14 +1122,26 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
 fn handle_git(app: &mut App, key: KeyEvent) {
     let page = app.pane_rows.saturating_sub(2).max(1) as isize;
     match key.code {
+        // An open preview closes first, giving the pane back to the session.
+        KeyCode::Esc if app.git_view.preview_open => app.git_view.preview_open = false,
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') => app.mode = Mode::Nav,
+        KeyCode::Char('M') => app.cycle_commit_model(),
         KeyCode::Char('G') => app.toggle_git(),
         KeyCode::Char('b') => app.open_branch_picker(),
         KeyCode::Char('c') => app.focus_commit(),
         KeyCode::Char('p') => app.push(),
         KeyCode::Char('m') => app.generate_message(),
-        KeyCode::Char('j') | KeyCode::Down => app.with_git(|v, s| v.move_cursor(s, 1)),
-        KeyCode::Char('k') | KeyCode::Up => app.with_git(|v, s| v.move_cursor(s, -1)),
+        KeyCode::Char('j') | KeyCode::Down => app.with_git(|v, s| {
+            v.move_cursor(s, 1);
+        }),
+        KeyCode::Char('k') | KeyCode::Up => {
+            // The message box sits above the list: up off its top goes there.
+            let mut moved = true;
+            app.with_git(|v, s| moved = v.move_cursor(s, -1));
+            if !moved {
+                app.focus_commit();
+            }
+        }
         KeyCode::Home => app.with_git(|v, s| v.home(s)),
         KeyCode::End => app.with_git(|v, s| v.end(s)),
         KeyCode::Enter | KeyCode::Char(' ') => app.with_git(|v, _| v.toggle()),
@@ -1158,29 +1171,40 @@ fn handle_commit(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let word = ctrl || alt;
+    let (text, cur) = (&mut app.commit_msg, &mut app.commit_cursor);
     match key.code {
         KeyCode::Esc => app.mode = Mode::Git,
-        KeyCode::Enter if shift || alt || ctrl => app.commit_msg.push('\n'),
-        KeyCode::Char('j') if ctrl => app.commit_msg.push('\n'),
+        KeyCode::Enter if shift || alt || ctrl => msgedit::insert(text, cur, "\n"),
+        KeyCode::Char('j') if ctrl => msgedit::insert(text, cur, "\n"),
         KeyCode::Enter => app.commit(),
-        KeyCode::Backspace if ctrl || alt => {
-            // A word at a time, the way every other text box does it.
-            let kept = app.commit_msg.trim_end().len();
-            app.commit_msg.truncate(kept);
-            let cut = app
-                .commit_msg
-                .rfind(char::is_whitespace)
-                .map_or(0, |i| i + 1);
-            app.commit_msg.truncate(cut);
+        KeyCode::Backspace if word => msgedit::delete_word_back(text, cur),
+        KeyCode::Backspace => msgedit::backspace(text, cur),
+        KeyCode::Delete => msgedit::delete(text, cur),
+        KeyCode::Left if word => msgedit::word_left(text, cur),
+        KeyCode::Right if word => msgedit::word_right(text, cur),
+        KeyCode::Left => msgedit::left(text, cur),
+        KeyCode::Right => msgedit::right(text, cur),
+        KeyCode::Home => msgedit::home(text, cur),
+        KeyCode::End => msgedit::end(text, cur),
+        KeyCode::Up => {
+            msgedit::up(text, cur);
         }
-        KeyCode::Backspace => {
-            app.commit_msg.pop();
+        // The list sits under the box: down off its last line goes there.
+        KeyCode::Down => {
+            if !msgedit::down(text, cur) {
+                app.mode = Mode::Git;
+            }
         }
         KeyCode::Char('g') if ctrl => app.generate_message(),
+        KeyCode::Char('o') if ctrl => app.cycle_commit_model(),
         KeyCode::Char('p') if ctrl => app.push(),
-        KeyCode::Char('u') if ctrl => app.commit_msg.clear(),
-        KeyCode::Tab | KeyCode::Up => app.mode = Mode::Git,
-        KeyCode::Char(c) if !ctrl => app.commit_msg.push(c),
+        KeyCode::Char('u') if ctrl => {
+            text.clear();
+            *cur = 0;
+        }
+        KeyCode::Tab => app.mode = Mode::Git,
+        KeyCode::Char(c) if !ctrl => msgedit::insert(text, cur, c.encode_utf8(&mut [0; 4])),
         _ => {}
     }
     app.dirty.store(true, Ordering::Relaxed);
@@ -1253,6 +1277,7 @@ fn handle_click(app: &mut App, m: MouseEvent) {
             GitHit::Commit => app.commit(),
             GitHit::Push => app.push(),
             GitHit::Generate => app.generate_message(),
+            GitHit::Model => app.cycle_commit_model(),
         }
         // A button pressed from inside a session still leaves the keyboard on
         // the panel it was pressed on, not on the session behind.
@@ -1506,12 +1531,18 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     if app.mode.on_git() {
         let delta = if up { -SCROLL_STEP } else { SCROLL_STEP };
         if over_git {
-            app.with_git(|v, s| v.move_cursor(s, delta.signum()));
-        } else {
-            app.git_view.scroll_preview(delta);
+            app.with_git(|v, s| {
+                v.move_cursor(s, delta.signum());
+            });
+            app.dirty.store(true, Ordering::Relaxed);
+            return;
         }
-        app.dirty.store(true, Ordering::Relaxed);
-        return;
+        if app.git_view.preview_open {
+            app.git_view.scroll_preview(delta);
+            app.dirty.store(true, Ordering::Relaxed);
+            return;
+        }
+        // No preview open: the session is on the pane and scrolls as usual.
     }
     // Otherwise the panel does not scroll.
     if over_git {
@@ -1546,7 +1577,8 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 
 fn handle_paste(app: &mut App, text: &str, keep_open: bool) {
     if app.mode == Mode::Commit {
-        app.commit_msg.push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        msgedit::insert(&mut app.commit_msg, &mut app.commit_cursor, &text);
         app.dirty.store(true, Ordering::Relaxed);
         return;
     }

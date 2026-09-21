@@ -15,8 +15,9 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
     app::{App, BranchRow, GitHit, GitJob, Mode},
-    config, git,
+    commitmsg, config, git,
     gitview::{GitView, Row},
+    msgedit,
     theme, usage,
 };
 
@@ -129,7 +130,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // leaves nothing to click.
     app.git_hits.clear();
     draw_sidebar(f, app, sidebar);
-    if app.mode.on_git() {
+    if app.mode.on_git() && app.git_view.preview_open {
         draw_git_preview(f, app, pane);
     } else {
         draw_pane(f, app, pane);
@@ -722,6 +723,8 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
         git,
         git_view,
         commit_msg,
+        commit_cursor,
+        commit_model,
         git_job,
         mode,
         ..
@@ -768,30 +771,33 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
     let mut inner = block.inner(area);
     f.render_widget(block, area);
 
-    // The commit box and its buttons take the foot of the panel, whenever
-    // there is a repository to commit to and room left for the list above.
+    // The commit box and its buttons head the panel, above the changes they
+    // commit, whenever there is a repository to commit to and room left for
+    // the list below.
     let mut hits = Vec::new();
     if let Some(git::State::Repo(snap)) = state {
         let msg_rows = wrap_message(commit_msg, inner.width.saturating_sub(2) as usize)
             .len()
             .clamp(1, 5) as u16;
         if inner.height >= msg_rows + 3 + 6 {
-            let [list, message, buttons] = Layout::vertical([
-                Constraint::Min(0),
+            let [message, buttons, _, list] = Layout::vertical([
                 Constraint::Length(msg_rows + 2),
                 Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
             ])
             .areas(inner);
             inner = list;
             draw_commit_box(
                 f,
                 commit_msg,
+                *commit_cursor,
                 *mode == Mode::Commit,
                 snap.changes_total,
                 message,
             );
             hits.push((message, GitHit::Message));
-            hits.extend(draw_git_buttons(f, *git_job, snap, buttons));
+            hits.extend(draw_git_buttons(f, *git_job, snap, commit_model, buttons));
         }
     }
 
@@ -848,9 +854,16 @@ fn wrap_message(msg: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// The box the commit message is typed into. Only the last rows show while it
-/// is being typed, the way a text field scrolls to keep the cursor in view.
-fn draw_commit_box(f: &mut Frame, msg: &str, typing: bool, changes: usize, area: Rect) {
+/// The box the commit message is typed into. When it holds more rows than fit,
+/// it scrolls to keep the cursor in view, the way a text field does.
+fn draw_commit_box(
+    f: &mut Frame,
+    msg: &str,
+    cursor: usize,
+    typing: bool,
+    changes: usize,
+    area: Rect,
+) {
     let border = if typing {
         theme::accent()
     } else {
@@ -884,7 +897,14 @@ fn draw_commit_box(f: &mut Frame, msg: &str, typing: bool, changes: usize, area:
         return;
     }
     let rows = wrap_message(msg, inner.width as usize);
-    let skip = rows.len().saturating_sub(inner.height as usize);
+    // A cursor after a full row stands at the start of the row below it.
+    let (cur_row, cur_col) = msgedit::screen_pos(msg, cursor, inner.width as usize);
+    let height = inner.height as usize;
+    let skip = if typing {
+        (cur_row + 1).saturating_sub(height)
+    } else {
+        rows.len().saturating_sub(height)
+    };
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -901,15 +921,8 @@ fn draw_commit_box(f: &mut Frame, msg: &str, typing: bool, changes: usize, area:
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
     if typing {
-        let last = rows.last().map_or(0, |r| r.chars().count()) as u16;
-        let row = (rows.len() - skip).saturating_sub(1) as u16;
-        let (x, y) = if last >= inner.width {
-            // A full row: the next character starts the row below.
-            (inner.x, (inner.y + row + 1).min(inner.bottom() - 1))
-        } else {
-            (inner.x + last, inner.y + row)
-        };
-        f.set_cursor_position((x, y));
+        let y = inner.y + (cur_row - skip) as u16;
+        f.set_cursor_position((inner.x + cur_col as u16, y.min(inner.bottom() - 1)));
     }
 }
 
@@ -919,6 +932,7 @@ fn draw_git_buttons(
     f: &mut Frame,
     job: Option<GitJob>,
     snap: &git::Snapshot,
+    model: &str,
     area: Rect,
 ) -> Vec<(Rect, GitHit)> {
     let push = match (snap.upstream.is_some(), snap.ahead, snap.behind) {
@@ -929,19 +943,20 @@ fn draw_git_buttons(
         (true, a, b) => format!("Push ↑{a}↓{b}"),
     };
     let buttons = [
-        (GitHit::Commit, GitJob::Commit, "Commit".to_string()),
-        (GitHit::Push, GitJob::Push, push),
-        (GitHit::Generate, GitJob::Generate, "✦ Generate".to_string()),
+        (GitHit::Commit, Some(GitJob::Commit), "Commit".to_string()),
+        (GitHit::Push, Some(GitJob::Push), push),
+        (GitHit::Generate, Some(GitJob::Generate), "✦ Generate".to_string()),
+        // Which model Generate asks; pressing it moves to the next one.
+        (GitHit::Model, None, format!("{} ▾", commitmsg::short_name(model))),
     ];
     let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
     for (hit, kind, label) in buttons {
-        let running = job == Some(kind);
-        let text = if running {
-            format!(" {} ", kind.doing())
-        } else {
-            format!(" {label} ")
+        let running = kind.is_some() && job == kind;
+        let text = match kind {
+            Some(kind) if running => format!(" {} ", kind.doing()),
+            _ => format!(" {label} "),
         };
         let style = if running {
             Style::default()
@@ -955,6 +970,8 @@ fn draw_git_buttons(
                 .bg(theme::accent())
                 .fg(theme::surface())
                 .bold()
+        } else if hit == GitHit::Model {
+            Style::default().bg(theme::surface()).fg(theme::muted())
         } else {
             Style::default()
                 .bg(theme::surface())
@@ -1681,11 +1698,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("esc", "back"),
             ("alt+g", "back to the session"),
             ("up/dn", "move"),
-            ("enter", "open/close"),
+            ("enter", "show/fold"),
             ("left", "close"),
             ("pgup/pgdn", "scroll the preview"),
             ("c", "message"),
             ("m", "generate it"),
+            ("M", "next model"),
             ("p", "push"),
             ("b", "switch branch"),
             ("G", "hide the panel"),
@@ -1694,6 +1712,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("enter", "commit"),
             ("shift+enter", "new line"),
             ("ctrl+g", "generate"),
+            ("ctrl+o", "next model"),
             ("ctrl+p", "push"),
             ("ctrl+u", "clear"),
             ("esc", "back to the list"),
@@ -2048,7 +2067,7 @@ fn draw_confirm_restart(f: &mut Frame, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "  so no pressure ;)",
+            "  if agent is working update may interrupt it",
             Style::default().fg(theme::muted()),
         )),
         Line::from(""),

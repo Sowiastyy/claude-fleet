@@ -121,21 +121,36 @@ local one tracking it, and a name that matches no branch is offered as a new
 branch started at HEAD. When git refuses — uncommitted changes in the way —
 its reason lands on the status line and the list stays open.
 
-At the foot of the panel sit a message box and three buttons, **Commit**,
-**Push** and **Generate**, which the mouse can press too. On the panel:
+Putting the keyboard on the panel (`g`, `Alt+G`, a click) leaves the session
+on the pane. The pane swaps to a preview only once a change or a commit is
+entered (`enter` or `→`): the diff of that file, or the commit and what it
+touched. `esc` or `←` closes the preview and gives the pane back to the
+session.
+
+At the top of the panel, above the changes, sit a message box and the
+buttons **Commit**, **Push**, **Generate** and the model Generate uses
+(`haiku ▾`), which the mouse can press too. On the panel:
 
 | key | does |
 |---|---|
-| `c` | type the commit message (clicking the box does the same) |
+| `c` | type the commit message (clicking the box, or `↑` off the top of the list, does the same) |
 | `m` | have a model write the message from the diff |
+| `M` | move Generate on to the next model: haiku, sonnet, opus |
 | `p` | push; a branch without an upstream is pushed to `origin` with `-u` |
 
-In the message box `enter` commits, `shift+enter` (or `ctrl+j`) starts a new
-line, `ctrl+g` generates, `ctrl+p` pushes, `ctrl+u` clears and `esc` goes
-back to the list. A commit takes what is staged, or every change, untracked
-files included, when nothing is. Generate runs `claude -p` with tools off on
-the diff, using `claude-haiku-4-5` unless `[commit] model` in the config says
-otherwise; it takes a few seconds and the button says so meanwhile.
+In the message box the arrows, `home`/`end` and `ctrl+←`/`ctrl+→` move the
+cursor, and typing goes in where it stands. `enter` commits, `shift+enter`
+(or `ctrl+j`) starts a new line, `ctrl+g` generates, `ctrl+o` picks the next
+model, `ctrl+p` pushes, `ctrl+u` clears, and `↓` off the last line, `tab` or
+`esc` goes back to the list. A commit takes what is staged, or every change,
+untracked files included, when nothing is.
+
+Generate runs `claude -p` with tools off on the diff. It starts that child
+lean — no MCP servers, skills, plugins, hooks or settings files — since most
+of the wait used to be the child starting up. The model is `claude-haiku-4-5`
+unless `[commit] model` in the config says otherwise; a model picked with `M`
+is kept in `~/.claude/fleet-commit-model` and stands over the config's. It
+takes a few seconds and the button says so meanwhile.
 
 ## Session state on a card
 

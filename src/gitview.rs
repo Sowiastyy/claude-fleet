@@ -67,6 +67,10 @@ pub struct GitView {
     failed: HashSet<String>,
     /// The diff on show, and what it is of.
     pub diff: Option<(DiffSource, Vec<String>)>,
+    /// Whether the pane shows the preview instead of the session. It opens
+    /// only when a change or a commit is entered, so putting the keyboard on
+    /// the panel does not take the session off the screen.
+    pub preview_open: bool,
     /// First line of the preview on screen.
     pub preview_scroll: usize,
     /// First row of the list on screen.
@@ -90,6 +94,7 @@ impl GitView {
             details: HashMap::new(),
             failed: HashSet::new(),
             diff: None,
+            preview_open: false,
             preview_scroll: 0,
             list_scroll: 0,
             root: None,
@@ -173,8 +178,9 @@ impl GitView {
         }
     }
 
-    /// Move by `delta` selectable rows, stopping at either end.
-    pub fn move_cursor(&mut self, snap: &Snapshot, delta: isize) {
+    /// Move by `delta` selectable rows, stopping at either end. Returns
+    /// whether the cursor moved at all.
+    pub fn move_cursor(&mut self, snap: &Snapshot, delta: isize) -> bool {
         let rows = self.rows(snap, None);
         let mut i = self.cursor_index(&rows);
         let mut left = delta.unsigned_abs();
@@ -190,8 +196,10 @@ impl GitView {
             }
             left -= 1;
         }
+        let moved = rows.get(i) != self.cursor.as_ref();
         self.last_index = i;
         self.set_cursor(rows.get(i).cloned());
+        moved
     }
 
     pub fn home(&mut self, snap: &Snapshot) {
@@ -202,17 +210,21 @@ impl GitView {
         self.move_cursor(snap, isize::MAX);
     }
 
-    /// Enter or space: open or close what the cursor is on.
+    /// Enter or space: open or close what the cursor is on. Entering a
+    /// change or a commit puts its preview on the pane.
     pub fn toggle(&mut self) {
         match self.cursor.clone() {
             Some(Row::Changes) => self.changes_open = !self.changes_open,
             Some(Row::History) => self.history_open = !self.history_open,
-            Some(Row::Commit(h)) if self.expanded.contains(&h) => {
+            // The first enter shows the commit; the next ones fold it.
+            Some(Row::Commit(h)) if self.preview_open && self.expanded.contains(&h) => {
                 self.expanded.remove(&h);
             }
             Some(Row::Commit(h)) => {
                 self.expanded.insert(h);
+                self.preview_open = true;
             }
+            Some(Row::Change(_) | Row::CommitFile(..)) => self.preview_open = true,
             _ => {}
         }
     }
@@ -224,15 +236,21 @@ impl GitView {
             Some(Row::History) => self.history_open = true,
             Some(Row::Commit(h)) => {
                 self.expanded.insert(h);
+                self.preview_open = true;
             }
+            Some(Row::Change(_) | Row::CommitFile(..)) => self.preview_open = true,
             _ => {}
         }
     }
 
-    /// Left: close what the cursor is on, or climb to the commit a file
-    /// belongs to. Returns false when there was nothing to close, which is
-    /// the signal to leave the panel.
+    /// Left: close the preview, then what the cursor is on, or climb to the
+    /// commit a file belongs to. Returns false when there was nothing to
+    /// close, which is the signal to leave the panel.
     pub fn close(&mut self) -> bool {
+        if self.preview_open {
+            self.preview_open = false;
+            return true;
+        }
         match self.cursor.clone() {
             Some(Row::Changes) if self.changes_open => self.changes_open = false,
             Some(Row::History) if self.history_open => self.history_open = false,
@@ -327,7 +345,8 @@ impl GitView {
             return changed;
         }
         let root = snap.root.clone();
-        if let Some(src) = self.wanted_diff(snap)
+        if self.preview_open
+            && let Some(src) = self.wanted_diff(snap)
             && self.diff_for(&src).is_none()
         {
             self.spawn(move |tx| {
@@ -442,7 +461,11 @@ mod tests {
 
         v.move_cursor(&s, 2);
         assert_eq!(v.cursor, Some(Row::CommitFile("c1".into(), "y.rs".into())));
-        // Left from a file climbs to its commit, and left again closes it.
+        // Entering the commit showed it; left takes the preview away first,
+        // then climbs from a file to its commit, and then closes that.
+        assert!(v.preview_open);
+        assert!(v.close());
+        assert!(!v.preview_open);
         assert!(v.close());
         assert_eq!(v.cursor, Some(Row::Commit("c1".into())));
         assert!(v.close());
