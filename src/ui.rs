@@ -13,7 +13,7 @@ use ratatui::{
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
-    app::{App, Mode},
+    app::{App, BranchRow, Mode},
     config, git,
     gitview::{GitView, Row},
     theme, usage,
@@ -70,6 +70,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_confirm_mkdir(f, app);
         }
         Mode::Resume => draw_resume(f, app),
+        Mode::Branch => draw_branches(f, app),
         _ => {}
     }
 }
@@ -1289,12 +1290,14 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("R", "resume a conversation"),
             ("u", "understand project"),
             ("g", "git"),
+            ("b", "branch"),
             ("x", "kill"),
             ("?", "help"),
             ("q", "quit"),
         ],
         Mode::Focus => vec![
             ("F10", "LEAVE FOCUS"),
+            ("alt+g", "git"),
             ("F1-F9", "session"),
             ("F11", "new"),
             ("F12", "help"),
@@ -1317,11 +1320,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         ],
         Mode::Git => vec![
             ("esc", "back"),
+            ("alt+g", "back to the session"),
             ("up/dn", "move"),
             ("enter", "open/close"),
             ("left", "close"),
             ("pgup/pgdn", "scroll the preview"),
+            ("b", "switch branch"),
             ("G", "hide the panel"),
+        ],
+        Mode::Branch => vec![
+            ("type", "filter"),
+            ("up/dn", "pick"),
+            ("enter", "switch"),
+            ("esc", "close"),
         ],
         Mode::Understand => vec![
             ("F1-F9", "that session"),
@@ -1526,6 +1537,89 @@ fn draw_resume(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn draw_branches(f: &mut Frame, app: &App) {
+    let Some(picker) = &app.branches else { return };
+    let rows = picker.rows();
+    const SHOWN: usize = 16;
+
+    let area = centered(60, (rows.len().clamp(1, SHOWN) as u16) + 4, f.area());
+    f.render_widget(Clear, area);
+    let width = area.width.saturating_sub(2) as usize;
+    let name_width = width.saturating_sub(3 + 5 + 1);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" > ", Style::default().fg(theme::accent())),
+        Span::styled(picker.filter.clone(), Style::default().fg(theme::text()).bold()),
+        Span::styled("_", Style::default().fg(theme::faint())),
+    ])];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   no branches",
+            Style::default().fg(theme::muted()),
+        )));
+    }
+
+    // The window scrolls with the cursor once the list outgrows it.
+    let start = picker.cursor.saturating_sub(SHOWN - 1);
+    let now = SystemTime::now();
+    for (i, row) in rows.iter().enumerate().skip(start).take(SHOWN) {
+        let selected = i == picker.cursor;
+        let marker = Span::styled(
+            if selected { " > " } else { "   " },
+            Style::default().fg(theme::accent()),
+        );
+        let line = match row {
+            BranchRow::Branch(b) => {
+                let color = if b.current {
+                    theme::accent()
+                } else if b.remote {
+                    theme::muted()
+                } else {
+                    theme::text()
+                };
+                let mut style = Style::default().fg(color);
+                if selected {
+                    style = style.bold();
+                }
+                let label = if b.current {
+                    format!("{} *", b.name)
+                } else {
+                    b.name.clone()
+                };
+                let then = UNIX_EPOCH + Duration::from_secs(b.time);
+                Line::from(vec![
+                    marker,
+                    Span::styled(format!("{:<name_width$}", truncate(&label, name_width)), style),
+                    Span::styled(format!(" {:>4}", fmt_age(now, then)), Style::default().fg(theme::faint())),
+                ])
+            }
+            BranchRow::Create(name) => Line::from(vec![
+                marker,
+                Span::styled("+ new branch ", Style::default().fg(theme::accent())),
+                Span::styled(
+                    truncate(name, name_width.saturating_sub(13)),
+                    Style::default().fg(theme::text()).bold(),
+                ),
+            ]),
+        };
+        lines.push(line);
+    }
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::accent()))
+        .title(Line::from(Span::styled(
+            " switch branch ",
+            Style::default().fg(theme::accent()).bold(),
+        )))
+        .title_bottom(Line::from(Span::styled(
+            " type to filter, enter switches, esc closes ",
+            Style::default().fg(theme::faint()),
+        )));
+
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn draw_confirm_kill(f: &mut Frame, app: &App) {
     let label = app
         .selected_session()
@@ -1642,6 +1736,10 @@ fn draw_help(f: &mut Frame) {
         ("R", "resume an old conversation (transcript list)"),
         ("g", "browse the git panel (see below)"),
         ("G", "show or hide the git panel"),
+        ("b", "switch branch (type a new name to create one)"),
+        ("alt+g", "git panel from anywhere, again to go back"),
+        ("click", "a card selects it, the pane focuses it,"),
+        ("", "the git panel browses it"),
         ("U", "refresh the account limits now"),
         ("", "(a hidden /usage session, no tokens)"),
         ("q", "quit"),
@@ -1681,6 +1779,8 @@ fn draw_help(f: &mut Frame) {
         ("pgup/pgdn, J/K", "scroll the preview (the wheel works too)"),
         ("", "\u{2022} = committed while the session ran"),
         ("", "yellow hash = not pushed yet"),
+        ("b", "switch branch; a remote one is checked out"),
+        ("", "tracking it, a new name starts a branch at HEAD"),
         ("esc / g", "back to the list"),
         ("", ""),
         ("", "-- FOREIGN SESSIONS --"),

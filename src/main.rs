@@ -5,6 +5,7 @@
 //! belongs to another terminal and cannot be adopted.
 
 mod app;
+mod clipimg;
 mod config;
 mod dsr;
 mod git;
@@ -32,7 +33,8 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -943,6 +945,20 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // Alt+G reaches the git panel from inside a session too, where a plain `g`
+    // is only a letter typed into Claude. Pressed on the panel, it goes back.
+    if key.code == KeyCode::Char('g')
+        && key.modifiers == KeyModifiers::ALT
+        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git)
+    {
+        if app.mode == Mode::Git {
+            leave_git(app);
+        } else {
+            app.focus_git();
+        }
+        return Ok(());
+    }
+
     match app.mode {
         Mode::Nav => handle_nav(app, key),
         Mode::Focus => handle_focus(app, key)?,
@@ -966,6 +982,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         },
         Mode::Resume => handle_resume(app, key)?,
         Mode::Git => handle_git(app, key),
+        Mode::Branch => handle_branch(app, key),
     }
     Ok(())
 }
@@ -1018,7 +1035,6 @@ fn handle_reserved_fkey(app: &mut App, n: u8, understand: bool) -> Result<bool> 
         // The escape hatch out of a focused pane.
         10 => {
             app.mode = Mode::Nav;
-            app.notify("left focus — enter goes back in");
             Ok(true)
         }
         11 => {
@@ -1076,6 +1092,7 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
         KeyCode::Char('i') => app.install_update(),
         KeyCode::Char('g') => app.focus_git(),
         KeyCode::Char('G') => app.toggle_git(),
+        KeyCode::Char('b') => app.open_branch_picker(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         _ => {}
     }
@@ -1088,6 +1105,7 @@ fn handle_git(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') => app.mode = Mode::Nav,
         KeyCode::Char('G') => app.toggle_git(),
+        KeyCode::Char('b') => app.open_branch_picker(),
         KeyCode::Char('j') | KeyCode::Down => app.with_git(|v, s| v.move_cursor(s, 1)),
         KeyCode::Char('k') | KeyCode::Up => app.with_git(|v, s| v.move_cursor(s, -1)),
         KeyCode::Home => app.with_git(|v, s| v.home(s)),
@@ -1110,6 +1128,77 @@ fn handle_git(app: &mut App, key: KeyEvent) {
         _ => {}
     }
     app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// Back from the git panel to the session it was about, or to the list when
+/// there is no live one to type into.
+fn leave_git(app: &mut App) {
+    app.mode = if app.selected_session().is_some_and(|s| s.is_alive()) {
+        Mode::Focus
+    } else {
+        Mode::Nav
+    };
+}
+
+/// A left click puts the keyboard where the pointer is: a card in the sidebar
+/// selects it, the pane goes into the session, the git panel takes the keys.
+/// Dialogs and prompts keep theirs — a stray click must not answer them.
+fn handle_click(app: &mut App, m: MouseEvent) {
+    if !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git) {
+        return;
+    }
+    if m.column < app.pane_x {
+        // Each card is two rows, from the top of the list. The list scrolls
+        // only once there are more cards than rows, which nine rarely are.
+        let Some(row) = m.row.checked_sub(app.pane_y) else {
+            return;
+        };
+        let idx = (row / 2) as usize;
+        if idx < app.sessions.len() {
+            app.select_index(idx);
+            app.mode = Mode::Nav;
+        }
+    } else if m.column > app.pane_x + app.pane_cols {
+        if app.show_git && app.git_fits && app.mode != Mode::Git {
+            app.focus_git();
+        }
+    } else if app.selected_session().is_some_and(|s| s.is_alive()) {
+        app.mode = Mode::Focus;
+    } else {
+        app.mode = Mode::Nav;
+    }
+    app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// The branch list. Letters narrow it down rather than doing their usual job,
+/// so a branch name can be typed straight in.
+fn handle_branch(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.close_branch_picker(),
+        KeyCode::Enter => app.switch_selected_branch(),
+        KeyCode::Up => {
+            if let Some(p) = app.branches.as_mut() {
+                p.move_cursor(-1);
+            }
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            if let Some(p) = app.branches.as_mut() {
+                p.move_cursor(1);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(p) = app.branches.as_mut() {
+                p.pop();
+            }
+        }
+        // A branch name has no spaces; one typed is a slip, not a request.
+        KeyCode::Char(c) if c != ' ' && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(p) = app.branches.as_mut() {
+                p.push(c);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The list of past conversations. Moves, opens, or closes; nothing here
@@ -1196,7 +1285,17 @@ fn handle_focus(app: &mut App, key: KeyEvent) -> Result<()> {
         && session.cursor_at_prompt_start()
     {
         app.mode = Mode::Nav;
-        app.notify("left focus — enter goes back in");
+        return Ok(());
+    }
+
+    // Ctrl+V only gets here when the terminal found no text to paste, which
+    // is exactly when the clipboard may hold a screenshot. Alt+V is the same
+    // ask for terminals that keep Ctrl+V to themselves.
+    if key.code == KeyCode::Char('v')
+        && (key.modifiers == KeyModifiers::CONTROL || key.modifiers == KeyModifiers::ALT)
+        && let Some(text) = clipimg::paste_text()
+    {
+        handle_paste(app, &text, false);
         return Ok(());
     }
 
@@ -1253,6 +1352,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     let up = match m.kind {
         MouseEventKind::ScrollUp => true,
         MouseEventKind::ScrollDown => false,
+        MouseEventKind::Down(MouseButton::Left) => return handle_click(app, m),
         _ => return,
     };
 

@@ -124,6 +124,30 @@ pub enum DiffSource {
     Commit { hash: String, path: String },
 }
 
+/// A branch one can switch to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch {
+    /// `main` for a local branch, `origin/feature` for a remote one.
+    pub name: String,
+    /// Checked out right now.
+    pub current: bool,
+    /// Only on a remote: switching to it creates the local branch first.
+    pub remote: bool,
+    /// Committer time of its tip, in seconds since the epoch.
+    pub time: u64,
+}
+
+impl Branch {
+    /// The local name switching to it lands on: `origin/feature` is `feature`.
+    pub fn local_name(&self) -> &str {
+        if self.remote {
+            self.name.split_once('/').map_or(&self.name, |(_, b)| b)
+        } else {
+            &self.name
+        }
+    }
+}
+
 /// What a read of the directory found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
@@ -324,9 +348,114 @@ fn parse_numstat(out: &str) -> Vec<FileStat> {
     stats
 }
 
+/// The local branches, then the remote ones nobody has checked out yet, each
+/// newest first.
+pub fn branches(root: &Path) -> Vec<Branch> {
+    let format = format!("--format=%(HEAD){SEP}%(refname){SEP}%(committerdate:unix)");
+    let Ok(Some(out)) = git(
+        root,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            &format,
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    parse_branches(&out)
+}
+
+fn parse_branches(out: &str) -> Vec<Branch> {
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    for line in out.lines() {
+        let mut f = line.split(SEP);
+        let (Some(head), Some(refname)) = (f.next(), f.next()) else {
+            continue;
+        };
+        let time = f.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            local.push(Branch {
+                name: name.to_string(),
+                current: head == "*",
+                remote: false,
+                time,
+            });
+        } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+            // `origin/HEAD` only points at another remote branch.
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            remote.push(Branch {
+                name: name.to_string(),
+                current: false,
+                remote: true,
+                time,
+            });
+        }
+    }
+    // A remote branch with a local one of the same name is that local one:
+    // listing both offers two ways to the same place.
+    remote.retain(|r| !local.iter().any(|l: &Branch| l.name == r.local_name()));
+    local.extend(remote);
+    local
+}
+
+/// Check `branch` out. A remote one gets a local branch tracking it. The error
+/// is what git said, for the status line.
+pub fn switch(root: &Path, branch: &Branch) -> Result<(), String> {
+    if branch.remote {
+        run(root, &["switch", "--track", &branch.name])
+    } else {
+        run(root, &["switch", &branch.name])
+    }
+}
+
+/// Start a new branch at HEAD and check it out.
+pub fn create_branch(root: &Path, name: &str) -> Result<(), String> {
+    run(root, &["switch", "-c", name])
+}
+
+/// Run a git command that changes something, keeping what it says when it
+/// refuses: a switch blocked by uncommitted changes has to say so.
+fn run(cwd: &Path, args: &[&str]) -> Result<(), String> {
+    let out = command(cwd, args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("git could not be run: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    // The first `error:`/`fatal:` line is the reason; the hints under it are
+    // advice for a terminal the user is not looking at.
+    let reason = err
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("error:") || l.starts_with("fatal:"))
+        .or_else(|| err.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or("git refused");
+    Err(reason.to_string())
+}
+
 /// Run git in `cwd`. `Ok(None)` is git refusing (not a repository, no HEAD);
 /// `Err` is git not being there to ask.
 fn git(cwd: &Path, args: &[&str]) -> Result<Option<String>, ()> {
+    let out = command(cwd, args)
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| ())?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// `git -C cwd args`, with no console window and no prompt to wait on.
+fn command(cwd: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(cwd)
@@ -337,19 +466,14 @@ fn git(cwd: &Path, args: &[&str]) -> Result<Option<String>, ()> {
         // Paths come back as they are, not octal-escaped.
         .args(["-c", "core.quotepath=off"])
         .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = cmd.output().map_err(|_| ())?;
-    if !out.status.success() {
-        return Ok(None);
-    }
-    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+    cmd
 }
 
 /// `git status --porcelain=v1 --branch -z`: a `## ` header, then one entry per
@@ -486,6 +610,25 @@ mod tests {
         assert_eq!(log[0].subject, "fix a | b\tc");
         assert_eq!(log[0].time, 1_700_000_000);
         assert_eq!(log[0].author, "Ann Lee");
+    }
+
+    #[test]
+    fn remote_branches_with_a_local_twin_are_left_out() {
+        let out = [
+            format!("*{SEP}refs/heads/main{SEP}300"),
+            format!(" {SEP}refs/heads/fix{SEP}200"),
+            format!(" {SEP}refs/remotes/origin/HEAD{SEP}300"),
+            format!(" {SEP}refs/remotes/origin/main{SEP}300"),
+            format!(" {SEP}refs/remotes/origin/feature/x{SEP}100"),
+        ]
+        .join("
+");
+        let b = parse_branches(&out);
+        let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["main", "fix", "origin/feature/x"]);
+        assert!(b[0].current && !b[1].current);
+        assert!(b[2].remote);
+        assert_eq!(b[2].local_name(), "feature/x");
     }
 
     #[test]

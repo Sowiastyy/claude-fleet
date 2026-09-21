@@ -86,6 +86,8 @@ pub enum Mode {
     Resume,
     /// Keys move around the git panel; the pane shows what is under its cursor.
     Git,
+    /// Picking a branch to switch the repository to.
+    Branch,
 }
 
 /// The list of past conversations, and where in it the cursor is.
@@ -112,6 +114,59 @@ impl ResumePicker {
 
     pub fn selected(&self) -> Option<&history::Conversation> {
         self.items.get(self.cursor)
+    }
+}
+
+/// The branches of one repository, narrowed down by what has been typed.
+pub struct BranchPicker {
+    pub root: PathBuf,
+    pub items: Vec<git::Branch>,
+    pub filter: String,
+    /// Index into `rows()`.
+    pub cursor: usize,
+    /// Where the keyboard goes back to once the picker closes.
+    back: Mode,
+}
+
+/// One line of the branch list.
+pub enum BranchRow<'a> {
+    Branch(&'a git::Branch),
+    /// The typed name matches no branch exactly: offer to start it.
+    Create(&'a str),
+}
+
+impl BranchPicker {
+    pub fn rows(&self) -> Vec<BranchRow<'_>> {
+        let needle = self.filter.trim().to_lowercase();
+        let mut rows: Vec<BranchRow> = self
+            .items
+            .iter()
+            .filter(|b| b.name.to_lowercase().contains(&needle))
+            .map(BranchRow::Branch)
+            .collect();
+        let name = self.filter.trim();
+        if !name.is_empty() && !self.items.iter().any(|b| b.local_name() == name) {
+            rows.push(BranchRow::Create(name));
+        }
+        rows
+    }
+
+    pub fn move_cursor(&mut self, delta: isize) {
+        let len = self.rows().len() as isize;
+        if len == 0 {
+            return;
+        }
+        self.cursor = (self.cursor as isize + delta).rem_euclid(len) as usize;
+    }
+
+    pub fn push(&mut self, c: char) {
+        self.filter.push(c);
+        self.cursor = 0;
+    }
+
+    pub fn pop(&mut self) {
+        self.filter.pop();
+        self.cursor = 0;
     }
 }
 
@@ -256,6 +311,8 @@ pub struct App {
     pub pending_mkdir: Option<PathBuf>,
     /// The resume list, while it is open.
     pub resume: Option<ResumePicker>,
+    /// The branch list, while it is open.
+    pub branches: Option<BranchPicker>,
     pub registry: Vec<RegistryEntry>,
     pub status: Option<(String, Instant)>,
     /// Shared with reader threads; set when any pane produced output.
@@ -352,6 +409,7 @@ impl App {
             form: None,
             pending_mkdir: None,
             resume: None,
+            branches: None,
             registry: registry::read_all(),
             status: None,
             dirty: Arc::new(AtomicBool::new(true)),
@@ -737,6 +795,75 @@ impl App {
         self.show_git = true;
         self.mode = Mode::Git;
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Open the list of branches of the repository the panel is about.
+    pub fn open_branch_picker(&mut self) {
+        let target = self.git_target();
+        let root = match &self.git {
+            Some((cwd, git::State::Repo(snap))) if *cwd == target => snap.root.clone(),
+            _ => {
+                self.notify("not in a git repository");
+                return;
+            }
+        };
+        let items = git::branches(&root);
+        // Start on the first branch that is not the one already checked out:
+        // that one is where nobody needs to go.
+        let cursor = items.iter().position(|b| !b.current).unwrap_or(0);
+        self.branches = Some(BranchPicker {
+            root,
+            items,
+            filter: String::new(),
+            cursor,
+            back: if self.mode == Mode::Git { Mode::Git } else { Mode::Nav },
+        });
+        self.mode = Mode::Branch;
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    pub fn close_branch_picker(&mut self) {
+        let back = self.branches.take().map_or(Mode::Nav, |p| p.back);
+        // The panel may have been hidden or squeezed out while the list was up.
+        self.mode = if back == Mode::Git && !(self.show_git && self.git_fits) {
+            Mode::Nav
+        } else {
+            back
+        };
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Switch to the branch under the cursor, or start the one typed.
+    pub fn switch_selected_branch(&mut self) {
+        let Some(picker) = self.branches.as_ref() else {
+            return;
+        };
+        let rows = picker.rows();
+        let Some(row) = rows.get(picker.cursor) else {
+            return;
+        };
+        let root = picker.root.clone();
+        let (result, name) = match row {
+            BranchRow::Branch(b) if b.current => {
+                let name = b.name.clone();
+                self.close_branch_picker();
+                self.notify(format!("already on {name}"));
+                return;
+            }
+            BranchRow::Branch(b) => (git::switch(&root, b), b.local_name().to_string()),
+            BranchRow::Create(n) => (git::create_branch(&root, n), n.to_string()),
+        };
+        match result {
+            Ok(()) => {
+                self.close_branch_picker();
+                self.notify(format!("switched to {name}"));
+                // Read the repository again now rather than in two seconds:
+                // the panel still shows the branch that was left.
+                self.last_git_read = None;
+            }
+            // The list stays up, so another branch is one keypress away.
+            Err(why) => self.notify(why),
+        }
     }
 
     /// Run `f` on the panel's state and the snapshot it is about, when there

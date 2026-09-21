@@ -94,6 +94,7 @@ transcript instead.
 | `x` | kill the selected session (with a confirmation) |
 | `w` | close a finished session's card right away |
 | `g` | show or hide the git panel (see below) |
+| `b` | switch the selected session's repository to another branch |
 | `?` | help |
 | `q` | quit |
 
@@ -109,6 +110,13 @@ hash in the warning colour is one not pushed yet. The panel reads `git
 status` and `git log` every two seconds with `GIT_OPTIONAL_LOCKS=0`, so it
 never holds the index lock a session wants for its own commit. It steps
 aside on its own when the terminal is too narrow to keep the pane usable.
+
+`b` (in the list or on the panel) opens the branches of that repository,
+local ones first, then remote ones nobody has checked out yet, newest first.
+Typing filters the list; `enter` runs `git switch`. A remote branch gets a
+local one tracking it, and a name that matches no branch is offered as a new
+branch started at HEAD. When git refuses — uncommitted changes in the way —
+its reason lands on the status line and the list stays open.
 
 ## Session state on a card
 
@@ -136,9 +144,14 @@ sooner.
 | key | action |
 |---|---|
 | **`F10`** | **leave focus** |
+| `Alt+G` | straight to the git panel; `Alt+G` there comes back into the session |
 | `←` at the start of the input | leave focus too — the arrow has nowhere left to go in the box |
 | everything else | goes to Claude, including `Ctrl+anything` |
 | mouse wheel | scroll the history (see "Scrolling") |
+
+A left click moves the keyboard to what it lands on, in the list, in focus and
+on the git panel alike: a card selects that session, the pane goes into it, the
+git panel starts browsing.
 
 ## Pasting
 
