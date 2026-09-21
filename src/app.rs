@@ -810,19 +810,20 @@ impl App {
 
     /// The file an update would replace, or why there is none.
     fn update_target(&self) -> Result<PathBuf, &'static str> {
-        let origin = supervise::origin().ok_or("updates need the supervisor — start fleet normally")?;
-        if update::is_dev_build(&origin) {
-            return Err("fleet runs out of a cargo build — git pull and build instead");
-        }
-        Ok(origin)
+        supervise::origin().ok_or("updates need the supervisor — start fleet normally")
     }
 
     /// Ask GitHub about a newer release, on a thread of its own.
     fn check_for_update(&mut self, asked: bool) {
         self.last_update_check = Some(Instant::now());
-        if self.update_target().is_err() || self.update_busy.swap(true, Ordering::Relaxed) {
+        let Ok(origin) = self.update_target() else {
+            return;
+        };
+        if self.update_busy.swap(true, Ordering::Relaxed) {
             return;
         }
+        // A cargo build is judged by its checkout, not by its version number.
+        let repo = update::dev_repo(&origin);
         let busy = Arc::clone(&self.update_busy);
         let tx = self.update_tx.clone();
         let dirty = Arc::clone(&self.dirty);
@@ -830,7 +831,7 @@ impl App {
             // No network is an ordinary state for a laptop, and nothing worth
             // a status line unless someone pressed `i` and is waiting to hear:
             // the next periodic check is half an hour away regardless.
-            match update::check() {
+            match update::check(repo.as_deref()) {
                 Ok(Some(rel)) => {
                     let _ = tx.send(UpdateEvent::Found(rel));
                 }

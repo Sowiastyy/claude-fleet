@@ -36,6 +36,9 @@ pub struct Release {
 #[derive(Deserialize)]
 struct ApiRelease {
     tag_name: String,
+    /// The commit `release.yml` built from, passed as `--target`.
+    #[serde(default)]
+    target_commitish: String,
     #[serde(default)]
     assets: Vec<ApiAsset>,
 }
@@ -47,7 +50,12 @@ struct ApiAsset {
 }
 
 /// Ask GitHub for the latest release, and say whether it is newer than us.
-pub fn check() -> Result<Option<Release>> {
+///
+/// `repo` is the checkout a cargo build came from. Such a build calls itself
+/// whatever Cargo.toml says, which is not what CI stamps into a release, so
+/// there a release is also not offered once its commit is already in HEAD —
+/// that build has it. A release installed over the build knows its number.
+pub fn check(repo: Option<&Path>) -> Result<Option<Release>> {
     let out = Command::new("curl")
         .args(["-fsSL", "--max-time", "20", "-H", "Accept: application/vnd.github+json"])
         .args(["-H", &format!("User-Agent: claude-fleet/{CURRENT}")])
@@ -60,7 +68,32 @@ pub fn check() -> Result<Option<Release>> {
         bail!("GitHub did not answer");
     }
     let rel: ApiRelease = serde_json::from_slice(&out.stdout).context("unexpected answer from GitHub")?;
-    Ok(newer(rel, CURRENT))
+    let commit = rel.target_commitish.trim().to_string();
+    let found = newer(rel, CURRENT);
+    Ok(match repo {
+        Some(repo) => found.filter(|_| !in_head(repo, &commit)),
+        None => found,
+    })
+}
+
+/// Whether `commit` is already part of the checkout at `repo`. A commit git
+/// does not know at all has not been pulled, so it is not.
+fn in_head(repo: &Path, commit: &str) -> bool {
+    !commit.is_empty()
+        && Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["merge-base", "--is-ancestor", commit, "HEAD"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
+/// The checkout a cargo build output belongs to: `<repo>\target\<profile>\x.exe`.
+pub fn dev_repo(origin: &Path) -> Option<PathBuf> {
+    is_dev_build(origin).then(|| origin.ancestors().nth(3)).flatten().map(Path::to_path_buf)
 }
 
 fn newer(rel: ApiRelease, current: &str) -> Option<Release> {
@@ -88,9 +121,9 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(v)
 }
 
-/// Whether the file the supervisor copies from is a cargo build output. Those
-/// belong to whoever is building the fleet, and a download over one would be
-/// thrown away by the next `cargo build` — or worse, win over it.
+/// Whether the file the supervisor copies from is a cargo build output. A
+/// release can still be installed over one; the next `cargo build` simply
+/// writes over it again.
 pub fn is_dev_build(origin: &Path) -> bool {
     let mut up = origin.ancestors().skip(1);
     let profile = up.next().and_then(Path::file_name);
@@ -183,6 +216,7 @@ mod tests {
     fn rel(tag: &str, asset: &str) -> ApiRelease {
         ApiRelease {
             tag_name: tag.into(),
+            target_commitish: String::new(),
             assets: vec![ApiAsset {
                 name: asset.into(),
                 browser_download_url: format!("https://example.invalid/{tag}/{asset}"),
@@ -211,6 +245,11 @@ mod tests {
         assert!(is_dev_build(Path::new(r"C:\src\claude-fleet\target\debug\claude-fleet.exe")));
         assert!(!is_dev_build(Path::new(r"C:\tools\claude-fleet.exe")));
         assert!(!is_dev_build(Path::new(r"C:\Users\me\.cargo\bin\claude-fleet.exe")));
+        assert_eq!(
+            dev_repo(Path::new(r"C:\src\claude-fleet\target\debug\claude-fleet.exe")).as_deref(),
+            Some(Path::new(r"C:\src\claude-fleet"))
+        );
+        assert_eq!(dev_repo(Path::new(r"C:\tools\claude-fleet.exe")), None);
     }
 
     #[test]
