@@ -11,6 +11,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{LazyLock, Mutex},
 };
 
 /// How many commits the panel lists. More than any terminal is tall; the
@@ -163,14 +164,13 @@ pub enum State {
 pub fn read(cwd: &Path) -> State {
     let status = match git(cwd, &["status", "--porcelain=v1", "--branch", "-z"]) {
         Ok(Some(out)) => out,
-        Ok(None) => return State::NotARepo,
+        Ok(None) => {
+            forget_root(cwd);
+            return State::NotARepo;
+        }
         Err(()) => return State::NoGit,
     };
-    let root = git(cwd, &["rev-parse", "--show-toplevel"])
-        .ok()
-        .flatten()
-        .map(|s| PathBuf::from(s.trim()))
-        .unwrap_or_else(|| cwd.to_path_buf());
+    let root = root_of(cwd);
 
     let mut snap = parse_status(&status);
 
@@ -211,6 +211,36 @@ pub fn read(cwd: &Path) -> State {
 
     snap.root = root;
     State::Repo(snap)
+}
+
+/// Work-tree tops already asked for, by the directory they were asked from.
+///
+/// The panel reads every two seconds and each `git` started costs tens of
+/// milliseconds on Windows; where a directory's work tree begins does not move
+/// between reads, so it is asked once.
+static ROOTS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(Default::default);
+
+fn root_of(cwd: &Path) -> PathBuf {
+    if let Some(root) = ROOTS.lock().ok().and_then(|m| m.get(cwd).cloned()) {
+        return root;
+    }
+    match git(cwd, &["rev-parse", "--show-toplevel"]).ok().flatten() {
+        Some(out) => {
+            let root = PathBuf::from(out.trim());
+            if let Ok(mut m) = ROOTS.lock() {
+                m.insert(cwd.to_path_buf(), root.clone());
+            }
+            root
+        }
+        None => cwd.to_path_buf(),
+    }
+}
+
+/// A directory that stopped being a repository may become a different one.
+fn forget_root(cwd: &Path) {
+    if let Ok(mut m) = ROOTS.lock() {
+        m.remove(cwd);
+    }
 }
 
 /// Who made a commit, when, what it says, and what it touched.

@@ -304,7 +304,7 @@ Two different things, because they cost different amounts.
 text of the `understand project` prompt and the timings live in
 `~/.claude/fleet.toml` (overridden by `CLAUDE_FLEET_CONFIG`). The file is
 written on the first start and belongs to you from then on — fleet never
-overwrites it. Its timestamp is checked every frame, so a save shows up in the
+overwrites it. Its timestamp is checked four times a second, so a save shows up in the
 next redraw; the panel says `config reloaded`.
 
 Broken TOML **does not wipe the palette**: the previous values stand and the

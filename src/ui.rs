@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap},
-    Frame,
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 
@@ -85,8 +85,15 @@ pub fn load_widths() {
 /// failed write is not reported.
 pub fn save_widths() {
     if let Some(p) = widths_path() {
-        let _ = std::fs::write(p, format!("{} {}
-", sidebar_width(), git_width()));
+        let _ = std::fs::write(
+            p,
+            format!(
+                "{} {}
+",
+                sidebar_width(),
+                git_width()
+            ),
+        );
     }
 }
 
@@ -173,9 +180,11 @@ fn columns(body: Rect, show_git: bool) -> (Rect, Rect, Option<Rect>) {
         .areas(body);
         return (sidebar, pane, Some(git));
     }
-    let [sidebar, pane] =
-        Layout::horizontal([Constraint::Length(sidebar_width()), Constraint::Min(PANE_MIN)])
-            .areas(body);
+    let [sidebar, pane] = Layout::horizontal([
+        Constraint::Length(sidebar_width()),
+        Constraint::Min(PANE_MIN),
+    ])
+    .areas(body);
     (sidebar, pane, None)
 }
 
@@ -223,7 +232,10 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let name = entry
             .map(|e| e.name.clone())
             .unwrap_or_else(|| s.label.clone());
-        let name = truncate(&name, usize::from(sidebar_width()).saturating_sub(20).max(8));
+        let name = truncate(
+            &name,
+            usize::from(sidebar_width()).saturating_sub(20).max(8),
+        );
         let hotkey = if i < 9 {
             format!("F{}", i + 1)
         } else {
@@ -233,7 +245,9 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let pad = usize::from(sidebar_width()).saturating_sub(used + 2);
 
         let name_style = if i == app.selected {
-            Style::default().fg(theme::text()).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme::text())
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme::text())
         };
@@ -270,9 +284,11 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         items.push(ListItem::new(Line::from(vec![
             Span::styled(" + ", Style::default().fg(theme::accent())),
             Span::styled("new session", Style::default().fg(theme::muted())),
-            Span::raw(" ".repeat(
-                usize::from(sidebar_width()).saturating_sub(3 + "new session".len() + 4),
-            )),
+            Span::raw(
+                " ".repeat(
+                    usize::from(sidebar_width()).saturating_sub(3 + "new session".len() + 4),
+                ),
+            ),
             Span::styled(
                 format!("F{}", app.sessions.len() + 1),
                 Style::default().fg(theme::faint()),
@@ -300,9 +316,9 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         items.push(ListItem::new(Line::from(vec![
             Span::styled(" ^ ", Style::default().fg(theme::ask())),
             Span::styled("new build", Style::default().fg(theme::ask()).bold()),
-            Span::raw(" ".repeat(
-                usize::from(sidebar_width()).saturating_sub(3 + "new build".len() + 3),
-            )),
+            Span::raw(
+                " ".repeat(usize::from(sidebar_width()).saturating_sub(3 + "new build".len() + 3)),
+            ),
             Span::styled("r", Style::default().fg(theme::ask())),
         ])));
     }
@@ -359,7 +375,11 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // The accent border marks which half of the screen has the keyboard.
-    let border_color = if focused { theme::accent() } else { theme::faint() };
+    let border_color = if focused {
+        theme::accent()
+    } else {
+        theme::faint()
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
@@ -368,7 +388,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("FLEET ", Style::default().fg(theme::muted())),
         ]))
         .title_bottom(Line::from(Span::styled(
-            format!(" {} of our own ", app.sessions.len()),
+            format!(" {} sessions ", app.sessions.len()),
             Style::default().fg(theme::faint()),
         )));
 
@@ -397,7 +417,11 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     if reserved < limits.len() as u16 {
         // Each window is a heading and the bar under it. Half a window reads as
         // a bug, so what does not fit whole is dropped whole.
-        reserved = if reserved >= 3 { 1 + (reserved - 1) / 2 * 2 } else { 0 };
+        reserved = if reserved >= 3 {
+            1 + (reserved - 1) / 2 * 2
+        } else {
+            0
+        };
         limits.truncate(reserved as usize);
     }
     let [list_area, limits_area] =
@@ -645,7 +669,11 @@ fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let border_color = if focused { theme::accent() } else { theme::faint() };
+    let border_color = if focused {
+        theme::accent()
+    } else {
+        theme::faint()
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
@@ -703,12 +731,18 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
         .filter(|(cwd, _)| *cwd == target)
         .map(|(_, s)| s);
 
-    let mut title = vec![Span::styled(" GIT ", Style::default().fg(theme::accent()).bold())];
+    let mut title = vec![Span::styled(
+        " GIT ",
+        Style::default().fg(theme::accent()).bold(),
+    )];
     if let Some(git::State::Repo(snap)) = state
         && let Some(name) = snap.root.file_name()
     {
         title.push(Span::styled(
-            format!("{} ", truncate(&name.to_string_lossy(), usize::from(git_width()) - 10)),
+            format!(
+                "{} ",
+                truncate(&name.to_string_lossy(), usize::from(git_width()) - 10)
+            ),
             Style::default().fg(theme::muted()),
         ));
     }
@@ -721,9 +755,16 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if focused { theme::accent() } else { theme::faint() }))
+        .border_style(Style::default().fg(if focused {
+            theme::accent()
+        } else {
+            theme::faint()
+        }))
         .title(Line::from(title))
-        .title_bottom(Line::from(Span::styled(hint, Style::default().fg(theme::faint()))));
+        .title_bottom(Line::from(Span::styled(
+            hint,
+            Style::default().fg(theme::faint()),
+        )));
     let mut inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -742,7 +783,13 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
             ])
             .areas(inner);
             inner = list;
-            draw_commit_box(f, commit_msg, *mode == Mode::Commit, snap.changes_total, message);
+            draw_commit_box(
+                f,
+                commit_msg,
+                *mode == Mode::Commit,
+                snap.changes_total,
+                message,
+            );
             hits.push((message, GitHit::Message));
             hits.extend(draw_git_buttons(f, *git_job, snap, buttons));
         }
@@ -752,7 +799,10 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
     let lines = match state {
         None => vec![
             Line::from(""),
-            Line::from(Span::styled(" reading…", Style::default().fg(theme::faint()))),
+            Line::from(Span::styled(
+                " reading…",
+                Style::default().fg(theme::faint()),
+            )),
         ],
         Some(git::State::NoGit) => vec![
             Line::from(""),
@@ -801,13 +851,21 @@ fn wrap_message(msg: &str, width: usize) -> Vec<String> {
 /// The box the commit message is typed into. Only the last rows show while it
 /// is being typed, the way a text field scrolls to keep the cursor in view.
 fn draw_commit_box(f: &mut Frame, msg: &str, typing: bool, changes: usize, area: Rect) {
-    let border = if typing { theme::accent() } else { theme::faint() };
+    let border = if typing {
+        theme::accent()
+    } else {
+        theme::faint()
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
         .title(Span::styled(
             format!(" message · {changes} changed "),
-            Style::default().fg(if typing { theme::accent() } else { theme::muted() }),
+            Style::default().fg(if typing {
+                theme::accent()
+            } else {
+                theme::muted()
+            }),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -886,13 +944,22 @@ fn draw_git_buttons(
             format!(" {label} ")
         };
         let style = if running {
-            Style::default().bg(theme::busy()).fg(theme::surface()).bold()
+            Style::default()
+                .bg(theme::busy())
+                .fg(theme::surface())
+                .bold()
         } else if job.is_some() {
             Style::default().bg(theme::surface()).fg(theme::faint())
         } else if hit == GitHit::Commit {
-            Style::default().bg(theme::accent()).fg(theme::surface()).bold()
+            Style::default()
+                .bg(theme::accent())
+                .fg(theme::surface())
+                .bold()
         } else {
-            Style::default().bg(theme::surface()).fg(theme::text()).bold()
+            Style::default()
+                .bg(theme::surface())
+                .fg(theme::text())
+                .bold()
         };
         let w = (Span::raw(text.as_str()).width() as u16).min(area.right().saturating_sub(x));
         if w == 0 {
@@ -985,7 +1052,10 @@ fn row_line(
         Row::History => fit(
             vec![
                 Span::raw(" "),
-                Span::styled(open_mark(view.history_open), Style::default().fg(theme::faint())),
+                Span::styled(
+                    open_mark(view.history_open),
+                    Style::default().fg(theme::faint()),
+                ),
                 Span::styled(" HISTORY", Style::default().fg(theme::muted())),
             ],
             String::new(),
@@ -1063,13 +1133,19 @@ fn stat_spans(added: Option<u32>, removed: Option<u32>) -> Vec<Span<'static>> {
         (Some(a), Some(r)) => {
             let mut spans = Vec::new();
             if a > 0 || r == 0 {
-                spans.push(Span::styled(format!("+{a}"), Style::default().fg(theme::idle())));
+                spans.push(Span::styled(
+                    format!("+{a}"),
+                    Style::default().fg(theme::idle()),
+                ));
             }
             if r > 0 {
                 if !spans.is_empty() {
                     spans.push(Span::raw(" "));
                 }
-                spans.push(Span::styled(format!("\u{2212}{r}"), Style::default().fg(theme::dead())));
+                spans.push(Span::styled(
+                    format!("\u{2212}{r}"),
+                    Style::default().fg(theme::dead()),
+                ));
             }
             spans
         }
@@ -1090,7 +1166,10 @@ fn share_bar(added: u32, removed: u32) -> Vec<Span<'static>> {
     }
     let green = ((added * CELLS + total / 2) / total).min(CELLS);
     vec![
-        Span::styled("\u{25a0}".repeat(green as usize), Style::default().fg(theme::idle())),
+        Span::styled(
+            "\u{25a0}".repeat(green as usize),
+            Style::default().fg(theme::idle()),
+        ),
         Span::styled(
             "\u{25a0}".repeat((CELLS - green) as usize),
             Style::default().fg(theme::dead()),
@@ -1157,7 +1236,10 @@ fn branch_line(snap: &git::Snapshot, width: usize) -> Line<'static> {
         theme::faint()
     };
     fit(
-        vec![Span::styled(" \u{2387} ", Style::default().fg(theme::accent()))],
+        vec![Span::styled(
+            " \u{2387} ",
+            Style::default().fg(theme::accent()),
+        )],
         branch,
         Style::default().fg(theme::text()).bold(),
         vec![Span::styled(sync, Style::default().fg(sync_color))],
@@ -1214,7 +1296,11 @@ fn commit_line(
     // The log starts at HEAD, so the first `ahead` of it are what the
     // upstream has not got.
     let unpushed = snap.upstream.is_some() && index < snap.ahead as usize;
-    let hash_color = if unpushed { theme::ask() } else { theme::accent_dim() };
+    let hash_color = if unpushed {
+        theme::ask()
+    } else {
+        theme::accent_dim()
+    };
     let author = c.author.split_whitespace().next().unwrap_or("");
     fit(
         vec![
@@ -1232,7 +1318,10 @@ fn commit_line(
         vec![
             Span::styled(truncate(author, 9), Style::default().fg(theme::muted())),
             Span::raw(" "),
-            Span::styled(format!("{:>3}", fmt_age(now, at)), Style::default().fg(theme::faint())),
+            Span::styled(
+                format!("{:>3}", fmt_age(now, at)),
+                Style::default().fg(theme::faint()),
+            ),
             Span::raw(" "),
         ],
         width,
@@ -1268,7 +1357,9 @@ fn draw_git_preview(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let height = inner.height as usize;
-    let top = git_view.preview_scroll.min(lines.len().saturating_sub(height));
+    let top = git_view
+        .preview_scroll
+        .min(lines.len().saturating_sub(height));
     git_view.preview_scroll = top;
     let position = if lines.len() > height {
         format!(
@@ -1300,7 +1391,12 @@ fn preview_content(
     snap: &git::Snapshot,
     width: usize,
 ) -> (String, Vec<Line<'static>>) {
-    let loading = || vec![Line::from(Span::styled(" loading…", Style::default().fg(theme::faint())))];
+    let loading = || {
+        vec![Line::from(Span::styled(
+            " loading…",
+            Style::default().fg(theme::faint()),
+        ))]
+    };
     match view.cursor.as_ref() {
         Some(Row::Change(path)) | Some(Row::CommitFile(_, path)) => {
             let lines = view
@@ -1337,7 +1433,10 @@ fn preview_content(
             lines.push(Line::from(""));
             for (a, n) in authors {
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {n:>4}  "), Style::default().fg(theme::accent()).bold()),
+                    Span::styled(
+                        format!(" {n:>4}  "),
+                        Style::default().fg(theme::accent()).bold(),
+                    ),
                     Span::styled(a.to_string(), Style::default().fg(theme::text())),
                 ]));
             }
@@ -1354,7 +1453,9 @@ fn preview_content(
                 lines.push(summary_line(snap.changes_total, snap.added, snap.removed));
                 lines.push(Line::from(""));
                 lines.extend(stat_graph(
-                    snap.changes.iter().map(|c| (c.path.as_str(), c.added, c.removed)),
+                    snap.changes
+                        .iter()
+                        .map(|c| (c.path.as_str(), c.added, c.removed)),
                     width,
                 ));
             }
@@ -1366,7 +1467,10 @@ fn preview_content(
 /// `3 files changed, +120 −33` and the share bar.
 fn summary_line(files: usize, added: u32, removed: u32) -> Line<'static> {
     let mut spans = vec![Span::styled(
-        format!(" {files} file{} changed  ", if files == 1 { "" } else { "s" }),
+        format!(
+            " {files} file{} changed  ",
+            if files == 1 { "" } else { "s" }
+        ),
         Style::default().fg(theme::text()).bold(),
     )];
     spans.extend(stat_spans(Some(added), Some(removed)));
@@ -1402,13 +1506,20 @@ fn stat_graph<'a>(
                     let total = a + r;
                     // At least one cell for any change, so a one-line edit
                     // next to a rewrite is still visible.
-                    let cells = if total == 0 { 0 } else { (total * bar / most).max(1) };
+                    let cells = if total == 0 {
+                        0
+                    } else {
+                        (total * bar / most).max(1)
+                    };
                     let plus = (a * cells + total / 2).checked_div(total).unwrap_or(0);
                     spans.push(Span::styled(
                         format!("{total:>5} "),
                         Style::default().fg(theme::muted()),
                     ));
-                    spans.push(Span::styled("+".repeat(plus as usize), Style::default().fg(theme::idle())));
+                    spans.push(Span::styled(
+                        "+".repeat(plus as usize),
+                        Style::default().fg(theme::idle()),
+                    ));
                     spans.push(Span::styled(
                         "-".repeat((cells - plus) as usize),
                         Style::default().fg(theme::dead()),
@@ -1428,12 +1539,18 @@ fn commit_preview(hash: &str, d: &git::CommitDetail, width: usize) -> Vec<Line<'
         Line::from(""),
         Line::from(vec![
             label("commit"),
-            Span::styled(hash.to_string(), Style::default().fg(theme::accent()).bold()),
+            Span::styled(
+                hash.to_string(),
+                Style::default().fg(theme::accent()).bold(),
+            ),
         ]),
         Line::from(vec![
             label("author"),
             Span::styled(d.author.clone(), Style::default().fg(theme::text()).bold()),
-            Span::styled(format!(" <{}>", d.email), Style::default().fg(theme::faint())),
+            Span::styled(
+                format!(" <{}>", d.email),
+                Style::default().fg(theme::faint()),
+            ),
         ]),
         Line::from(vec![
             label("date"),
@@ -1443,7 +1560,10 @@ fn commit_preview(hash: &str, d: &git::CommitDetail, width: usize) -> Vec<Line<'
     ];
     for l in d.message.lines() {
         lines.push(Line::from(Span::styled(
-            format!("   {}", truncate(&l.replace('\t', "    "), width.saturating_sub(4))),
+            format!(
+                "   {}",
+                truncate(&l.replace('\t', "    "), width.saturating_sub(4))
+            ),
             Style::default().fg(theme::text()),
         )));
     }
@@ -1453,7 +1573,9 @@ fn commit_preview(hash: &str, d: &git::CommitDetail, width: usize) -> Vec<Line<'
     lines.push(summary_line(d.files.len(), added, removed));
     lines.push(Line::from(""));
     lines.extend(stat_graph(
-        d.files.iter().map(|f| (f.path.as_str(), f.added, f.removed)),
+        d.files
+            .iter()
+            .map(|f| (f.path.as_str(), f.added, f.removed)),
         width,
     ));
     lines
@@ -1628,7 +1750,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 fn draw_new_session(f: &mut Frame, app: &App) {
     let Some(form) = &app.form else { return };
 
-    let subdir_rows = if form.subdirs.is_empty() { 0 } else { form.subdirs.len() as u16 + 2 };
+    let subdir_rows = if form.subdirs.is_empty() {
+        0
+    } else {
+        form.subdirs.len() as u16 + 2
+    };
     let height = (form.recent.len() as u16).min(12) + subdir_rows + 6;
     let area = centered(70, height, f.area());
     f.render_widget(Clear, area);
@@ -1711,10 +1837,7 @@ fn draw_new_session(f: &mut Frame, app: &App) {
                     Style::default().fg(theme::text())
                 },
             ),
-            Span::styled(
-                shorten_path(p, 36),
-                Style::default().fg(theme::faint()),
-            ),
+            Span::styled(shorten_path(p, 36), Style::default().fg(theme::faint())),
         ]));
     }
 
@@ -1797,7 +1920,10 @@ fn draw_branches(f: &mut Frame, app: &App) {
 
     let mut lines = vec![Line::from(vec![
         Span::styled(" > ", Style::default().fg(theme::accent())),
-        Span::styled(picker.filter.clone(), Style::default().fg(theme::text()).bold()),
+        Span::styled(
+            picker.filter.clone(),
+            Style::default().fg(theme::text()).bold(),
+        ),
         Span::styled("_", Style::default().fg(theme::faint())),
     ])];
     if rows.is_empty() {
@@ -1837,8 +1963,14 @@ fn draw_branches(f: &mut Frame, app: &App) {
                 let then = UNIX_EPOCH + Duration::from_secs(b.time);
                 Line::from(vec![
                     marker,
-                    Span::styled(format!("{:<name_width$}", truncate(&label, name_width)), style),
-                    Span::styled(format!(" {:>4}", fmt_age(now, then)), Style::default().fg(theme::faint())),
+                    Span::styled(
+                        format!("{:<name_width$}", truncate(&label, name_width)),
+                        style,
+                    ),
+                    Span::styled(
+                        format!(" {:>4}", fmt_age(now, then)),
+                        Style::default().fg(theme::faint()),
+                    ),
                 ])
             }
             BranchRow::Create(name) => Line::from(vec![
@@ -1909,17 +2041,14 @@ fn draw_confirm_restart(f: &mut Frame, app: &App) {
         )),
         Line::from(vec![
             Span::styled("  ", Style::default()),
+            Span::styled(format!("{live}"), Style::default().fg(theme::dead()).bold()),
             Span::styled(
-                format!("{live}"),
-                Style::default().fg(theme::dead()).bold(),
-            ),
-            Span::styled(
-                " sessions will die — a child does not outlive the owner",
+                " sessions should be recovered using --resume flag",
                 Style::default().fg(theme::muted()),
             ),
         ]),
         Line::from(Span::styled(
-            "  of its pseudoconsole. They come back in the same directories.",
+            "  so no pressure ;)",
             Style::default().fg(theme::muted()),
         )),
         Line::from(""),
@@ -1937,7 +2066,9 @@ fn draw_confirm_restart(f: &mut Frame, app: &App) {
 }
 
 fn draw_confirm_mkdir(f: &mut Frame, app: &App) {
-    let Some(path) = &app.pending_mkdir else { return };
+    let Some(path) = &app.pending_mkdir else {
+        return;
+    };
     let area = centered(64, 7, f.area());
     f.render_widget(Clear, area);
 
@@ -1978,7 +2109,10 @@ fn draw_help(f: &mut Frame) {
         ("w", "close a finished session's card now"),
         ("", "(finished ones go by themselves after a minute)"),
         ("r", "restart into a new build (when a newer exe exists)"),
-        ("", "(sessions come back with their conversations, --resume)"),
+        (
+            "",
+            "(sessions come back with their conversations, --resume)",
+        ),
         ("i", "install a newer release from GitHub, then restart"),
         ("", "(checked every half hour, or now when none is known)"),
         ("R", "resume an old conversation (transcript list)"),
@@ -2100,7 +2234,10 @@ pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
-    format!("{}~", s.chars().take(max.saturating_sub(1)).collect::<String>())
+    format!(
+        "{}~",
+        s.chars().take(max.saturating_sub(1)).collect::<String>()
+    )
 }
 
 fn shorten_path(p: &std::path::Path, max: usize) -> String {
@@ -2210,7 +2347,8 @@ mod tests {
             log: (0..60)
                 .map(|i| git::Commit {
                     hash: "41c45ad".into(),
-                    subject: "a subject line that goes on well past the panel's edge".repeat(i % 3 + 1),
+                    subject: "a subject line that goes on well past the panel's edge"
+                        .repeat(i % 3 + 1),
                     time: 1_700_000_000,
                     author: "Bartholomew Longname".into(),
                 })
@@ -2220,7 +2358,14 @@ mod tests {
         let height = 40;
         for focused in [false, true] {
             let mut view = GitView::new();
-            let lines = git_lines(&mut view, &snap, Some(SystemTime::now()), width, height, focused);
+            let lines = git_lines(
+                &mut view,
+                &snap,
+                Some(SystemTime::now()),
+                width,
+                height,
+                focused,
+            );
             assert!(lines.len() <= height, "{} rows for {height}", lines.len());
             for l in &lines {
                 assert!(l.width() <= width, "a row takes {} of {width}", l.width());

@@ -67,6 +67,9 @@ pub struct PtySession {
     input_tx: Sender<Vec<u8>>,
     /// Bytes handed to the writer thread but not yet pushed into the PTY.
     queued: Arc<AtomicUsize>,
+    /// Set by the reader thread whenever the child writes something. The UI
+    /// only redraws for it while this pane is the one on screen.
+    output: Arc<AtomicBool>,
     /// Text waiting for the child to grow a prompt box to put it in.
     prompt_queue: Option<String>,
     prompt_since: Option<Instant>,
@@ -96,7 +99,7 @@ impl PtySession {
         cwd: PathBuf,
         rows: u16,
         cols: u16,
-        dirty: Arc<AtomicBool>,
+        output: Arc<AtomicBool>,
         extra_args: &[String],
     ) -> Result<Self> {
         let size = PtySize {
@@ -131,7 +134,7 @@ impl PtySession {
 
         let writer: SharedWriter = Arc::new(Mutex::new(writer));
         let parser = Arc::new(RwLock::new(vt100::Parser::new(rows, cols, SCROLLBACK)));
-        spawn_reader(reader, Arc::clone(&parser), Arc::clone(&writer), dirty);
+        spawn_reader(reader, Arc::clone(&parser), Arc::clone(&writer), Arc::clone(&output));
 
         let queued = Arc::new(AtomicUsize::new(0));
         let input_tx = spawn_writer(Arc::clone(&writer), Arc::clone(&queued));
@@ -149,6 +152,7 @@ impl PtySession {
             exited_at: None,
             input_tx,
             queued,
+            output,
             prompt_queue: None,
             prompt_since: None,
             master: pair.master,
@@ -284,6 +288,11 @@ impl PtySession {
                 false
             }
         }
+    }
+
+    /// Whether the child has written anything since the last call.
+    pub fn take_output(&self) -> bool {
+        self.output.swap(false, Ordering::Relaxed)
     }
 
     pub fn is_alive(&self) -> bool {

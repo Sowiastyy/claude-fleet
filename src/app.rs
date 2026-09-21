@@ -34,6 +34,10 @@ const GIT_REFRESH: Duration = Duration::from_secs(2);
 /// How often the binary this fleet was started from is checked for a rebuild.
 /// It is one `stat` and nobody rebuilds twice a second.
 const EXE_CHECK: Duration = Duration::from_millis(1000);
+/// How often the config file's timestamp is looked at. Every frame meant
+/// sixty filesystem calls a second for a file that changes a few times a day;
+/// a quarter of a second still reads as instant after a save.
+const CONFIG_CHECK: Duration = Duration::from_millis(250);
 
 /// How often GitHub is asked about a newer release. Every push to main is a
 /// release, so they can come hours apart; an unauthenticated client gets sixty
@@ -364,6 +368,11 @@ pub struct App {
     pub should_quit: bool,
     pub launch_cwd: PathBuf,
     last_registry_scan: Instant,
+    last_config_check: Instant,
+    /// Scans made by the registry thread. Listing the pipe namespace and
+    /// parsing every descriptor takes milliseconds, which the UI thread spent
+    /// stalled on input every refresh while it did the scan itself.
+    registry_rx: mpsc::Receiver<Vec<RegistryEntry>>,
     /// Pane geometry from the last render, used when spawning.
     pub pane_rows: u16,
     pub pane_cols: u16,
@@ -484,6 +493,8 @@ impl App {
             should_quit: false,
             launch_cwd,
             last_registry_scan: Instant::now(),
+            last_config_check: Instant::now(),
+            registry_rx: spawn_registry_scanner(),
             pane_rows: 24,
             pane_cols: 80,
             pane_x: 0,
@@ -642,7 +653,7 @@ impl App {
             cwd,
             self.pane_rows.max(4),
             self.pane_cols.max(20),
-            Arc::clone(&self.dirty),
+            Arc::new(AtomicBool::new(true)),
             args,
         )?;
 
@@ -1425,8 +1436,14 @@ impl App {
     pub fn tick(&mut self) {
         // Reaps children and records exit codes; the return value is read via
         // `is_alive` during render.
-        for s in &mut self.sessions {
-            s.poll_alive();
+        for (i, s) in self.sessions.iter_mut().enumerate() {
+            let died = s.is_alive() && !s.poll_alive();
+            // Output of a pane nobody is looking at changes nothing on screen,
+            // so a busy session in the background no longer forces a redraw
+            // every frame. Its card only changes when it dies.
+            if s.take_output() && i == self.selected || died {
+                self.dirty.store(true, Ordering::Relaxed);
+            }
             // Text queued before the child painted its input box goes in as
             // soon as it has one.
             s.flush_prompt();
@@ -1444,10 +1461,13 @@ impl App {
 
         // The config is read back whenever the file moves, so an edit shows up
         // in the next frame without anything being restarted.
-        match config::reload_if_changed() {
-            Some(config::Reload::Applied) => self.notify("config reloaded"),
-            Some(config::Reload::Failed(e)) => self.notify(format!("config rejected: {e}")),
-            None => {}
+        if self.last_config_check.elapsed() >= CONFIG_CHECK {
+            self.last_config_check = Instant::now();
+            match config::reload_if_changed() {
+                Some(config::Reload::Applied) => self.notify("config reloaded"),
+                Some(config::Reload::Failed(e)) => self.notify(format!("config rejected: {e}")),
+                None => {}
+            }
         }
 
         if !self.update_ready && self.last_exe_check.elapsed() >= EXE_CHECK {
@@ -1464,7 +1484,9 @@ impl App {
         self.poll_git_jobs();
 
         if self.last_registry_scan.elapsed() >= REGISTRY_REFRESH {
-            self.registry = registry::read_all();
+            if let Some(latest) = self.registry_rx.try_iter().last() {
+                self.registry = latest;
+            }
             self.last_registry_scan = Instant::now();
             self.dirty.store(true, Ordering::Relaxed);
             // Same cadence as the registry: the limits move slowly, and their
@@ -1489,6 +1511,18 @@ impl App {
                 self.dirty.store(true, Ordering::Relaxed);
             }
     }
+}
+
+/// Re-read the registry on a thread of its own for as long as the app is
+/// there to take the results; the thread ends with the receiver.
+fn spawn_registry_scanner() -> mpsc::Receiver<Vec<RegistryEntry>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        while tx.send(registry::read_all()).is_ok() {
+            std::thread::sleep(REGISTRY_REFRESH);
+        }
+    });
+    rx
 }
 
 #[cfg(test)]
