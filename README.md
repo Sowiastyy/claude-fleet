@@ -239,6 +239,34 @@ When the path typed into the dialog does not point at an existing directory,
 fleet asks `create it?` — `y`/`enter` creates it (with any missing parents) and
 starts the session, `n`/`esc` returns to the form with the path still in place.
 
+### Remote sessions
+
+The top line of the dialog picks where the session runs; `ctrl+r` moves
+between the three:
+
+| kind | runs |
+|---|---|
+| `local` | `claude` on this machine, as always |
+| `remote` | `claude --cloud` — a new session on Claude Code on the web, for a repository picked from a list |
+| `teleport` | `claude --teleport` — Claude Code's own list of **every** remote session on the account; the one picked is pulled into the chosen directory and carries on locally |
+
+In `remote` the dialog lists the GitHub repositories the account can reach —
+its own, the ones it collaborates on, its organisations' — last pushed first,
+and typing filters them. The list comes from the GitHub API with the token git
+already uses for github.com (`GH_TOKEN` / `GITHUB_TOKEN`, else `git credential
+fill`, never interactively), plus the GitHub clones among the recent projects.
+Without a token only those clones are listed, and the dialog says so.
+
+`claude --cloud` takes its repository from the `origin` of the directory it
+runs in, so a picked repository needs a checkout: its local clone when fleet
+knows one, otherwise a clone fleet makes in `~/.claude/fleet-repos/<owner>/<name>`
+(blobs on demand, pulled up to date on the next use). `claude-fleet --repos`
+prints the list and where each one would run.
+
+Fleet only passes the flag. Sign-in, fetching the remote sessions, the stash
+question when the checkout has changes, and switching to the session's branch
+are all Claude Code's, inside the pane.
+
 Only the function keys are reserved — no fleet shortcut sits on a modifier.
 Claude Code binds plenty of `Ctrl` combinations itself (`Ctrl+B` for background
 tasks, among others), so a tmux-style prefix would swallow keys meant for the
@@ -390,7 +418,7 @@ Code for fresh limit numbers once and report what happened), `--raw <prog> [args
 bytes from any program under a PTY), `--mouse` (whether this terminal hands
 wheel events to the application at all), `--usage` (account limits as the
 sidebar reads them), `--history` (conversations to resume, as the `R` list
-reads them).
+reads them), `--repos` (repositories the remote form offers).
 
 `--raw` answers DSR itself — otherwise the child stalls at startup and the
 probe shows exactly the four bytes you are asking about (see pitfall 1).

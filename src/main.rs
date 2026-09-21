@@ -16,6 +16,7 @@ mod input;
 mod keys;
 mod msgedit;
 mod registry;
+mod repos;
 mod session;
 mod supervise;
 mod theme;
@@ -44,7 +45,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
-    app::{App, Drag, GitHit, Mode},
+    app::{App, Drag, GitHit, Mode, SpawnKind},
     input::Input,
 };
 
@@ -86,6 +87,7 @@ fn main() -> Result<()> {
         Some("--mouse") => return mouse_probe(),
         Some("--usage") => return print_usage_limits(),
         Some("--history") => return print_history(),
+        Some("--repos") => return print_repos(),
         Some("--help" | "-h") => {
             print_usage();
             return Ok(());
@@ -144,7 +146,8 @@ fn print_usage() {
          \x20 --raw <prog> [args...]   raw bytes from any program under a PTY\n\
          \x20 --mouse                  does this terminal hand over the mouse wheel\n\
          \x20 --usage                  account limits as the sidebar reads them\n\
-         \x20 --history                conversations to resume, as the list reads them\n"
+         \x20 --history                conversations to resume, as the list reads them\n\
+         \x20 --repos                  repositories the remote form offers\n"
     );
 }
 
@@ -173,6 +176,24 @@ fn print_registry() -> Result<()> {
 
 /// Print the limits exactly as the sidebar reads them, so the reader can be
 /// checked without a terminal in the way.
+/// The repositories the remote form offers, and where each would run.
+fn print_repos() -> Result<()> {
+    let listing = repos::list();
+    if let Some(note) = &listing.note {
+        println!("({note})");
+    }
+    for r in &listing.repos {
+        let at = match &r.local {
+            Some(p) => p.display().to_string(),
+            None => "clone on start".to_string(),
+        };
+        let private = if r.private { "private" } else { "" };
+        println!("{:<44} {:<8} {at}", r.full_name, private);
+    }
+    println!("{} repositories", listing.repos.len());
+    Ok(())
+}
+
 /// The resume list as the picker builds it. Answers "why is that conversation
 /// not on the list" without opening the TUI.
 fn print_history() -> Result<()> {
@@ -1453,6 +1474,45 @@ fn handle_form(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     };
 
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Ctrl+R: local, a new remote session, or teleport one down. A plain
+    // letter would land in the path.
+    if key.code == KeyCode::Char('r') && ctrl {
+        form.kind = form.kind.next();
+        if form.kind == SpawnKind::Remote {
+            app.load_repos();
+        }
+        return Ok(());
+    }
+    // Remote picks a repository: typing filters them, the arrows move.
+    if form.kind == SpawnKind::Remote {
+        match key.code {
+            KeyCode::Esc => {
+                app.form = None;
+                app.mode = Mode::Nav;
+                app.disarm_understand_spawn();
+            }
+            KeyCode::Enter => app.start_remote()?,
+            KeyCode::Up => form.repo_cursor = form.repo_cursor.saturating_sub(1),
+            KeyCode::Down => {
+                let last = app.filtered_repos().len().saturating_sub(1);
+                if let Some(form) = app.form.as_mut() {
+                    form.repo_cursor = (form.repo_cursor + 1).min(last);
+                }
+            }
+            KeyCode::Backspace => {
+                form.repo_filter.pop();
+                form.repo_cursor = 0;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                form.repo_filter.push(c);
+                form.repo_cursor = 0;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.form = None;
@@ -1584,6 +1644,12 @@ fn handle_paste(app: &mut App, text: &str, keep_open: bool) {
     }
     if app.mode == Mode::NewSession {
         if let Some(form) = app.form.as_mut()
+            && form.kind == SpawnKind::Remote
+        {
+            form.repo_filter.push_str(text.trim());
+            form.repo_cursor = 0;
+            app.dirty.store(true, Ordering::Relaxed);
+        } else if let Some(form) = app.form.as_mut()
             && form.cursor == 0
         {
             form.push_str(text.trim());

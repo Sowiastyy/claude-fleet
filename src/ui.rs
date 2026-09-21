@@ -14,7 +14,7 @@ use ratatui::{
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
-    app::{App, BranchRow, GitHit, GitJob, Mode},
+    app::{App, BranchRow, GitHit, GitJob, Mode, NewSessionForm, SpawnKind},
     commitmsg, config, git,
     gitview::{GitView, Row},
     msgedit,
@@ -1683,6 +1683,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("up/dn", "pick"),
             ("right", "enter dir"),
             ("left", "parent"),
+            ("ctrl+r", "local/remote/teleport"),
             ("esc", "cancel"),
         ],
         Mode::Help => vec![("any key", "close")],
@@ -1768,17 +1769,21 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_new_session(f: &mut Frame, app: &App) {
     let Some(form) = &app.form else { return };
+    if form.kind == SpawnKind::Remote {
+        return draw_remote_form(f, app, form);
+    }
 
     let subdir_rows = if form.subdirs.is_empty() {
         0
     } else {
         form.subdirs.len() as u16 + 2
     };
-    let height = (form.recent.len() as u16).min(12) + subdir_rows + 6;
+    let height = (form.recent.len() as u16).min(12) + subdir_rows + 9;
     let area = centered(70, height, f.area());
     f.render_widget(Clear, area);
 
-    let mut lines = vec![
+    let mut lines = kind_lines(form);
+    lines.extend([
         Line::from(Span::styled(
             " working directory:",
             Style::default().fg(theme::muted()),
@@ -1800,7 +1805,7 @@ fn draw_new_session(f: &mut Frame, app: &App) {
                 Style::default().fg(theme::accent()),
             ),
         ]),
-    ];
+    ]);
 
     if !form.subdirs.is_empty() {
         lines.push(Line::from(""));
@@ -1868,6 +1873,113 @@ fn draw_new_session(f: &mut Frame, app: &App) {
             Style::default().fg(theme::accent()).bold(),
         )));
 
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The run-kind switch at the top of the new-session dialog, and what the
+/// picked kind does.
+fn kind_lines(form: &NewSessionForm) -> Vec<Line<'static>> {
+    let mut kinds = vec![Span::styled(" run:  ", Style::default().fg(theme::muted()))];
+    for k in SpawnKind::ALL {
+        kinds.push(if k == form.kind {
+            Span::styled(
+                format!("[{}]", k.name()),
+                Style::default().fg(theme::accent()).bold(),
+            )
+        } else {
+            Span::styled(format!(" {} ", k.name()), Style::default().fg(theme::faint()))
+        });
+        kinds.push(Span::raw(" "));
+    }
+    kinds.push(Span::styled(" ctrl+r switches", Style::default().fg(theme::faint())));
+    let hint = match form.kind {
+        SpawnKind::Local => " claude on this machine",
+        SpawnKind::Remote => " claude --cloud: new session on claude.ai/code for the repository",
+        SpawnKind::Teleport => " claude --teleport: lists every remote session, pulls one here",
+    };
+    vec![
+        Line::from(kinds),
+        Line::from(Span::styled(hint, Style::default().fg(theme::faint()))),
+        Line::from(""),
+    ]
+}
+
+/// How many repositories the remote form shows at once.
+const REPO_ROWS: usize = 14;
+
+/// The new-session dialog in remote mode: the repositories the account can
+/// reach, filtered by what was typed.
+fn draw_remote_form(f: &mut Frame, app: &App, form: &NewSessionForm) {
+    let repos = app.filtered_repos();
+    let area = centered(76, REPO_ROWS as u16 + 9, f.area());
+    f.render_widget(Clear, area);
+
+    let mut lines = kind_lines(form);
+    lines.push(Line::from(vec![
+        Span::styled(" repository: ", Style::default().fg(theme::muted())),
+        Span::styled(
+            form.repo_filter.clone(),
+            Style::default()
+                .fg(theme::text())
+                .add_modifier(Modifier::UNDERLINED),
+        ),
+        Span::styled("_", Style::default().fg(theme::accent())),
+    ]));
+
+    let status = if let Some(name) = &app.cloning {
+        Some(format!(" preparing {name}…"))
+    } else if app.repos_loading() && app.repos.is_none() {
+        Some(" fetching repositories from GitHub…".to_string())
+    } else {
+        app.repos.as_ref().and_then(|l| l.note.clone()).map(|n| format!(" {n}"))
+    };
+    lines.push(Line::from(Span::styled(
+        status.unwrap_or_default(),
+        Style::default().fg(theme::faint()),
+    )));
+
+    if repos.is_empty() && !app.repos_loading() {
+        lines.push(Line::from(Span::styled(
+            " no repository — enter uses the directory from the local form",
+            Style::default().fg(theme::muted()),
+        )));
+    }
+    // The window follows the cursor, so a long list scrolls instead of cutting off.
+    let start = form.repo_cursor.saturating_sub(REPO_ROWS - 1);
+    for (i, r) in repos.iter().enumerate().skip(start).take(REPO_ROWS) {
+        let selected = i == form.repo_cursor;
+        let where_ = match &r.local {
+            Some(p) => shorten_path(p, 30),
+            None => "clone on start".to_string(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { " > " } else { "   " },
+                Style::default().fg(theme::accent()),
+            ),
+            Span::styled(
+                format!("{:<38}", truncate(&r.full_name, 38)),
+                if selected {
+                    Style::default().fg(theme::text()).bold()
+                } else {
+                    Style::default().fg(theme::text())
+                },
+            ),
+            Span::styled(
+                if r.private { "private " } else { "        " },
+                Style::default().fg(theme::muted()),
+            ),
+            Span::styled(where_, Style::default().fg(theme::faint())),
+        ]));
+    }
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::accent()))
+        .title(Line::from(Span::styled(
+            " new remote session ",
+            Style::default().fg(theme::accent()).bold(),
+        )));
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 

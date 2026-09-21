@@ -16,6 +16,7 @@ use crate::{
     gitview::GitView,
     history,
     registry::{self, RegistryEntry},
+    repos,
     session::{label_for, PtySession},
     supervise, update, usage,
 };
@@ -220,8 +221,58 @@ impl BranchPicker {
     }
 }
 
+/// Where a session from the new-session form runs. The two remote kinds are
+/// Claude Code's own: fleet only passes the flag and the child does the rest,
+/// sign-in and the list of cloud sessions included.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpawnKind {
+    /// An ordinary `claude` on this machine.
+    Local,
+    /// `claude --cloud`: a new session on Claude Code on the web, for the
+    /// repository the directory belongs to.
+    Remote,
+    /// `claude --teleport`: Claude Code's picker over every remote session on
+    /// the account; the one picked is pulled down into this directory.
+    Teleport,
+}
+
+impl SpawnKind {
+    pub const ALL: [SpawnKind; 3] = [SpawnKind::Local, SpawnKind::Remote, SpawnKind::Teleport];
+
+    pub fn next(self) -> Self {
+        match self {
+            SpawnKind::Local => SpawnKind::Remote,
+            SpawnKind::Remote => SpawnKind::Teleport,
+            SpawnKind::Teleport => SpawnKind::Local,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SpawnKind::Local => "local",
+            SpawnKind::Remote => "remote",
+            SpawnKind::Teleport => "teleport",
+        }
+    }
+
+    /// The arguments `claude` gets for this kind.
+    pub fn args(self) -> Vec<String> {
+        match self {
+            SpawnKind::Local => Vec::new(),
+            SpawnKind::Remote => vec!["--cloud".to_string()],
+            SpawnKind::Teleport => vec!["--teleport".to_string()],
+        }
+    }
+}
+
 pub struct NewSessionForm {
     pub input: String,
+    /// Local, a new remote session, or a remote one teleported here.
+    pub kind: SpawnKind,
+    /// In remote mode typing filters the repositories rather than editing the
+    /// path, and the arrows move over them.
+    pub repo_filter: String,
+    pub repo_cursor: usize,
     /// Subdirectories under the typed path, for browsing with the arrows.
     /// Refreshed on every edit: a path that ends at a directory lists its
     /// children, an unfinished last component filters its parent's.
@@ -239,6 +290,9 @@ impl NewSessionForm {
     fn new(default_cwd: &std::path::Path) -> Self {
         let mut form = Self {
             input: default_cwd.display().to_string(),
+            kind: SpawnKind::Local,
+            repo_filter: String::new(),
+            repo_cursor: 0,
             subdirs: Vec::new(),
             recent: registry::recent_cwds(12),
             cursor: 0,
@@ -454,6 +508,14 @@ pub struct App {
     pub git_job: Option<GitJob>,
     job_tx: mpsc::Sender<JobDone>,
     job_rx: mpsc::Receiver<JobDone>,
+    /// The repositories a remote session can start for, once listed. Kept for
+    /// the whole run: the list costs a few API calls.
+    pub repos: Option<repos::Listing>,
+    repos_rx: Option<mpsc::Receiver<repos::Listing>>,
+    /// A checkout being prepared for a remote session: the repository and
+    /// where the clone or pull reports back.
+    pub cloning: Option<String>,
+    clone_rx: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     /// Where the panel drew what a click can press, for the mouse handler.
     pub git_hits: Vec<(ratatui::layout::Rect, GitHit)>,
 }
@@ -536,6 +598,10 @@ impl App {
             git_job: None,
             job_tx,
             job_rx,
+            repos: None,
+            repos_rx: None,
+            cloning: None,
+            clone_rx: None,
             git_hits: Vec::new(),
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
@@ -645,9 +711,9 @@ impl App {
         self.spawn_session_with(cwd, &[])
     }
 
-    /// Spawn with arguments for the child. Today that is `--resume <id>` and
-    /// nothing else: a session picked up where it was left is an ordinary
-    /// session in every other respect, down to the understand prompt.
+    /// Spawn with arguments for the child: `--resume <id>`, or the remote
+    /// flags of `SpawnKind`. A session picked up where it was left is an
+    /// ordinary session in every other respect, down to the understand prompt.
     pub fn spawn_session_with(&mut self, cwd: PathBuf, args: &[String]) -> Result<()> {
         if !cwd.is_dir() {
             self.notify(format!("no such directory: {}", cwd.display()));
@@ -1311,9 +1377,10 @@ impl App {
     /// it outright means retyping it somewhere else.
     pub fn request_spawn(&mut self, cwd: PathBuf) -> Result<()> {
         if cwd.is_dir() {
+            let kind = self.form_kind();
             self.form = None;
             self.mode = Mode::Nav;
-            return self.spawn_session(cwd);
+            return self.spawn_session_kind(cwd, kind);
         }
         if cwd.exists() {
             self.notify(format!("not a directory: {}", cwd.display()));
@@ -1354,11 +1421,136 @@ impl App {
             self.notify(format!("could not create the directory: {e}"));
             return Ok(());
         }
+        let kind = self.form_kind();
         self.form = None;
         self.mode = Mode::Nav;
         // `spawn_session` reports the session it started; saying "utworzono"
         // here would only be overwritten by it a moment later.
-        self.spawn_session(path)
+        self.spawn_session_kind(path, kind)
+    }
+
+    /// The kind picked in the open form; local when there is none.
+    fn form_kind(&self) -> SpawnKind {
+        self.form.as_ref().map_or(SpawnKind::Local, |f| f.kind)
+    }
+
+    /// List the repositories on a thread, unless a list is there or coming.
+    /// A list that came back short (no token, API down) is asked for again.
+    pub fn load_repos(&mut self) {
+        let short = self.repos.as_ref().is_some_and(|l| l.note.is_some());
+        if self.repos_rx.is_some() || (self.repos.is_some() && !short) {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let dirty = Arc::clone(&self.dirty);
+        std::thread::spawn(move || {
+            let _ = tx.send(repos::list());
+            dirty.store(true, Ordering::Relaxed);
+        });
+        self.repos_rx = Some(rx);
+    }
+
+    pub fn repos_loading(&self) -> bool {
+        self.repos_rx.is_some()
+    }
+
+    /// The repositories matching what was typed into the form.
+    pub fn filtered_repos(&self) -> Vec<&repos::Repo> {
+        let (Some(list), Some(form)) = (&self.repos, &self.form) else {
+            return Vec::new();
+        };
+        let filter = form.repo_filter.to_lowercase();
+        list.repos
+            .iter()
+            .filter(|r| r.full_name.to_lowercase().contains(&filter))
+            .collect()
+    }
+
+    /// Start a remote session for the repository under the form's cursor:
+    /// get it a checkout on a thread, then `claude --cloud` in it. With no
+    /// repository to pick, the typed directory is used as it stands.
+    pub fn start_remote(&mut self) -> Result<()> {
+        if self.cloning.is_some() {
+            self.notify("still preparing the previous repository");
+            return Ok(());
+        }
+        let cursor = self.form.as_ref().map_or(0, |f| f.repo_cursor);
+        let Some(repo) = self.filtered_repos().get(cursor).map(|r| (*r).clone()) else {
+            let path = self.form.as_ref().map(|f| f.selected_path()).unwrap_or_default();
+            return self.request_spawn(path);
+        };
+        self.form = None;
+        self.mode = Mode::Nav;
+        self.spawn_understand = false;
+        let (tx, rx) = mpsc::channel();
+        let dirty = Arc::clone(&self.dirty);
+        let name = repo.full_name.clone();
+        let fresh = repo.local.is_none();
+        std::thread::spawn(move || {
+            let _ = tx.send(repos::checkout(&repo));
+            dirty.store(true, Ordering::Relaxed);
+        });
+        self.clone_rx = Some(rx);
+        self.notify(if fresh {
+            format!("cloning {name} for the remote session…")
+        } else {
+            format!("starting a remote session for {name}…")
+        });
+        self.cloning = Some(name);
+        Ok(())
+    }
+
+    fn poll_repos(&mut self) {
+        if let Some(rx) = &self.repos_rx
+            && let Ok(listing) = rx.try_recv()
+        {
+            self.repos_rx = None;
+            self.repos = Some(listing);
+            if let Some(form) = self.form.as_mut() {
+                form.repo_cursor = 0;
+            }
+        }
+        if let Some(rx) = &self.clone_rx
+            && let Ok(done) = rx.try_recv()
+        {
+            self.clone_rx = None;
+            let name = self.cloning.take().unwrap_or_default();
+            match done {
+                Ok(dir) => {
+                    // A clone fleet just made is a local clone from now on.
+                    if let Some(r) = self
+                        .repos
+                        .as_mut()
+                        .and_then(|l| l.repos.iter_mut().find(|r| r.full_name == name))
+                    {
+                        r.local.get_or_insert(dir.clone());
+                    }
+                    if let Err(e) = self.spawn_session_kind(dir, SpawnKind::Remote) {
+                        self.notify(format!("{name}: {e}"));
+                    }
+                }
+                Err(e) => self.notify(format!("{name}: {e}")),
+            }
+        }
+    }
+
+    /// Spawn a session of the given kind in `cwd`.
+    pub fn spawn_session_kind(&mut self, cwd: PathBuf, kind: SpawnKind) -> Result<()> {
+        if kind == SpawnKind::Local {
+            return self.spawn_session(cwd);
+        }
+        // The understand prompt is for a fresh local box; a cloud session or
+        // the teleport picker has no place for it.
+        self.spawn_understand = false;
+        self.spawn_session_with(cwd, &kind.args())?;
+        if let Some(s) = self.sessions.last() {
+            let label = s.label.clone();
+            self.notify(match kind {
+                SpawnKind::Remote => format!("{label}: new remote session (claude --cloud)"),
+                _ => format!("{label}: pick a remote session to teleport (claude --teleport)"),
+            });
+        }
+        Ok(())
     }
 
     pub fn open_new_session_form(&mut self) {
@@ -1505,6 +1697,7 @@ impl App {
         self.poll_update();
         self.poll_git();
         self.poll_git_jobs();
+        self.poll_repos();
 
         if self.last_registry_scan.elapsed() >= REGISTRY_REFRESH {
             if let Some(latest) = self.registry_rx.try_iter().last() {
