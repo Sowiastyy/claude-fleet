@@ -106,6 +106,17 @@ pub fn exists(id: &str) -> bool {
         .any(|p| p.path().join(&name).is_file())
 }
 
+/// Where the transcript with this id lives, in whichever project holds it.
+pub fn transcript_path(id: &str) -> Option<PathBuf> {
+    let root = projects_dir()?;
+    let name = format!("{id}.jsonl");
+    fs::read_dir(&root)
+        .ok()?
+        .flatten()
+        .map(|p| p.path().join(&name))
+        .find(|p| p.is_file())
+}
+
 /// The conversations held in one directory, newest first.
 ///
 /// This is the restart path: a session that is about to be killed is the one
@@ -213,7 +224,7 @@ fn read_one(path: &Path, modified: SystemTime) -> Option<Conversation> {
 /// name of a slash command, pasted file contents. None of it identifies the
 /// conversation, and all of it comes first, so a title made of it would be the
 /// same title on every row.
-fn clean(text: &str) -> String {
+pub fn clean(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(open) = rest.find('<') {

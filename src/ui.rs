@@ -15,6 +15,7 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
     app::{App, BranchRow, GitHit, GitJob, Mode, NewSessionForm, SpawnKind},
+    bigbrother::{Level, Scope},
     commitmsg, config, git,
     gitview::{GitView, Row},
     msgedit,
@@ -153,6 +154,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         Mode::Resume => draw_resume(f, app),
         Mode::Branch => draw_branches(f, app),
+        Mode::Tag => draw_tag(f, app),
+        Mode::BigBrother => draw_big_brother(f, app),
+        Mode::Reports => draw_reports(f, app),
         _ => {}
     }
 }
@@ -230,9 +234,16 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             }
         };
 
-        let name = entry
-            .map(|e| e.name.clone())
-            .unwrap_or_else(|| s.label.clone());
+        // A Big Brother stands out from the sessions it watches.
+        let (glyph, glyph_color) = if s.watch.is_some() && s.is_alive() {
+            ("@", theme::accent())
+        } else {
+            (glyph, glyph_color)
+        };
+        let name = match (&s.watch, entry) {
+            (Some(_), _) | (None, None) => s.label.clone(),
+            (None, Some(e)) => e.name.clone(),
+        };
         let name = truncate(
             &name,
             usize::from(sidebar_width()).saturating_sub(20).max(8),
@@ -264,10 +275,26 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ]),
             Line::from(vec![
                 Span::raw("   "),
-                Span::styled(
-                    truncate(&s.cwd_label(), 12),
-                    Style::default().fg(theme::muted()),
-                ),
+                match (&s.watch, s.group) {
+                    (None, Some(g)) => Span::styled(
+                        format!("[{g}] "),
+                        Style::default().fg(group_color(g)).bold(),
+                    ),
+                    _ => Span::raw(""),
+                },
+                match &s.watch {
+                    Some(w) => Span::styled(
+                        match w.scope {
+                            Scope::All => "watching all".to_string(),
+                            Scope::Group(g) => format!("watching [{g}]"),
+                        },
+                        Style::default().fg(theme::accent()),
+                    ),
+                    None => Span::styled(
+                        truncate(&s.cwd_label(), 12),
+                        Style::default().fg(theme::muted()),
+                    ),
+                },
                 Span::raw(" "),
                 Span::styled(state_text, Style::default().fg(glyph_color)),
                 Span::raw(" "),
@@ -294,6 +321,24 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 format!("F{}", app.sessions.len() + 1),
                 Style::default().fg(theme::faint()),
             ),
+        ])));
+    }
+
+    if app.unread_reports > 0 {
+        let color = match app.unread_level {
+            Some(Level::Alarm) => theme::dead(),
+            Some(Level::Warn) => theme::busy(),
+            _ => theme::ask(),
+        };
+        let plural = if app.unread_reports == 1 { "" } else { "s" };
+        let label = format!("{} new report{plural}", app.unread_reports);
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(" @ ", Style::default().fg(color)),
+            Span::styled(label.clone(), Style::default().fg(color).bold()),
+            Span::raw(" ".repeat(
+                usize::from(sidebar_width()).saturating_sub(3 + label.chars().count() + 3),
+            )),
+            Span::styled("A", Style::default().fg(color)),
         ])));
     }
 
@@ -1667,6 +1712,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("u", "understand project"),
             ("g", "git"),
             ("b", "branch"),
+            ("t", "group"),
+            ("B", "big brother"),
+            ("A", "reports"),
             ("x", "kill"),
             ("?", "help"),
             ("q", "quit"),
@@ -1724,6 +1772,18 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("enter", "switch"),
             ("esc", "close"),
         ],
+        Mode::Tag => vec![
+            ("a-z", "put the session in that group"),
+            ("-", "no group"),
+            ("esc", "cancel"),
+        ],
+        Mode::BigBrother => vec![
+            ("a-z", "watch that group"),
+            ("*", "watch all"),
+            ("enter", "the selected session's group"),
+            ("esc", "cancel"),
+        ],
+        Mode::Reports => vec![("up/dn", "scroll"), ("any key", "close")],
         Mode::Understand => vec![
             ("F1-F9", "that session"),
             ("u", "new session"),
@@ -2306,6 +2366,16 @@ fn draw_help(f: &mut Frame) {
         ("p / ctrl+p", "push; a branch without upstream gets origin"),
         ("esc / g", "back to the list"),
         ("", ""),
+        ("", "-- BIG BROTHER --"),
+        ("t, then a-z", "put the selected session in a group (- = none)"),
+        ("B, then a-z", "start a BIG BROTHER over that group"),
+        ("B, then *", "... over every session (enter = selected's group)"),
+        ("", "a claude session that watches the others, reads"),
+        ("", "their screens and transcripts, and reports what"),
+        ("", "looks wrong; it can send, clear, kill and spawn"),
+        ("", "sessions in its scope when you tell it to"),
+        ("A", "the reports it filed (warn/alarm ring a bell)"),
+        ("", ""),
         ("", "-- FOREIGN SESSIONS --"),
         ("!", "started outside fleet, view only"),
         ("", "their PTY belongs to another terminal"),
@@ -2343,6 +2413,156 @@ fn draw_help(f: &mut Frame) {
                 .border_style(Style::default().fg(theme::accent()))
                 .title(Line::from(Span::styled(
                     " shortcuts ",
+                    Style::default().fg(theme::accent()).bold(),
+                ))),
+        ),
+        area,
+    );
+}
+
+/// A colour per group letter, so a group reads as one at a glance.
+fn group_color(g: char) -> Color {
+    let palette = [
+        theme::accent(),
+        theme::ask(),
+        theme::idle(),
+        theme::busy(),
+        theme::dead(),
+    ];
+    palette[(g as usize).wrapping_sub('a' as usize) % palette.len()]
+}
+
+fn draw_tag(f: &mut Frame, app: &App) {
+    let Some(s) = app.selected_session() else {
+        return;
+    };
+    let groups = app.groups();
+    let in_use = if groups.is_empty() {
+        "no groups yet".to_string()
+    } else {
+        groups
+            .iter()
+            .map(|(g, n)| format!("{g}:{n}"))
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let area = centered(56, 7, f.area());
+    f.render_widget(Clear, area);
+    let p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  group for ", Style::default().fg(theme::text())),
+            Span::styled(s.label.clone(), Style::default().fg(theme::accent()).bold()),
+        ]),
+        Line::from(Span::styled(
+            format!("  in use: {in_use}"),
+            Style::default().fg(theme::muted()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  a-z = that group    - = none    esc = cancel",
+            Style::default().fg(theme::muted()),
+        )),
+    ])
+    .block(
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme::accent())),
+    );
+    f.render_widget(p, area);
+}
+
+fn draw_big_brother(f: &mut Frame, app: &App) {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  a claude session that watches the others and reports",
+            Style::default().fg(theme::text()),
+        )),
+        Line::from(Span::styled(
+            "  what looks wrong. What should it watch?",
+            Style::default().fg(theme::text()),
+        )),
+        Line::from(""),
+    ];
+    for (g, n) in app.groups() {
+        let plural = if n == 1 { "" } else { "s" };
+        lines.push(Line::from(vec![
+            Span::styled(format!("   {g}  "), Style::default().fg(group_color(g)).bold()),
+            Span::styled(
+                format!("group {g} — {n} session{plural}"),
+                Style::default().fg(theme::muted()),
+            ),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("   *  ", Style::default().fg(theme::accent()).bold()),
+        Span::styled("every session", Style::default().fg(theme::muted())),
+    ]));
+    lines.push(Line::from(""));
+    let default = match app.default_scope() {
+        Scope::All => "all".to_string(),
+        Scope::Group(g) => format!("group {g}"),
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  a-z / * = pick    enter = {default}    esc = cancel"),
+        Style::default().fg(theme::muted()),
+    )));
+    let area = centered(62, lines.len() as u16 + 2, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::accent()))
+                .title(Line::from(Span::styled(
+                    " BIG BROTHER ",
+                    Style::default().fg(theme::accent()).bold(),
+                ))),
+        ),
+        area,
+    );
+}
+
+fn draw_reports(f: &mut Frame, app: &App) {
+    let full = f.area();
+    let width = full.width.saturating_sub(8).clamp(40, 110);
+    let height = full.height.saturating_sub(4).max(6);
+    let area = centered(width, height, full);
+    f.render_widget(Clear, area);
+    let text_w = usize::from(width).saturating_sub(7).max(10);
+
+    // Newest first; the scroll steps back into older ones.
+    let mut lines: Vec<Line> = Vec::new();
+    for r in app.reports.iter().rev().skip(app.reports_scroll) {
+        let color = match r.level {
+            Level::Alarm => theme::dead(),
+            Level::Warn => theme::busy(),
+            Level::Info => theme::idle(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {:<5} ", r.level.name()), Style::default().fg(color).bold()),
+            Span::styled(r.from.clone(), Style::default().fg(theme::accent())),
+            Span::styled(
+                format!("  {} ago", fmt_uptime(r.at.elapsed())),
+                Style::default().fg(theme::faint()),
+            ),
+        ]));
+        for chunk in wrap_message(&r.text, text_w) {
+            lines.push(Line::from(Span::styled(
+                format!("   {chunk}"),
+                Style::default().fg(theme::text()),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::accent()))
+                .title(Line::from(Span::styled(
+                    format!(" BIG BROTHER reports ({}) ", app.reports.len()),
                     Style::default().fg(theme::accent()).bold(),
                 ))),
         ),
@@ -2413,7 +2633,7 @@ fn fmt_age(now: SystemTime, then: SystemTime) -> String {
     }
 }
 
-fn fmt_uptime(d: Duration) -> String {
+pub fn fmt_uptime(d: Duration) -> String {
     let secs = d.as_secs();
     match secs {
         0..=59 => format!("{secs}s"),

@@ -228,11 +228,21 @@ pub struct Restore {
     /// The id `claude --resume` takes. `None` means start a fresh session
     /// there, which is all the fleet could do before transcripts were read.
     pub session: Option<String>,
+    /// The group the session was in.
+    pub group: Option<char>,
+    /// Set when the session was a Big Brother: the scope it watched, as
+    /// `Scope::name` writes it.
+    pub watch: Option<String>,
 }
 
 impl Restore {
     pub fn new(cwd: PathBuf, session: Option<String>) -> Self {
-        Self { cwd, session }
+        Self {
+            cwd,
+            session,
+            group: None,
+            watch: None,
+        }
     }
 }
 
@@ -245,9 +255,21 @@ pub fn write_restore(items: &[Restore]) {
     };
     let body: String = items
         .iter()
-        .map(|r| match &r.session {
-            Some(id) => format!("{id}\t{}\n", r.cwd.display()),
-            None => format!("{}\n", r.cwd.display()),
+        .map(|r| {
+            // A session in a group, or a Big Brother, adds two more fields:
+            // the group and the scope watched, either empty when not wanted.
+            let tagged = r.group.is_some() || r.watch.is_some();
+            match (&r.session, tagged) {
+                (id, true) => format!(
+                    "{}\t{}\t{}\t{}\n",
+                    id.as_deref().unwrap_or_default(),
+                    r.cwd.display(),
+                    r.group.map(String::from).unwrap_or_default(),
+                    r.watch.as_deref().unwrap_or_default(),
+                ),
+                (Some(id), false) => format!("{id}\t{}\n", r.cwd.display()),
+                (None, false) => format!("{}\n", r.cwd.display()),
+            }
         })
         .collect();
     let _ = fs::write(path, body);
@@ -266,11 +288,24 @@ pub fn take_restore() -> Vec<Restore> {
     };
     let _ = fs::remove_file(&path);
     body.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|line| match line.split_once('\t') {
-            Some((id, cwd)) => Restore::new(PathBuf::from(cwd), Some(id.to_string())),
-            None => Restore::new(PathBuf::from(line), None),
+        // Only line ends are trimmed: a tab at either end is an empty field.
+        .map(|l| l.trim_end_matches(['\r', ' ']))
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            match fields.as_slice() {
+                [id, cwd, group, watch, ..] => {
+                    let mut r = Restore::new(
+                        PathBuf::from(cwd),
+                        (!id.is_empty()).then(|| id.to_string()),
+                    );
+                    r.group = group.chars().next();
+                    r.watch = (!watch.is_empty()).then(|| watch.to_string());
+                    r
+                }
+                [id, cwd, ..] => Restore::new(PathBuf::from(cwd), Some(id.to_string())),
+                _ => Restore::new(PathBuf::from(line), None),
+            }
         })
         .filter(|r| r.cwd.is_dir())
         .collect()
@@ -341,9 +376,15 @@ mod tests {
         // SAFETY: single-threaded test, and the variable is this test's own.
         unsafe { env::set_var(RESTORE_VAR, &file) };
 
+        let mut grouped = Restore::new(dir.clone(), None);
+        grouped.group = Some('a');
+        let mut watcher = Restore::new(dir.clone(), Some("bb-1".into()));
+        watcher.watch = Some("*".into());
         let items = vec![
             Restore::new(dir.clone(), Some("abc-123".into())),
             Restore::new(dir.clone(), None),
+            grouped,
+            watcher,
         ];
         write_restore(&items);
         assert_eq!(take_restore(), items);

@@ -98,6 +98,9 @@ transcript instead.
 | `[` / `]` | sidebar narrower / wider |
 | `{` / `}` | git panel narrower / wider |
 | `b` | switch the selected session's repository to another branch |
+| `t` | put the selected session in a group (see BIG BROTHER) |
+| `B` | start a BIG BROTHER over a group or every session |
+| `A` | the reports the Big Brothers filed |
 | `?` | help |
 | `q` | quit |
 
@@ -306,6 +309,62 @@ into it, so the text waits in the session and goes in when `❯` appears on
 screen (or the box border, in older versions). Should it never appear, the text
 goes anyway after 8 seconds — a heuristic that misses has no business
 swallowing a paste forever. To check it live: `--selftest understand`.
+
+## BIG BROTHER
+
+A Big Brother is a Claude Code session that oversees the others: it watches
+what they do, reads their screens and transcripts, and reports what looks
+wrong. When you tell it to, it also acts on them — types a message, answers a
+prompt, runs `/clear`, kills one, starts a new one.
+
+**Groups** decide what it watches. `t` then a letter puts the selected session
+in that group (`t` `-` takes it out); the card shows it as `[a]`. `B` then a
+letter starts a Big Brother over that group, `B` `*` over every session, and
+`B` `enter` over the selected session's group (or all, when it has none). One
+Big Brother per scope: `B` on a scope already watched jumps to its pane.
+
+Its card is marked `@` and says what it watches. It is an ordinary session in
+every other way — talk to it in its pane ("what is everyone doing?", "clear
+api when it is done", "kill anything that force-pushes").
+
+What it finds comes back as a **report**: on the status line at once, in the
+sidebar as `@ 3 new reports`, and in the list `A` opens. `warn` and `alarm`
+ring the terminal bell.
+
+### How it reaches the fleet
+
+The Big Brother is started with a system prompt that makes it an overseer
+(`--append-system-prompt`), and with a `fleet` command on its `PATH` — a shim
+that runs this binary as `claude-fleet bb …`. That command talks to the fleet
+over a TCP socket on `127.0.0.1`, carrying a token the Big Brother was started
+with; the token is what decides which sessions it may see and touch. It never
+sees sessions outside its scope, or any other Big Brother.
+
+| command | does |
+|---|---|
+| `fleet list` | the sessions it watches: name, group, state, directory |
+| `fleet wait [secs]` | blocks until a session changes state (finishes a turn, stops on a question, starts, dies) and prints the changes |
+| `fleet peek <name> [lines]` | the session's screen |
+| `fleet log <name> [n]` | the last entries of its transcript: prompts, replies, tool calls, errors |
+| `fleet alert <info\|warn\|alarm> <text>` | a report to you |
+| `fleet send <name> <text>` | types a message and presses Enter |
+| `fleet key <name> <key>…` | presses keys (`enter`, `esc`, `1`, …) — answers a permission prompt |
+| `fleet clear <name>` | runs `/clear` in it |
+| `fleet kill <name>` | kills it |
+| `fleet spawn <dir> [prompt]` | starts a session in its scope |
+
+It is told to act on sessions only when you say so, and to report instead when
+in doubt. `fleet` is pre-approved (`--allowedTools "Bash(fleet:*)"`), so the
+watching loop runs without permission prompts.
+
+```toml
+[bigbrother]
+model = "claude-sonnet-5"                 # empty = Claude Code's default
+instructions = "Report in Polish. You may clear a session that finished its task."
+```
+
+Groups and Big Brothers survive a restart with the rest: a Big Brother comes
+back with its conversation, a new token, and goes on watching.
 
 ## Resuming conversations
 

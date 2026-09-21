@@ -8,7 +8,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Sender},
         Arc, Mutex, RwLock,
     },
@@ -19,7 +19,7 @@ use std::{
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
-use crate::dsr;
+use crate::{bigbrother, dsr, keys};
 
 const SCROLLBACK: usize = 5_000;
 
@@ -35,6 +35,15 @@ const WRITE_CHUNK: usize = 8 * 1024;
 /// never matches would swallow the text for good; this deadline is what makes
 /// the queue always drain.
 const PROMPT_DEADLINE: Duration = Duration::from_secs(8);
+
+/// How long after typed text the Enter that submits it follows.
+///
+/// Claude Code reads a burst of input as a paste, and an Enter arriving inside
+/// that burst is taken as a newline in the text rather than the submit.
+const SUBMIT_DELAY: Duration = Duration::from_millis(300);
+
+/// Hands out `PtySession::uid`, which stays put while indices shift.
+static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
 /// Marks of Claude Code's input box, used to tell a painted prompt from a
 /// child that has not drawn one yet.
@@ -52,7 +61,15 @@ const BOX_BOTTOM_RIGHT: char = '╯';
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 pub struct PtySession {
+    /// Stable for the session's life. Indices move whenever a card closes;
+    /// a Big Brother's event log and cursor need something that does not.
+    pub uid: u64,
     pub label: String,
+    /// The group a session belongs to, `a`-`z`. A Big Brother watches one
+    /// group, or all of them.
+    pub group: Option<char>,
+    /// Set on a Big Brother: what it watches and the token it talks with.
+    pub watch: Option<bigbrother::Watch>,
     pub cwd: PathBuf,
     pub parser: Arc<RwLock<vt100::Parser>>,
     pub child_pid: Option<u32>,
@@ -73,6 +90,11 @@ pub struct PtySession {
     /// Text waiting for the child to grow a prompt box to put it in.
     prompt_queue: Option<String>,
     prompt_since: Option<Instant>,
+    /// Whether the queued text is submitted once typed, rather than left in
+    /// the box for a human.
+    prompt_submit: bool,
+    /// When the Enter submitting typed text is due.
+    enter_at: Option<Instant>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
 }
@@ -102,6 +124,19 @@ impl PtySession {
         output: Arc<AtomicBool>,
         extra_args: &[String],
     ) -> Result<Self> {
+        Self::spawn_with_env(label, cwd, rows, cols, output, extra_args, &[])
+    }
+
+    /// `spawn`, with variables set on the child on top of what it inherits.
+    pub fn spawn_with_env(
+        label: String,
+        cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        output: Arc<AtomicBool>,
+        extra_args: &[String],
+        env: &[(String, String)],
+    ) -> Result<Self> {
         let size = PtySize {
             rows,
             cols,
@@ -120,6 +155,9 @@ impl PtySession {
         // Claude Code renders 24-bit colour; announce a terminal that supports it.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
 
         let child = pair
             .slave
@@ -140,7 +178,10 @@ impl PtySession {
         let input_tx = spawn_writer(Arc::clone(&writer), Arc::clone(&queued));
 
         Ok(Self {
+            uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             label,
+            group: None,
+            watch: None,
             cwd,
             parser,
             child_pid,
@@ -155,6 +196,8 @@ impl PtySession {
             output,
             prompt_queue: None,
             prompt_since: None,
+            prompt_submit: false,
+            enter_at: None,
             master: pair.master,
             child,
         })
@@ -187,11 +230,20 @@ impl PtySession {
     pub fn queue_prompt(&mut self, text: &str) {
         self.prompt_queue = Some(text.to_string());
         self.prompt_since = Some(Instant::now());
+        self.prompt_submit = false;
     }
 
-    /// True while queued text has not reached the child yet.
+    /// Type text into the prompt box and press Enter after it: a message
+    /// sent, not a suggestion left for a human to send.
+    pub fn queue_submit(&mut self, text: &str) {
+        self.queue_prompt(text);
+        self.prompt_submit = true;
+    }
+
+    /// True while queued text, or the Enter after it, has not reached the
+    /// child yet.
     pub fn prompt_pending(&self) -> bool {
-        self.prompt_queue.is_some()
+        self.prompt_queue.is_some() || self.enter_at.is_some()
     }
 
     /// Whether the child looks ready to take typed text. Claude Code draws a
@@ -212,6 +264,14 @@ impl PtySession {
 
     /// Hand queued prompt text to the child once it can take it.
     pub fn flush_prompt(&mut self) {
+        if let Some(at) = self.enter_at
+            && Instant::now() >= at
+        {
+            self.enter_at = None;
+            if self.is_alive() {
+                let _ = self.write_passthrough(b"\r");
+            }
+        }
         if self.prompt_queue.is_none() {
             return;
         }
@@ -230,7 +290,25 @@ impl PtySession {
             return;
         };
         self.prompt_since = None;
-        let _ = self.write_input(text.as_bytes());
+        // Several lines typed plainly would submit at the first newline, so
+        // they go in as one paste when the child understands those.
+        let bytes = if text.contains('\n') && self.bracketed_paste() {
+            keys::encode_paste_chunk(&text, true, true, true)
+        } else {
+            text.into_bytes()
+        };
+        let _ = self.write_input(&bytes);
+        if std::mem::take(&mut self.prompt_submit) {
+            self.enter_at = Some(Instant::now() + SUBMIT_DELAY);
+        }
+    }
+
+    /// The screen as text, the way someone looking at the pane would read it.
+    pub fn screen_text(&self) -> String {
+        self.parser
+            .read()
+            .map(|p| p.screen().contents())
+            .unwrap_or_default()
     }
 
     /// Bytes still waiting to reach the child, so a long paste can say so.

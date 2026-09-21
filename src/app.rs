@@ -1,6 +1,7 @@
 //! Application state and the actions the key handler can trigger.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -12,6 +13,7 @@ use std::{
 use anyhow::Result;
 
 use crate::{
+    bigbrother::{self, Level, Report, Scope},
     commitmsg, config, git,
     gitview::GitView,
     history,
@@ -95,6 +97,12 @@ pub enum Mode {
     Branch,
     /// Typing the commit message at the foot of the git panel.
     Commit,
+    /// `t` is armed: the next letter is the selected session's group.
+    Tag,
+    /// `B` is armed: the next key says what the new Big Brother watches.
+    BigBrother,
+    /// The reports the Big Brothers filed.
+    Reports,
 }
 
 impl Mode {
@@ -518,7 +526,31 @@ pub struct App {
     clone_rx: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     /// Where the panel drew what a click can press, for the mouse handler.
     pub git_hits: Vec<(ratatui::layout::Rect, GitHit)>,
+    /// The socket Big Brothers reach the fleet on, opened with the first one.
+    bb_server: Option<bigbrother::Server>,
+    /// Where the `fleet` command they run is written.
+    bb_shim: Option<PathBuf>,
+    /// Changes in the sessions, for `fleet wait`; numbered by `bb_seq`.
+    bb_events: Vec<bigbrother::Event>,
+    bb_seq: u64,
+    /// The last event each Big Brother (by uid) has collected.
+    bb_cursor: HashMap<u64, u64>,
+    /// Each session's state as of the last look, by uid, to spot changes.
+    last_state: HashMap<u64, String>,
+    /// What the Big Brothers reported, oldest first.
+    pub reports: Vec<Report>,
+    /// Reports filed since the list was last opened.
+    pub unread_reports: usize,
+    /// The worst level among those.
+    pub unread_level: Option<Level>,
+    /// How far the report list is scrolled from its newest entry.
+    pub reports_scroll: usize,
 }
+
+/// How many session events the fleet keeps for Big Brothers to collect.
+const EVENT_LOG: usize = 500;
+/// How many reports the list keeps.
+const REPORT_LOG: usize = 200;
 
 /// A border between columns that the mouse can move.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -603,6 +635,16 @@ impl App {
             cloning: None,
             clone_rx: None,
             git_hits: Vec::new(),
+            bb_server: None,
+            bb_shim: None,
+            bb_events: Vec::new(),
+            bb_seq: 0,
+            bb_cursor: HashMap::new(),
+            last_state: HashMap::new(),
+            reports: Vec::new(),
+            unread_reports: 0,
+            unread_level: None,
+            reports_scroll: 0,
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -719,20 +761,9 @@ impl App {
             self.notify(format!("no such directory: {}", cwd.display()));
             return Ok(());
         }
-        let taken: Vec<String> = self.sessions.iter().map(|s| s.label.clone()).collect();
-        let label = label_for(&cwd, &taken);
-
-        let session = PtySession::spawn(
-            label.clone(),
-            cwd,
-            self.pane_rows.max(4),
-            self.pane_cols.max(20),
-            Arc::new(AtomicBool::new(true)),
-            args,
-        )?;
-
-        self.sessions.push(session);
-        self.selected = self.sessions.len() - 1;
+        let idx = self.spawn_raw(cwd, args, &[], None)?;
+        let label = self.sessions[idx].label.clone();
+        self.selected = idx;
         self.mode = Mode::Focus;
 
         if std::mem::take(&mut self.spawn_understand) {
@@ -748,6 +779,37 @@ impl App {
             self.notify(format!("started {label}"));
         }
         Ok(())
+    }
+
+    /// Start a session and put its card on the list, leaving the selection
+    /// and the keyboard where they are. Returns its index.
+    fn spawn_raw(
+        &mut self,
+        cwd: PathBuf,
+        args: &[String],
+        env: &[(String, String)],
+        base: Option<String>,
+    ) -> Result<usize> {
+        let taken: Vec<String> = self.sessions.iter().map(|s| s.label.clone()).collect();
+        let label = match base {
+            Some(b) if !taken.contains(&b) => b,
+            Some(b) => (2..)
+                .map(|n| format!("{b}-{n}"))
+                .find(|c| !taken.contains(c))
+                .expect("an unbounded range always finds a free name"),
+            None => label_for(&cwd, &taken),
+        };
+        let session = PtySession::spawn_with_env(
+            label,
+            cwd,
+            self.pane_rows.max(4),
+            self.pane_cols.max(20),
+            Arc::new(AtomicBool::new(true)),
+            args,
+            env,
+        )?;
+        self.sessions.push(session);
+        Ok(self.sessions.len() - 1)
     }
 
     /// Arm `u` and wait for the key that says which session it is for.
@@ -835,7 +897,13 @@ impl App {
 
         alive
             .into_iter()
-            .map(|i| supervise::Restore::new(self.sessions[i].cwd.clone(), ids[i].clone()))
+            .map(|i| {
+                let s = &self.sessions[i];
+                let mut r = supervise::Restore::new(s.cwd.clone(), ids[i].clone());
+                r.group = s.group;
+                r.watch = s.watch.as_ref().map(|w| w.scope.name());
+                r
+            })
             .collect()
     }
 
@@ -1302,12 +1370,23 @@ impl App {
     pub fn restore_sessions(&mut self, items: Vec<supervise::Restore>) -> Result<()> {
         let mut resumed = 0;
         for item in items {
+            if let Some(scope) = item.watch.as_deref().and_then(Scope::parse) {
+                resumed += usize::from(item.session.is_some());
+                self.start_big_brother(scope, item.cwd, item.session)?;
+                continue;
+            }
+            let before = self.sessions.len();
             match item.session {
                 Some(id) => {
                     self.spawn_session_with(item.cwd, &["--resume".to_string(), id])?;
                     resumed += 1;
                 }
                 None => self.spawn_session(item.cwd)?,
+            }
+            if self.sessions.len() > before
+                && let Some(s) = self.sessions.last_mut()
+            {
+                s.group = item.group;
             }
         }
         if !self.sessions.is_empty() {
@@ -1646,6 +1725,421 @@ impl App {
         }
     }
 
+    /// Put the selected session in a group, or take it out of one.
+    pub fn set_group(&mut self, group: Option<char>) {
+        self.mode = Mode::Nav;
+        let Some(s) = self.sessions.get_mut(self.selected) else {
+            return;
+        };
+        if s.watch.is_some() {
+            self.notify("a Big Brother's scope is fixed when it starts — B starts another");
+            return;
+        }
+        s.group = group;
+        let label = s.label.clone();
+        self.notify(match group {
+            Some(g) => format!("{label} is in group {g} now"),
+            None => format!("{label} is in no group now"),
+        });
+    }
+
+    /// The groups in use, with how many sessions each holds.
+    pub fn groups(&self) -> Vec<(char, usize)> {
+        let mut out: Vec<(char, usize)> = Vec::new();
+        for g in self
+            .sessions
+            .iter()
+            .filter(|s| s.watch.is_none())
+            .filter_map(|s| s.group)
+        {
+            match out.iter_mut().find(|(c, _)| *c == g) {
+                Some((_, n)) => *n += 1,
+                None => out.push((g, 1)),
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// What `B` then `enter` watches: the selected session's group, or all.
+    pub fn default_scope(&self) -> Scope {
+        self.selected_session()
+            .filter(|s| s.watch.is_none())
+            .and_then(|s| s.group)
+            .map_or(Scope::All, Scope::Group)
+    }
+
+    /// Start a Big Brother over `scope` and put the pane on it — or on the
+    /// one already watching that scope.
+    pub fn spawn_big_brother(&mut self, scope: Scope) -> Result<()> {
+        self.mode = Mode::Nav;
+        if let Some(i) = self.sessions.iter().position(|s| {
+            s.is_alive() && s.watch.as_ref().is_some_and(|w| w.scope == scope)
+        }) {
+            self.selected = i;
+            self.mode = Mode::Focus;
+            self.notify(format!("{} is already watching", self.sessions[i].label));
+            return Ok(());
+        }
+        let cwd = self.launch_cwd.clone();
+        if let Some(i) = self.start_big_brother(scope, cwd, None)? {
+            self.selected = i;
+            self.mode = Mode::Focus;
+            self.notify(format!(
+                "{} started — it watches {}",
+                self.sessions[i].label,
+                scope.describe()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Start a Big Brother, carrying on `resume` when given. Returns its index.
+    fn start_big_brother(
+        &mut self,
+        scope: Scope,
+        cwd: PathBuf,
+        resume: Option<String>,
+    ) -> Result<Option<usize>> {
+        if self.bb_server.is_none() {
+            self.bb_server = Some(bigbrother::Server::start(Arc::clone(&self.dirty))?);
+        }
+        let exe = std::env::current_exe()?;
+        if self.bb_shim.is_none() {
+            self.bb_shim = Some(bigbrother::write_shim(&exe)?);
+        }
+        let (Some(server), Some(shim)) = (&self.bb_server, &self.bb_shim) else {
+            return Ok(None);
+        };
+        let cwd = if cwd.is_dir() { cwd } else { self.launch_cwd.clone() };
+        let token = bigbrother::new_token();
+        let env = bigbrother::child_env(&server.addr, &token, shim, &exe);
+        let mut args = Vec::new();
+        if let Some(id) = &resume {
+            args.push("--resume".to_string());
+            args.push(id.clone());
+        }
+        args.extend(bigbrother::claude_args(scope));
+        let idx = self.spawn_raw(cwd, &args, &env, Some(scope.label()))?;
+        let s = &mut self.sessions[idx];
+        s.watch = Some(bigbrother::Watch { scope, token });
+        s.queue_submit(if resume.is_some() {
+            "The fleet restarted and you are back. Carry on watching: `fleet list`, then `fleet wait`."
+        } else {
+            bigbrother::KICKOFF
+        });
+        // It hears about what happens from now on; `fleet list` tells it the rest.
+        let uid = s.uid;
+        self.bb_cursor.insert(uid, self.bb_seq);
+        Ok(Some(idx))
+    }
+
+    /// How a session stands, in words a Big Brother reads.
+    pub fn state_of(&self, idx: usize) -> String {
+        let Some(s) = self.sessions.get(idx) else {
+            return "gone".to_string();
+        };
+        if !s.is_alive() {
+            return "finished".to_string();
+        }
+        match self.entry_for(idx) {
+            Some(e) if e.status == "busy" => "working".to_string(),
+            Some(e) if e.status == "idle" => "idle".to_string(),
+            Some(e) if e.is_waiting() && !e.waiting_for.is_empty() => {
+                format!("waiting for the user ({})", e.waiting_for)
+            }
+            Some(e) if e.is_waiting() => "waiting for the user".to_string(),
+            Some(e) => e.status.clone(),
+            None => "starting".to_string(),
+        }
+    }
+
+    /// Note every watched session whose state moved since the last look.
+    fn record_states(&mut self) {
+        let mut seen = Vec::new();
+        for i in 0..self.sessions.len() {
+            let s = &self.sessions[i];
+            if s.watch.is_some() {
+                continue;
+            }
+            let (uid, label, group) = (s.uid, s.label.clone(), s.group);
+            let cwd = s.cwd.display().to_string();
+            seen.push(uid);
+            let now = self.state_of(i);
+            let text = match self.last_state.get(&uid) {
+                Some(before) if *before == now => continue,
+                Some(before) => format!("{label}: {before} -> {now}"),
+                None => format!("{label}: started in {cwd} ({now})"),
+            };
+            self.last_state.insert(uid, now);
+            self.bb_seq += 1;
+            self.bb_events.push(bigbrother::Event {
+                seq: self.bb_seq,
+                group,
+                text,
+                at: Instant::now(),
+            });
+        }
+        self.last_state.retain(|uid, _| seen.contains(uid));
+        if self.bb_events.len() > EVENT_LOG {
+            let excess = self.bb_events.len() - EVENT_LOG;
+            self.bb_events.drain(..excess);
+        }
+    }
+
+    /// Answer whatever the Big Brothers asked since the last frame.
+    fn poll_big_brother(&mut self) {
+        let mut requests = Vec::new();
+        if let Some(server) = &self.bb_server {
+            while let Some(req) = server.try_recv() {
+                requests.push(req);
+            }
+        }
+        for req in requests {
+            let answer = self.answer_big_brother(&req.token, &req.cmd, &req.args);
+            req.answer(match answer {
+                Ok(v) => v,
+                Err(e) => bigbrother::err(e),
+            });
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The sessions a Big Brother over `scope` may see: not itself, not any
+    /// other Big Brother, and only its own group unless it watches them all.
+    fn watched(&self, scope: Scope) -> Vec<usize> {
+        (0..self.sessions.len())
+            .filter(|&i| {
+                let s = &self.sessions[i];
+                s.watch.is_none() && scope.covers(s.group)
+            })
+            .collect()
+    }
+
+    /// A session named in a request, within the asker's scope.
+    fn target(&self, scope: Scope, name: Option<&String>) -> Result<usize, String> {
+        let name = name.ok_or("which session? give its name (fleet list shows them)")?;
+        let watched = self.watched(scope);
+        let by_key = name
+            .strip_prefix(['F', 'f'])
+            .and_then(|n| n.parse::<usize>().ok())
+            .and_then(|n| n.checked_sub(1));
+        watched
+            .iter()
+            .copied()
+            .find(|&i| self.sessions[i].label.eq_ignore_ascii_case(name))
+            .or_else(|| by_key.filter(|k| watched.contains(k)))
+            .ok_or_else(|| {
+                let names: Vec<&str> = watched
+                    .iter()
+                    .map(|&i| self.sessions[i].label.as_str())
+                    .collect();
+                if names.is_empty() {
+                    format!("no session called {name} — you watch none right now")
+                } else {
+                    format!("no session called {name} in your scope; there is: {}", names.join(", "))
+                }
+            })
+    }
+
+    fn answer_big_brother(
+        &mut self,
+        token: &str,
+        cmd: &str,
+        args: &[String],
+    ) -> Result<serde_json::Value, String> {
+        let me = self
+            .sessions
+            .iter()
+            .position(|s| s.watch.as_ref().is_some_and(|w| w.token == token))
+            .ok_or("this Big Brother is not known to the fleet (was it restarted?)")?;
+        let (my_uid, my_label, my_cwd) = {
+            let s = &self.sessions[me];
+            (s.uid, s.label.clone(), s.cwd.clone())
+        };
+        let scope = self.sessions[me]
+            .watch
+            .as_ref()
+            .map_or(Scope::All, |w| w.scope);
+        let ok = |t: String| Ok(bigbrother::ok(t));
+
+        match cmd {
+            "whoami" => ok(format!("you are {my_label}, watching {}", scope.describe())),
+            "list" => {
+                let rows: Vec<String> = self
+                    .watched(scope)
+                    .into_iter()
+                    .map(|i| {
+                        let s = &self.sessions[i];
+                        format!(
+                            "{:<18} group {:<2} F{:<2} {:<28} up {:<6} {}",
+                            s.label,
+                            s.group.map(String::from).unwrap_or_else(|| "-".into()),
+                            i + 1,
+                            self.state_of(i),
+                            crate::ui::fmt_uptime(s.started.elapsed()),
+                            s.cwd.display()
+                        )
+                    })
+                    .collect();
+                ok(if rows.is_empty() {
+                    format!("no sessions in your scope ({})", scope.describe())
+                } else {
+                    rows.join("\n")
+                })
+            }
+            "events" => {
+                let from = self.bb_cursor.get(&my_uid).copied().unwrap_or(0);
+                let lines: Vec<String> = self
+                    .bb_events
+                    .iter()
+                    .filter(|e| e.seq > from && scope.covers(e.group))
+                    .map(|e| format!("[{}s ago] {}", e.at.elapsed().as_secs(), e.text))
+                    .collect();
+                self.bb_cursor.insert(my_uid, self.bb_seq);
+                ok(lines.join("\n"))
+            }
+            "peek" => {
+                let i = self.target(scope, args.first())?;
+                let screen = self.sessions[i].screen_text();
+                let mut lines: Vec<&str> = screen.lines().map(str::trim_end).collect();
+                while lines.last().is_some_and(|l| l.is_empty()) {
+                    lines.pop();
+                }
+                if let Some(n) = args.get(1).and_then(|n| n.parse::<usize>().ok()) {
+                    let start = lines.len().saturating_sub(n);
+                    lines.drain(..start);
+                }
+                ok(format!(
+                    "--- {} ({}) ---\n{}",
+                    self.sessions[i].label,
+                    self.state_of(i),
+                    lines.join("\n")
+                ))
+            }
+            "resolve" => {
+                let i = self.target(scope, args.first())?;
+                let id = self
+                    .entry_for(i)
+                    .map(|e| e.session_id.clone())
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| format!("{} has no conversation yet", self.sessions[i].label))?;
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "text": "",
+                    "session_id": id,
+                    "cwd": self.sessions[i].cwd.display().to_string(),
+                }))
+            }
+            "send" | "clear" | "key" | "kill" => {
+                let i = self.target(scope, args.first())?;
+                let s = &mut self.sessions[i];
+                if !s.is_alive() {
+                    return Err(format!("{} has finished", s.label));
+                }
+                let label = s.label.clone();
+                let done = match cmd {
+                    "send" => {
+                        let text = args[1..].join(" ");
+                        if text.trim().is_empty() {
+                            return Err("usage: fleet send <name> <text>".into());
+                        }
+                        s.queue_submit(&text);
+                        format!("sent to {label}")
+                    }
+                    "clear" => {
+                        s.queue_submit("/clear");
+                        format!("{label}: /clear sent")
+                    }
+                    "key" => {
+                        if args.len() < 2 {
+                            return Err("usage: fleet key <name> <key>...".into());
+                        }
+                        let mut bytes = Vec::new();
+                        for k in &args[1..] {
+                            bytes.extend(
+                                bigbrother::key_bytes(k).ok_or(format!("unknown key: {k}"))?,
+                            );
+                        }
+                        s.write_passthrough(&bytes).map_err(|e| e.to_string())?;
+                        format!("{label}: pressed {}", args[1..].join(" "))
+                    }
+                    _ => {
+                        s.kill();
+                        format!("killed {label}")
+                    }
+                };
+                self.notify(format!("{my_label}: {done}"));
+                ok(done)
+            }
+            "spawn" => {
+                let dir = args.first().ok_or("usage: fleet spawn <dir> [prompt]")?;
+                let path = PathBuf::from(dir);
+                let path = if path.is_absolute() { path } else { my_cwd.join(path) };
+                if !path.is_dir() {
+                    return Err(format!("no such directory: {}", path.display()));
+                }
+                let idx = self.spawn_raw(path, &[], &[], None).map_err(|e| e.to_string())?;
+                let s = &mut self.sessions[idx];
+                if let Scope::Group(g) = scope {
+                    s.group = Some(g);
+                }
+                let prompt = args[1..].join(" ");
+                if !prompt.trim().is_empty() {
+                    s.queue_submit(&prompt);
+                }
+                let label = s.label.clone();
+                self.notify(format!("{my_label} started {label}"));
+                ok(format!("started {label} (F{})", idx + 1))
+            }
+            "alert" => {
+                let (level, text) = match args.first().and_then(|a| Level::parse(a)) {
+                    Some(l) => (l, args[1..].join(" ")),
+                    None => (Level::Warn, args.join(" ")),
+                };
+                if text.trim().is_empty() {
+                    return Err("usage: fleet alert <info|warn|alarm> <text>".into());
+                }
+                self.file_report(my_label, level, text);
+                ok("reported".to_string())
+            }
+            other => Err(format!("unknown command: {other} (fleet help lists them)")),
+        }
+    }
+
+    /// Keep a report, say it on the status line, and ring for the serious ones.
+    fn file_report(&mut self, from: String, level: Level, text: String) {
+        self.notify(format!("{from} [{}]: {text}", level.name()));
+        if level >= Level::Warn {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x07");
+            let _ = out.flush();
+        }
+        self.reports.push(Report {
+            from,
+            level,
+            text,
+            at: Instant::now(),
+        });
+        if self.reports.len() > REPORT_LOG {
+            self.reports.remove(0);
+        }
+        self.unread_reports += 1;
+        self.unread_level = self.unread_level.max(Some(level));
+    }
+
+    pub fn open_reports(&mut self) {
+        if self.reports.is_empty() {
+            self.notify("no reports yet — B starts a Big Brother");
+            return;
+        }
+        self.unread_reports = 0;
+        self.unread_level = None;
+        self.reports_scroll = 0;
+        self.mode = Mode::Reports;
+    }
+
     /// Per-frame bookkeeping: reap dead children, drop expired cards, refresh
     /// the registry, expire the status line.
     pub fn tick(&mut self) {
@@ -1694,6 +2188,7 @@ impl App {
             }
         }
 
+        self.poll_big_brother();
         self.poll_update();
         self.poll_git();
         self.poll_git_jobs();
@@ -1716,6 +2211,7 @@ impl App {
             if self.any_own_busy() {
                 self.spent_since_refresh = true;
             }
+            self.record_states();
             if self.usage_refresh_due() {
                 self.refresh_usage();
             }

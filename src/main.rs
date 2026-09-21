@@ -5,6 +5,7 @@
 //! belongs to another terminal and cannot be adopted.
 
 mod app;
+mod bigbrother;
 mod clipimg;
 mod commitmsg;
 mod config;
@@ -75,6 +76,15 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         Some("--list" | "-l") => return print_registry(),
+        // The `fleet` command a Big Brother runs: a client of the fleet
+        // that started it, never a TUI of its own.
+        Some("bb") => {
+            if let Err(e) = bigbrother::cli(&args[1..]) {
+                eprintln!("fleet: {e:#}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         Some("--pipes") => {
             for p in registry::debug_pipe_names() {
                 println!("{p}");
@@ -133,6 +143,7 @@ fn print_usage() {
          USAGE:\n\
          \x20 claude-fleet [DIR]       run the TUI (default: current directory)\n\
          \x20 claude-fleet --list      print the running sessions and exit\n\
+         \x20 claude-fleet bb help     commands a BIG BROTHER drives the fleet with\n\
          \x20 claude-fleet --help      this help\n\
          \n\
          DIAGNOSTICS:\n\
@@ -1022,6 +1033,35 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         Mode::Git => handle_git(app, key),
         Mode::Branch => handle_branch(app, key),
         Mode::Commit => handle_commit(app, key),
+        Mode::Tag => match key.code {
+            KeyCode::Char(c) if c.is_ascii_alphabetic() => {
+                app.set_group(Some(c.to_ascii_lowercase()));
+            }
+            KeyCode::Char('-' | ' ') | KeyCode::Backspace | KeyCode::Delete => {
+                app.set_group(None);
+            }
+            _ => app.mode = Mode::Nav,
+        },
+        Mode::BigBrother => match key.code {
+            KeyCode::Char(c) if c.is_ascii_alphabetic() => {
+                app.spawn_big_brother(bigbrother::Scope::Group(c.to_ascii_lowercase()))?;
+            }
+            KeyCode::Char('*') => app.spawn_big_brother(bigbrother::Scope::All)?,
+            KeyCode::Enter => {
+                let scope = app.default_scope();
+                app.spawn_big_brother(scope)?;
+            }
+            _ => app.mode = Mode::Nav,
+        },
+        Mode::Reports => match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.reports_scroll = app.reports_scroll.saturating_sub(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.reports_scroll = (app.reports_scroll + 1).min(app.reports.len().saturating_sub(1));
+            }
+            _ => app.mode = Mode::Nav,
+        },
     }
     Ok(())
 }
@@ -1132,6 +1172,13 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
         KeyCode::Char('g') => app.focus_git(),
         KeyCode::Char('G') => app.toggle_git(),
         KeyCode::Char('b') => app.open_branch_picker(),
+        KeyCode::Char('t') => {
+            if app.selected_session().is_some() {
+                app.mode = Mode::Tag;
+            }
+        }
+        KeyCode::Char('B') => app.mode = Mode::BigBrother,
+        KeyCode::Char('A') => app.open_reports(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
         _ => {}

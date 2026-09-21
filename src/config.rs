@@ -33,6 +33,7 @@ pub struct Config {
     pub timings: Timings,
     pub updates: Updates,
     pub commit: CommitCfg,
+    pub bigbrother: BigBrotherCfg,
 }
 
 /// Colours as written in the file: `#RRGGBB`, or a named terminal colour.
@@ -211,6 +212,16 @@ impl Default for CommitCfg {
     }
 }
 
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BigBrotherCfg {
+    /// The model a Big Brother runs on; empty leaves it to Claude Code.
+    pub model: String,
+    /// Standing orders appended to its system prompt: what counts as
+    /// suspicious here, which language to report in, what it may do alone.
+    pub instructions: String,
+}
+
 /// Everything the loader tracks: the values, the palette they resolved to, and
 /// what the file looked like when they were read.
 struct Loaded {
@@ -377,6 +388,13 @@ pub fn commit_model() -> String {
         .unwrap_or_else(|_| CommitCfg::default().model)
 }
 
+pub fn bigbrother() -> BigBrotherCfg {
+    CURRENT
+        .read()
+        .map(|c| c.cfg.bigbrother.clone())
+        .unwrap_or_default()
+}
+
 pub fn finished_ttl() -> Duration {
     let secs = CURRENT
         .read()
@@ -476,6 +494,13 @@ check = true
 # The model that writes a commit message when the git panel is asked for one
 # (`m`, or the Generate button). It runs through `claude -p`, on your account.
 model = "claude-haiku-4-5"
+
+[bigbrother]
+# The model a Big Brother (`B`) runs on. Empty = Claude Code's default.
+model = ""
+# Standing orders added to its system prompt, e.g. the language to report in
+# or what it may do without asking.
+instructions = ""
 "##;
 
 #[cfg(test)]
