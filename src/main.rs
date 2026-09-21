@@ -42,7 +42,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
-    app::{App, Mode},
+    app::{App, Drag, Mode},
     input::Input,
 };
 
@@ -746,6 +746,7 @@ fn restore_terminal(terminal: &mut Tui) -> Result<()> {
 
 /// The TUI. Returns whether the fleet should be started again.
 fn run(terminal: &mut Tui, cwd: PathBuf, config_error: Option<String>) -> Result<bool> {
+    ui::load_widths();
     let mut app = App::new(cwd);
     let input = Input::spawn();
 
@@ -910,6 +911,7 @@ fn drain_key_burst(input: &Input, first: char) -> Burst {
 /// a stale layout.
 fn sync_pane_size(terminal: &Tui, app: &mut App) -> Result<()> {
     let size = terminal.size()?.into();
+    app.term = size;
     app.git_fits = ui::git_fits(size);
     let area = ui::pane_area(size, app.show_git);
     let inner = ui::pane_inner_rect(area);
@@ -942,6 +944,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         && app.mode != Mode::Understand
         && handle_reserved_fkey(app, n, false)?
     {
+        return Ok(());
+    }
+
+    // Alt+Shift+G hides or shows the panel from anywhere, a session included.
+    // Terminals disagree on whether the shift shows up as the modifier, the
+    // capital, or both, so any of them counts.
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && (key.code == KeyCode::Char('G')
+            || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::SHIFT)))
+        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git)
+    {
+        app.toggle_git();
         return Ok(());
     }
 
@@ -1094,6 +1109,7 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') => app.toggle_git(),
         KeyCode::Char('b') => app.open_branch_picker(),
         KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
         _ => {}
     }
 }
@@ -1125,7 +1141,47 @@ fn handle_git(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => app.git_view.scroll_preview(-page),
         KeyCode::Char('J') => app.git_view.scroll_preview(1),
         KeyCode::Char('K') => app.git_view.scroll_preview(-1),
+        KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
         _ => {}
+    }
+    app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// `[` `]` narrow and widen the sidebar, `{` `}` the git panel, a few
+/// columns at a time.
+fn resize_by_key(app: &mut App, c: char) {
+    const STEP: u16 = 4;
+    match c {
+        '[' => ui::set_sidebar_width(ui::sidebar_width().saturating_sub(STEP), app.term, app.show_git),
+        ']' => ui::set_sidebar_width(ui::sidebar_width() + STEP, app.term, app.show_git),
+        '{' => ui::set_git_width(ui::git_width().saturating_sub(STEP), app.term),
+        _ => ui::set_git_width(ui::git_width() + STEP, app.term),
+    }
+    ui::save_widths();
+    app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// The column border under the pointer, if it is on one. Either of the two
+/// border columns that meet there counts, so the grab is not a one-cell hunt.
+fn border_at(app: &App, column: u16) -> Option<Drag> {
+    let sidebar = ui::sidebar_width();
+    if column + 1 == sidebar || column == sidebar {
+        return Some(Drag::Sidebar);
+    }
+    if app.show_git && app.git_fits {
+        let git_x = app.term.width.saturating_sub(ui::git_width());
+        if column + 1 == git_x || column == git_x {
+            return Some(Drag::Git);
+        }
+    }
+    None
+}
+
+/// Move the border being dragged to the pointer's column.
+fn drag_to(app: &mut App, drag: Drag, column: u16) {
+    match drag {
+        Drag::Sidebar => ui::set_sidebar_width(column + 1, app.term, app.show_git),
+        Drag::Git => ui::set_git_width(app.term.width.saturating_sub(column), app.term),
     }
     app.dirty.store(true, Ordering::Relaxed);
 }
@@ -1352,7 +1408,29 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     let up = match m.kind {
         MouseEventKind::ScrollUp => true,
         MouseEventKind::ScrollDown => false,
-        MouseEventKind::Down(MouseButton::Left) => return handle_click(app, m),
+        MouseEventKind::Down(MouseButton::Left) => {
+            // A press on a column border picks it up rather than clicking.
+            if matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git)
+                && let Some(drag) = border_at(app, m.column)
+            {
+                app.drag = Some(drag);
+                return;
+            }
+            return handle_click(app, m);
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(drag) = app.drag {
+                drag_to(app, drag, m.column);
+            }
+            return;
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if let Some(drag) = app.drag.take() {
+                drag_to(app, drag, m.column);
+                ui::save_widths();
+            }
+            return;
+        }
         _ => return,
     };
 

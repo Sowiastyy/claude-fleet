@@ -93,7 +93,10 @@ transcript instead.
 | `i` | install a newer release from GitHub (see below) |
 | `x` | kill the selected session (with a confirmation) |
 | `w` | close a finished session's card right away |
-| `g` | show or hide the git panel (see below) |
+| `g` | browse the git panel (see below) |
+| `G` | show or hide the git panel (hidden at start) |
+| `[` / `]` | sidebar narrower / wider |
+| `{` / `}` | git panel narrower / wider |
 | `b` | switch the selected session's repository to another branch |
 | `?` | help |
 | `q` | quit |
@@ -145,6 +148,7 @@ sooner.
 |---|---|
 | **`F10`** | **leave focus** |
 | `Alt+G` | straight to the git panel; `Alt+G` there comes back into the session |
+| `Alt+Shift+G` | show or hide the git panel |
 | `←` at the start of the input | leave focus too — the arrow has nowhere left to go in the box |
 | everything else | goes to Claude, including `Ctrl+anything` |
 | mouse wheel | scroll the history (see "Scrolling") |
@@ -152,6 +156,9 @@ sooner.
 A left click moves the keyboard to what it lands on, in the list, in focus and
 on the git panel alike: a card selects that session, the pane goes into it, the
 git panel starts browsing.
+
+Dragging a column border with the mouse resizes the sidebar or the git panel.
+The widths are kept in `~/.claude/fleet-layout` for the next start.
 
 ## Pasting
 

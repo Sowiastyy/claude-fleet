@@ -1,6 +1,7 @@
 //! All rendering. The pane is a `tui-term` widget over the session's vt100
 //! screen; everything else is chrome drawn around it.
 
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ratatui::{
@@ -25,9 +26,79 @@ pub const SIDEBAR_WIDTH: u16 = 36;
 /// subject and its age.
 pub const GIT_WIDTH: u16 = 44;
 
+/// The narrowest either side column may be dragged to. Below this the cards
+/// and the git rows stop saying anything.
+pub const SIDEBAR_MIN: u16 = 28;
+pub const GIT_MIN: u16 = 32;
+
+/// The widths in use, which the mouse can drag away from the defaults above.
+/// Global rather than on `App` because every draw function sizes its rows by
+/// them, and threading two numbers through all of them buys nothing.
+static SIDEBAR_W: AtomicU16 = AtomicU16::new(SIDEBAR_WIDTH);
+static GIT_W: AtomicU16 = AtomicU16::new(GIT_WIDTH);
+
+pub fn sidebar_width() -> u16 {
+    SIDEBAR_W.load(Ordering::Relaxed)
+}
+
+pub fn git_width() -> u16 {
+    GIT_W.load(Ordering::Relaxed)
+}
+
+/// Set the sidebar's width, kept wide enough to read and narrow enough to
+/// leave the pane (and the git panel, when it is up) their room.
+pub fn set_sidebar_width(w: u16, full: Rect, show_git: bool) {
+    let others = if show_git && git_fits(full) {
+        PANE_MIN_WITH_GIT + git_width()
+    } else {
+        PANE_MIN
+    };
+    let max = full.width.saturating_sub(others).max(SIDEBAR_MIN);
+    SIDEBAR_W.store(w.clamp(SIDEBAR_MIN, max), Ordering::Relaxed);
+}
+
+/// Set the git panel's width. It never grows past the point where it would no
+/// longer fit, or dragging it wider would make it disappear.
+pub fn set_git_width(w: u16, full: Rect) {
+    let max = full
+        .width
+        .saturating_sub(sidebar_width() + PANE_MIN_WITH_GIT)
+        .max(GIT_MIN);
+    GIT_W.store(w.clamp(GIT_MIN, max), Ordering::Relaxed);
+}
+
+/// The widths as they were last left, read back at start-up.
+pub fn load_widths() {
+    let Some(raw) = widths_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return;
+    };
+    let mut it = raw.split_whitespace().map(str::parse::<u16>);
+    if let Some(Ok(w)) = it.next() {
+        SIDEBAR_W.store(w.max(SIDEBAR_MIN), Ordering::Relaxed);
+    }
+    if let Some(Ok(w)) = it.next() {
+        GIT_W.store(w.max(GIT_MIN), Ordering::Relaxed);
+    }
+}
+
+/// Remember the widths for the next start. Losing them is no great harm, so a
+/// failed write is not reported.
+pub fn save_widths() {
+    if let Some(p) = widths_path() {
+        let _ = std::fs::write(p, format!("{} {}
+", sidebar_width(), git_width()));
+    }
+}
+
+fn widths_path() -> Option<std::path::PathBuf> {
+    Some(dirs::home_dir()?.join(".claude").join("fleet-layout"))
+}
+
 /// The narrowest the terminal pane may get before the git panel steps aside
 /// for it: Claude Code's own layout starts breaking up below about this.
 const PANE_MIN_WITH_GIT: u16 = 70;
+/// The narrowest the pane may get with the git panel hidden.
+const PANE_MIN: u16 = 20;
 
 /// Columns kept clear either side of a limit bar, so it never runs into the
 /// sidebar's border.
@@ -85,22 +156,23 @@ pub fn pane_area(full: Rect, show_git: bool) -> Rect {
 /// Whether a terminal this size has room for the git panel next to a pane
 /// still worth typing into.
 pub fn git_fits(full: Rect) -> bool {
-    full.width >= SIDEBAR_WIDTH + PANE_MIN_WITH_GIT + GIT_WIDTH
+    full.width >= sidebar_width() + PANE_MIN_WITH_GIT + git_width()
 }
 
 /// Sidebar, pane, and the git panel when it is wanted and fits.
 fn columns(body: Rect, show_git: bool) -> (Rect, Rect, Option<Rect>) {
     if show_git && git_fits(body) {
         let [sidebar, pane, git] = Layout::horizontal([
-            Constraint::Length(SIDEBAR_WIDTH),
-            Constraint::Min(20),
-            Constraint::Length(GIT_WIDTH),
+            Constraint::Length(sidebar_width()),
+            Constraint::Min(PANE_MIN),
+            Constraint::Length(git_width()),
         ])
         .areas(body);
         return (sidebar, pane, Some(git));
     }
     let [sidebar, pane] =
-        Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(20)]).areas(body);
+        Layout::horizontal([Constraint::Length(sidebar_width()), Constraint::Min(PANE_MIN)])
+            .areas(body);
     (sidebar, pane, None)
 }
 
@@ -146,14 +218,14 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let name = entry
             .map(|e| e.name.clone())
             .unwrap_or_else(|| s.label.clone());
-        let name = truncate(&name, 16);
+        let name = truncate(&name, usize::from(sidebar_width()).saturating_sub(20).max(8));
         let hotkey = if i < 9 {
             format!("F{}", i + 1)
         } else {
             String::new()
         };
         let used = 4 + name.chars().count() + hotkey.chars().count();
-        let pad = (SIDEBAR_WIDTH as usize).saturating_sub(used + 2);
+        let pad = usize::from(sidebar_width()).saturating_sub(used + 2);
 
         let name_style = if i == app.selected {
             Style::default().fg(theme::text()).add_modifier(Modifier::BOLD)
@@ -194,7 +266,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" + ", Style::default().fg(theme::accent())),
             Span::styled("new session", Style::default().fg(theme::muted())),
             Span::raw(" ".repeat(
-                (SIDEBAR_WIDTH as usize).saturating_sub(3 + "new session".len() + 4),
+                usize::from(sidebar_width()).saturating_sub(3 + "new session".len() + 4),
             )),
             Span::styled(
                 format!("F{}", app.sessions.len() + 1),
@@ -213,7 +285,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" ^ ", Style::default().fg(theme::ask())),
             Span::styled(label.clone(), Style::default().fg(theme::ask()).bold()),
             Span::raw(" ".repeat(
-                (SIDEBAR_WIDTH as usize).saturating_sub(3 + label.chars().count() + 3),
+                usize::from(sidebar_width()).saturating_sub(3 + label.chars().count() + 3),
             )),
             Span::styled(key, Style::default().fg(theme::ask())),
         ])));
@@ -224,7 +296,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" ^ ", Style::default().fg(theme::ask())),
             Span::styled("new build", Style::default().fg(theme::ask()).bold()),
             Span::raw(" ".repeat(
-                (SIDEBAR_WIDTH as usize).saturating_sub(3 + "new build".len() + 3),
+                usize::from(sidebar_width()).saturating_sub(3 + "new build".len() + 3),
             )),
             Span::styled("r", Style::default().fg(theme::ask())),
         ])));
@@ -622,7 +694,7 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
         && let Some(name) = snap.root.file_name()
     {
         title.push(Span::styled(
-            format!("{} ", truncate(&name.to_string_lossy(), GIT_WIDTH as usize - 10)),
+            format!("{} ", truncate(&name.to_string_lossy(), usize::from(git_width()) - 10)),
             Style::default().fg(theme::muted()),
         ));
     }
@@ -1735,11 +1807,16 @@ fn draw_help(f: &mut Frame) {
         ("", "(checked every half hour, or now when none is known)"),
         ("R", "resume an old conversation (transcript list)"),
         ("g", "browse the git panel (see below)"),
-        ("G", "show or hide the git panel"),
+        ("G", "show or hide the git panel (hidden at start)"),
         ("b", "switch branch (type a new name to create one)"),
         ("alt+g", "git panel from anywhere, again to go back"),
+        ("alt+shift+g", "show or hide the git panel from anywhere"),
         ("click", "a card selects it, the pane focuses it,"),
         ("", "the git panel browses it"),
+        ("drag a border", "resize the sidebar or the git panel"),
+        ("[ / ]", "sidebar narrower / wider"),
+        ("{ / }", "git panel narrower / wider"),
+        ("", "(the widths are kept for the next start)"),
         ("U", "refresh the account limits now"),
         ("", "(a hidden /usage session, no tokens)"),
         ("q", "quit"),
@@ -1788,7 +1865,9 @@ fn draw_help(f: &mut Frame) {
         ("", "their PTY belongs to another terminal"),
     ];
 
-    let area = centered(64, rows.len() as u16 + 2, f.area());
+    // Wide enough for the longest description next to its key column, so
+    // nothing wraps and the height below stays one row per entry.
+    let area = centered(80, rows.len() as u16 + 2, f.area());
     f.render_widget(Clear, area);
 
     let lines: Vec<Line> = rows

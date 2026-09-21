@@ -367,8 +367,13 @@ pub struct App {
     /// which is the difference between asking every six minutes and every half
     /// hour.
     spent_since_refresh: bool,
-    /// Whether the git panel is on screen. Toggled with `g`.
+    /// Whether the git panel is on screen. Toggled with `G` or Alt+Shift+G,
+    /// and off at start: most of the time the pane wants the room.
     pub show_git: bool,
+    /// The column border being dragged with the mouse, if any.
+    pub drag: Option<Drag>,
+    /// The terminal's size as of the last layout, which a drag is clamped to.
+    pub term: ratatui::layout::Rect,
     /// The last git read, and the directory it was made in. The panel shows it
     /// only while that is still the selected session's directory.
     pub git: Option<(PathBuf, git::State)>,
@@ -383,6 +388,15 @@ pub struct App {
     /// Whether the terminal is wide enough for the panel, as of the last
     /// layout.
     pub git_fits: bool,
+}
+
+/// A border between columns that the mouse can move.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Drag {
+    /// Between the sidebar and the pane.
+    Sidebar,
+    /// Between the pane and the git panel.
+    Git,
 }
 
 /// What the update thread reports back.
@@ -435,7 +449,9 @@ impl App {
             usage_refreshing: Arc::new(AtomicBool::new(false)),
             last_usage_refresh: None,
             spent_since_refresh: false,
-            show_git: true,
+            show_git: false,
+            drag: None,
+            term: ratatui::layout::Rect::default(),
             git: None,
             git_busy: Arc::new(AtomicBool::new(false)),
             git_tx,
