@@ -468,7 +468,7 @@ window_ms = 2000
 finished_ttl_secs = 60
 
 [updates]
-# Ask GitHub every half hour whether a newer release is out. Nothing is
+# Ask GitHub every five minutes whether a newer release is out. Nothing is
 # downloaded until `i` is pressed.
 check = true
 

@@ -411,7 +411,7 @@ On the `x86_64-pc-windows-gnu` toolchain, see "Build environment" below.
 ## Updates
 
 A fleet started from a downloaded `claude-fleet.exe` asks the GitHub API for
-the latest release at startup and every half hour after; `i` asks at once when
+the latest release at startup and every five minutes after; `i` asks at once when
 nothing newer is known yet. When there is a newer
 one the sidebar shows `^ v0.2.0 available`, and `i` downloads it, puts it in
 place of the exe the fleet was started from and asks for the usual restart —

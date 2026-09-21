@@ -2133,7 +2133,7 @@ fn draw_help(f: &mut Frame) {
             "(sessions come back with their conversations, --resume)",
         ),
         ("i", "install a newer release from GitHub, then restart"),
-        ("", "(checked every half hour, or now when none is known)"),
+        ("", "(checked every five minutes, or now when none is known)"),
         ("R", "resume an old conversation (transcript list)"),
         ("g", "browse the git panel (see below)"),
         ("G", "show or hide the git panel (hidden at start)"),

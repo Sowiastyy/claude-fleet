@@ -39,10 +39,10 @@ const EXE_CHECK: Duration = Duration::from_millis(1000);
 /// a quarter of a second still reads as instant after a save.
 const CONFIG_CHECK: Duration = Duration::from_millis(250);
 
-/// How often GitHub is asked about a newer release. Every push to main is a
-/// release, so they can come hours apart; an unauthenticated client gets sixty
-/// API calls an hour, and this spends two.
-const UPDATE_CHECK: Duration = Duration::from_secs(30 * 60);
+/// How often GitHub is asked about a newer release, so one shows up within
+/// minutes of CI publishing it. An unauthenticated client gets sixty API calls
+/// an hour — a `304` for an unchanged ETag counts too — and this spends twelve.
+const UPDATE_CHECK: Duration = Duration::from_secs(5 * 60);
 
 /// The shortest gap between two refreshes of the limit cache, used while our own
 /// sessions are burning through it.
@@ -849,7 +849,7 @@ impl App {
         std::thread::spawn(move || {
             // No network is an ordinary state for a laptop, and nothing worth
             // a status line unless someone pressed `i` and is waiting to hear:
-            // the next periodic check is half an hour away regardless.
+            // the next periodic check is a few minutes away regardless.
             match update::check(repo.as_deref()) {
                 Ok(Some(rel)) => {
                     let _ = tx.send(UpdateEvent::Found(rel));
@@ -1199,7 +1199,7 @@ impl App {
         while let Ok(ev) = self.update_rx.try_recv() {
             match ev {
                 UpdateEvent::Found(rel) => {
-                    // Said once per release, not on every six-hour check.
+                    // Said once per release, not on every periodic check.
                     if self.release.as_ref().map(|r| &r.tag) != Some(&rel.tag) {
                         self.notify(format!("{} is out — i installs it", rel.tag));
                     }
