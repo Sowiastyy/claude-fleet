@@ -76,7 +76,7 @@ pub struct PtySession {
 
 /// Resolve the `claude` executable, falling back to the standard install path
 /// when it is not on PATH (common when launched from a GUI shell).
-fn claude_binary() -> PathBuf {
+pub fn claude_binary() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
         let local = home.join(".local").join("bin").join(if cfg!(windows) {
             "claude.exe"

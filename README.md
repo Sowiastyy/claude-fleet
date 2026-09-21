@@ -121,6 +121,22 @@ local one tracking it, and a name that matches no branch is offered as a new
 branch started at HEAD. When git refuses — uncommitted changes in the way —
 its reason lands on the status line and the list stays open.
 
+At the foot of the panel sit a message box and three buttons, **Commit**,
+**Push** and **Generate**, which the mouse can press too. On the panel:
+
+| key | does |
+|---|---|
+| `c` | type the commit message (clicking the box does the same) |
+| `m` | have a model write the message from the diff |
+| `p` | push; a branch without an upstream is pushed to `origin` with `-u` |
+
+In the message box `enter` commits, `shift+enter` (or `ctrl+j`) starts a new
+line, `ctrl+g` generates, `ctrl+p` pushes, `ctrl+u` clears and `esc` goes
+back to the list. A commit takes what is staged, or every change, untracked
+files included, when nothing is. Generate runs `claude -p` with tools off on
+the diff, using `claude-haiku-4-5` unless `[commit] model` in the config says
+otherwise; it takes a few seconds and the button says so meanwhile.
+
 ## Session state on a card
 
 A card shows what the session reports in the registry:

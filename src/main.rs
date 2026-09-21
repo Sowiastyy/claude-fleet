@@ -6,6 +6,7 @@
 
 mod app;
 mod clipimg;
+mod commitmsg;
 mod config;
 mod dsr;
 mod git;
@@ -42,7 +43,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
-    app::{App, Drag, Mode},
+    app::{App, Drag, GitHit, Mode},
     input::Input,
 };
 
@@ -799,7 +800,7 @@ fn dispatch(app: &mut App, input: &Input, ev: Event) -> Result<()> {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 let key = keys::normalize(key);
                 if let Some(text) = typed_text(key)
-                    && app.mode == Mode::Focus
+                    && matches!(app.mode, Mode::Focus | Mode::Commit)
                 {
                     let burst = drain_key_burst(input, text);
                     // One character is someone typing; a burst is a paste. So
@@ -809,7 +810,7 @@ fn dispatch(app: &mut App, input: &Input, ev: Event) -> Result<()> {
                     // as a key press would submit half a prompt.
                     if app.paste_open || burst.text.chars().count() > BURST_MIN {
                         handle_paste(app, &burst.text, burst.capped);
-                    } else if burst.text == "u" && understand_chord(app) {
+                    } else if app.mode == Mode::Focus && burst.text == "u" && understand_chord(app) {
                         // A `u` on its own, moments after landing in a session,
                         // is the second half of the chord. A `u` that starts a
                         // word is not: the burst carries the rest of it.
@@ -954,7 +955,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         && !key.modifiers.contains(KeyModifiers::CONTROL)
         && (key.code == KeyCode::Char('G')
             || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::SHIFT)))
-        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git)
+        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
     {
         app.toggle_git();
         return Ok(());
@@ -964,9 +965,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // is only a letter typed into Claude. Pressed on the panel, it goes back.
     if key.code == KeyCode::Char('g')
         && key.modifiers == KeyModifiers::ALT
-        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git)
+        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
     {
-        if app.mode == Mode::Git {
+        if app.mode.on_git() {
             leave_git(app);
         } else {
             app.focus_git();
@@ -998,6 +999,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         Mode::Resume => handle_resume(app, key)?,
         Mode::Git => handle_git(app, key),
         Mode::Branch => handle_branch(app, key),
+        Mode::Commit => handle_commit(app, key),
     }
     Ok(())
 }
@@ -1122,6 +1124,9 @@ fn handle_git(app: &mut App, key: KeyEvent) {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') => app.mode = Mode::Nav,
         KeyCode::Char('G') => app.toggle_git(),
         KeyCode::Char('b') => app.open_branch_picker(),
+        KeyCode::Char('c') => app.focus_commit(),
+        KeyCode::Char('p') => app.push(),
+        KeyCode::Char('m') => app.generate_message(),
         KeyCode::Char('j') | KeyCode::Down => app.with_git(|v, s| v.move_cursor(s, 1)),
         KeyCode::Char('k') | KeyCode::Up => app.with_git(|v, s| v.move_cursor(s, -1)),
         KeyCode::Home => app.with_git(|v, s| v.home(s)),
@@ -1142,6 +1147,40 @@ fn handle_git(app: &mut App, key: KeyEvent) {
         KeyCode::Char('J') => app.git_view.scroll_preview(1),
         KeyCode::Char('K') => app.git_view.scroll_preview(-1),
         KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
+        _ => {}
+    }
+    app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// The commit message box. Enter commits; a new line is Shift+Enter or Ctrl+J,
+/// since Alt+Enter is the terminal's own full-screen key on Windows.
+fn handle_commit(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc => app.mode = Mode::Git,
+        KeyCode::Enter if shift || alt || ctrl => app.commit_msg.push('\n'),
+        KeyCode::Char('j') if ctrl => app.commit_msg.push('\n'),
+        KeyCode::Enter => app.commit(),
+        KeyCode::Backspace if ctrl || alt => {
+            // A word at a time, the way every other text box does it.
+            let kept = app.commit_msg.trim_end().len();
+            app.commit_msg.truncate(kept);
+            let cut = app
+                .commit_msg
+                .rfind(char::is_whitespace)
+                .map_or(0, |i| i + 1);
+            app.commit_msg.truncate(cut);
+        }
+        KeyCode::Backspace => {
+            app.commit_msg.pop();
+        }
+        KeyCode::Char('g') if ctrl => app.generate_message(),
+        KeyCode::Char('p') if ctrl => app.push(),
+        KeyCode::Char('u') if ctrl => app.commit_msg.clear(),
+        KeyCode::Tab | KeyCode::Up => app.mode = Mode::Git,
+        KeyCode::Char(c) if !ctrl => app.commit_msg.push(c),
         _ => {}
     }
     app.dirty.store(true, Ordering::Relaxed);
@@ -1200,7 +1239,27 @@ fn leave_git(app: &mut App) {
 /// selects it, the pane goes into the session, the git panel takes the keys.
 /// Dialogs and prompts keep theirs — a stray click must not answer them.
 fn handle_click(app: &mut App, m: MouseEvent) {
-    if !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git) {
+    if !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit) {
+        return;
+    }
+    let hit = app
+        .git_hits
+        .iter()
+        .find(|(r, _)| r.contains(ratatui::layout::Position::new(m.column, m.row)))
+        .map(|(_, h)| *h);
+    if let Some(hit) = hit {
+        match hit {
+            GitHit::Message => app.focus_commit(),
+            GitHit::Commit => app.commit(),
+            GitHit::Push => app.push(),
+            GitHit::Generate => app.generate_message(),
+        }
+        // A button pressed from inside a session still leaves the keyboard on
+        // the panel it was pressed on, not on the session behind.
+        if !app.mode.on_git() && app.show_git {
+            app.focus_git();
+        }
+        app.dirty.store(true, Ordering::Relaxed);
         return;
     }
     if m.column < app.pane_x {
@@ -1215,7 +1274,8 @@ fn handle_click(app: &mut App, m: MouseEvent) {
             app.mode = Mode::Nav;
         }
     } else if m.column > app.pane_x + app.pane_cols {
-        if app.show_git && app.git_fits && app.mode != Mode::Git {
+        if app.show_git && app.git_fits {
+            // Out of the message box and back to the list, or onto the panel.
             app.focus_git();
         }
     } else if app.selected_session().is_some_and(|s| s.is_alive()) {
@@ -1410,7 +1470,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         MouseEventKind::ScrollDown => false,
         MouseEventKind::Down(MouseButton::Left) => {
             // A press on a column border picks it up rather than clicking.
-            if matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git)
+            if matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
                 && let Some(drag) = border_at(app, m.column)
             {
                 app.drag = Some(drag);
@@ -1443,7 +1503,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     // With the keyboard on the git panel, the wheel moves its cursor over the
     // panel and scrolls the preview over the pane.
     let over_git = m.column > app.pane_x + app.pane_cols;
-    if app.mode == Mode::Git {
+    if app.mode.on_git() {
         let delta = if up { -SCROLL_STEP } else { SCROLL_STEP };
         if over_git {
             app.with_git(|v, s| v.move_cursor(s, delta.signum()));
@@ -1485,6 +1545,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 }
 
 fn handle_paste(app: &mut App, text: &str, keep_open: bool) {
+    if app.mode == Mode::Commit {
+        app.commit_msg.push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
     if app.mode == Mode::NewSession {
         if let Some(form) = app.form.as_mut()
             && form.cursor == 0

@@ -12,7 +12,7 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-    config, git,
+    commitmsg, config, git,
     gitview::GitView,
     history,
     registry::{self, RegistryEntry},
@@ -88,6 +88,50 @@ pub enum Mode {
     Git,
     /// Picking a branch to switch the repository to.
     Branch,
+    /// Typing the commit message at the foot of the git panel.
+    Commit,
+}
+
+impl Mode {
+    /// The git panel has the keyboard, browsing it or typing into it.
+    pub fn on_git(self) -> bool {
+        matches!(self, Mode::Git | Mode::Commit)
+    }
+}
+
+/// Something the git panel runs in the background.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GitJob {
+    Commit,
+    Push,
+    Generate,
+}
+
+impl GitJob {
+    pub fn doing(self) -> &'static str {
+        match self {
+            GitJob::Commit => "committing…",
+            GitJob::Push => "pushing…",
+            GitJob::Generate => "writing a message…",
+        }
+    }
+}
+
+/// A part of the git panel the mouse can press, as of the last draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GitHit {
+    Message,
+    Commit,
+    Push,
+    Generate,
+}
+
+/// What a background git job came back with.
+enum JobDone {
+    Committed(String),
+    Pushed,
+    Generated(String),
+    Failed(GitJob, String),
 }
 
 /// The list of past conversations, and where in it the cursor is.
@@ -388,6 +432,15 @@ pub struct App {
     /// Whether the terminal is wide enough for the panel, as of the last
     /// layout.
     pub git_fits: bool,
+    /// The message in the box at the foot of the git panel.
+    pub commit_msg: String,
+    /// The commit, push or message being worked on right now. One at a time:
+    /// a push racing the commit it is meant to carry would push without it.
+    pub git_job: Option<GitJob>,
+    job_tx: mpsc::Sender<JobDone>,
+    job_rx: mpsc::Receiver<JobDone>,
+    /// Where the panel drew what a click can press, for the mouse handler.
+    pub git_hits: Vec<(ratatui::layout::Rect, GitHit)>,
 }
 
 /// A border between columns that the mouse can move.
@@ -416,6 +469,7 @@ impl App {
         }
         let (update_tx, update_rx) = mpsc::channel();
         let (git_tx, git_rx) = mpsc::channel();
+        let (job_tx, job_rx) = mpsc::channel();
         Self {
             sessions: Vec::new(),
             selected: 0,
@@ -459,6 +513,11 @@ impl App {
             last_git_read: None,
             git_view: GitView::new(),
             git_fits: true,
+            commit_msg: String::new(),
+            git_job: None,
+            job_tx,
+            job_rx,
+            git_hits: Vec::new(),
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -796,7 +855,7 @@ impl App {
 
     pub fn toggle_git(&mut self) {
         self.show_git = !self.show_git;
-        if !self.show_git && self.mode == Mode::Git {
+        if !self.show_git && self.mode.on_git() {
             self.mode = Mode::Nav;
         }
         self.dirty.store(true, Ordering::Relaxed);
@@ -811,6 +870,128 @@ impl App {
         self.show_git = true;
         self.mode = Mode::Git;
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Put the keyboard in the commit message box.
+    pub fn focus_commit(&mut self) {
+        self.focus_git();
+        if self.mode == Mode::Git {
+            self.mode = Mode::Commit;
+        }
+    }
+
+    /// The snapshot the panel is showing, when it is of a repository.
+    fn git_snapshot(&self) -> Option<&git::Snapshot> {
+        let target = self.git_target();
+        match &self.git {
+            Some((cwd, git::State::Repo(snap))) if *cwd == target => Some(snap),
+            _ => None,
+        }
+    }
+
+    /// Start `job` on a thread, unless another one is still running.
+    fn start_job(&mut self, job: GitJob, work: impl FnOnce() -> JobDone + Send + 'static) {
+        if let Some(running) = self.git_job {
+            self.notify(format!("still {}", running.doing()));
+            return;
+        }
+        self.git_job = Some(job);
+        let tx = self.job_tx.clone();
+        let dirty = Arc::clone(&self.dirty);
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+            dirty.store(true, Ordering::Relaxed);
+        });
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Commit with the message in the box: what is staged, or everything
+    /// when nothing is.
+    pub fn commit(&mut self) {
+        let Some(snap) = self.git_snapshot() else {
+            self.notify("not in a git repository");
+            return;
+        };
+        if snap.changes_total == 0 {
+            self.notify("nothing to commit");
+            return;
+        }
+        let message = self.commit_msg.trim().to_string();
+        if message.is_empty() {
+            self.notify("write a message first — ctrl+g has one written");
+            self.focus_commit();
+            return;
+        }
+        let root = snap.root.clone();
+        self.start_job(GitJob::Commit, move || match git::commit(&root, &message) {
+            Ok(hash) => JobDone::Committed(hash),
+            Err(e) => JobDone::Failed(GitJob::Commit, e),
+        });
+    }
+
+    /// Push the branch checked out.
+    pub fn push(&mut self) {
+        let Some(snap) = self.git_snapshot() else {
+            self.notify("not in a git repository");
+            return;
+        };
+        let Some(branch) = snap.branch.clone() else {
+            self.notify("HEAD is detached — no branch to push");
+            return;
+        };
+        let root = snap.root.clone();
+        let upstream = snap.upstream.is_some();
+        self.start_job(GitJob::Push, move || match git::push(&root, &branch, upstream) {
+            Ok(()) => JobDone::Pushed,
+            Err(e) => JobDone::Failed(GitJob::Push, e),
+        });
+    }
+
+    /// Have a model write the message for what a commit would hold now.
+    pub fn generate_message(&mut self) {
+        let Some(snap) = self.git_snapshot() else {
+            self.notify("not in a git repository");
+            return;
+        };
+        if snap.changes_total == 0 {
+            self.notify("nothing to commit, so nothing to describe");
+            return;
+        }
+        let root = snap.root.clone();
+        self.start_job(GitJob::Generate, move || match commitmsg::generate(&root) {
+            Ok(m) => JobDone::Generated(m),
+            Err(e) => JobDone::Failed(GitJob::Generate, e),
+        });
+    }
+
+    fn poll_git_jobs(&mut self) {
+        while let Ok(done) = self.job_rx.try_recv() {
+            self.git_job = None;
+            match done {
+                JobDone::Committed(hash) => {
+                    self.commit_msg.clear();
+                    if self.mode == Mode::Commit {
+                        self.mode = Mode::Git;
+                    }
+                    self.notify(format!("committed {hash} — p pushes it"));
+                }
+                JobDone::Pushed => self.notify("pushed"),
+                JobDone::Generated(m) => {
+                    self.commit_msg = m;
+                    self.notify("message written — enter commits, or edit it first");
+                }
+                JobDone::Failed(job, why) => {
+                    let what = match job {
+                        GitJob::Commit => "commit failed",
+                        GitJob::Push => "push failed",
+                        GitJob::Generate => "no message",
+                    };
+                    self.notify(format!("{what}: {why}"));
+                }
+            }
+            // The panel still shows the repository as it was before.
+            self.last_git_read = None;
+        }
     }
 
     /// Open the list of branches of the repository the panel is about.
@@ -832,7 +1013,7 @@ impl App {
             items,
             filter: String::new(),
             cursor,
-            back: if self.mode == Mode::Git { Mode::Git } else { Mode::Nav },
+            back: if self.mode.on_git() { Mode::Git } else { Mode::Nav },
         });
         self.mode = Mode::Branch;
         self.dirty.store(true, Ordering::Relaxed);
@@ -1279,6 +1460,7 @@ impl App {
 
         self.poll_update();
         self.poll_git();
+        self.poll_git_jobs();
 
         if self.last_registry_scan.elapsed() >= REGISTRY_REFRESH {
             self.registry = registry::read_all();

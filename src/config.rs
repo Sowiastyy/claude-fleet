@@ -32,6 +32,7 @@ pub struct Config {
     pub understand: Understand,
     pub timings: Timings,
     pub updates: Updates,
+    pub commit: CommitCfg,
 }
 
 /// Colours as written in the file: `#RRGGBB`, or a named terminal colour.
@@ -195,6 +196,21 @@ impl Default for Updates {
     }
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommitCfg {
+    /// The model that writes a commit message when the git panel asks for one.
+    pub model: String,
+}
+
+impl Default for CommitCfg {
+    fn default() -> Self {
+        Self {
+            model: "claude-haiku-4-5".into(),
+        }
+    }
+}
+
 /// Everything the loader tracks: the values, the palette they resolved to, and
 /// what the file looked like when they were read.
 struct Loaded {
@@ -354,6 +370,13 @@ pub fn check_updates() -> bool {
         .unwrap_or_else(|_| Updates::default().check)
 }
 
+pub fn commit_model() -> String {
+    CURRENT
+        .read()
+        .map(|c| c.cfg.commit.model.clone())
+        .unwrap_or_else(|_| CommitCfg::default().model)
+}
+
 pub fn finished_ttl() -> Duration {
     let secs = CURRENT
         .read()
@@ -448,6 +471,11 @@ finished_ttl_secs = 60
 # Ask GitHub every half hour whether a newer release is out. Nothing is
 # downloaded until `i` is pressed.
 check = true
+
+[commit]
+# The model that writes a commit message when the git panel is asked for one
+# (`m`, or the Generate button). It runs through `claude -p`, on your account.
+model = "claude-haiku-4-5"
 "##;
 
 #[cfg(test)]
@@ -512,6 +540,7 @@ mod tests {
         assert_eq!(cfg.understand.prompt, "understand project");
         assert_eq!(cfg.timings.finished_ttl_secs, 60);
         assert!(cfg.updates.check);
+        assert_eq!(cfg.commit.model, "claude-haiku-4-5");
         assert_eq!(cfg.theme.resolve().ask, Color::Rgb(0x5C, 0x9F, 0xD8));
     }
 

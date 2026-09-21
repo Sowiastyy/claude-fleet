@@ -418,6 +418,124 @@ pub fn create_branch(root: &Path, name: &str) -> Result<(), String> {
     run(root, &["switch", "-c", name])
 }
 
+/// Whether anything is in the index waiting to be committed.
+fn has_staged(root: &Path) -> bool {
+    // `--quiet` answers by exit code: 1 when there is a difference.
+    matches!(git(root, &["diff", "--cached", "--quiet"]), Ok(None))
+}
+
+/// Commit with `message`. What is staged is what goes in; with nothing staged,
+/// every change is, untracked files included — the panel has no staging of its
+/// own, and a commit button that commits nothing would only be in the way.
+/// Returns the new commit's short hash.
+pub fn commit(root: &Path, message: &str) -> Result<String, String> {
+    if !has_staged(root) {
+        run(root, &["add", "-A"])?;
+        if !has_staged(root) {
+            return Err("nothing to commit".to_string());
+        }
+    }
+    let mut child = command(root, &["commit", "-F", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git could not be run: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(message.as_bytes());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("git could not be run: {e}"))?;
+    if !out.status.success() {
+        return Err(reason(&String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(git(root, &["rev-parse", "--short", "HEAD"])
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default())
+}
+
+/// Push the branch checked out. One without an upstream gets one on `origin`,
+/// the way the first push of a new branch is nearly always meant.
+pub fn push(root: &Path, branch: &str, has_upstream: bool) -> Result<(), String> {
+    if has_upstream {
+        run(root, &["push"])
+    } else {
+        run(root, &["push", "-u", "origin", branch])
+    }
+}
+
+/// The longest diff handed to the model writing a commit message. Past this
+/// the file list and the start of the diff say enough.
+const MESSAGE_DIFF_LIMIT: usize = 40_000;
+
+/// What the commit about to be made contains, as text for whoever writes its
+/// message: recent subjects for the house style, the files, then the diff.
+/// Mirrors `commit`: the staged changes when there are some, otherwise all of
+/// them.
+pub fn message_context(root: &Path) -> String {
+    let staged = has_staged(root);
+    let has_head = matches!(git(root, &["rev-parse", "--verify", "-q", "HEAD"]), Ok(Some(_)));
+    let base: &[&str] = if staged || !has_head {
+        &["--cached"]
+    } else {
+        &["HEAD"]
+    };
+    let with = |extra: &[&str]| {
+        let mut args = vec!["diff"];
+        args.extend_from_slice(base);
+        args.extend_from_slice(&["--no-color", "--no-ext-diff"]);
+        args.extend_from_slice(extra);
+        git(root, &args).ok().flatten().unwrap_or_default()
+    };
+
+    let mut out = String::new();
+    if let Ok(Some(log)) = git(root, &["log", "-8", "--format=%s"])
+        && !log.trim().is_empty()
+    {
+        out.push_str("Recent commit subjects in this repository:\n");
+        out.push_str(&log);
+        out.push('\n');
+    }
+    // Untracked files only go in when nothing is staged, as with `commit`.
+    let new = if staged {
+        String::new()
+    } else {
+        git(root, &["ls-files", "--others", "--exclude-standard"])
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    };
+    out.push_str("Files changed:\n");
+    out.push_str(&with(&["--stat"]));
+    if !new.trim().is_empty() {
+        out.push_str("\nNew files:\n");
+        out.push_str(&new);
+    }
+    out.push_str("\nDiff:\n");
+    out.push_str(&with(&[]));
+    // Untracked files have no diff; their start is what they are.
+    for path in new.lines().take(20) {
+        out.push_str(&format!("\n+++ {path}\n"));
+        for l in untracked_diff(&root.join(path)).iter().take(60) {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    if out.len() > MESSAGE_DIFF_LIMIT {
+        let mut cut = MESSAGE_DIFF_LIMIT;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+        out.push_str("\n[diff cut here]\n");
+    }
+    out
+}
+
 /// Run a git command that changes something, keeping what it says when it
 /// refuses: a switch blocked by uncommitted changes has to say so.
 fn run(cwd: &Path, args: &[&str]) -> Result<(), String> {
@@ -429,16 +547,19 @@ fn run(cwd: &Path, args: &[&str]) -> Result<(), String> {
     if out.status.success() {
         return Ok(());
     }
-    let err = String::from_utf8_lossy(&out.stderr);
+    Err(reason(&String::from_utf8_lossy(&out.stderr)))
+}
+
+/// The line of git's complaint worth a status line.
+fn reason(err: &str) -> String {
     // The first `error:`/`fatal:` line is the reason; the hints under it are
     // advice for a terminal the user is not looking at.
-    let reason = err
-        .lines()
+    err.lines()
         .map(str::trim)
         .find(|l| l.starts_with("error:") || l.starts_with("fatal:"))
         .or_else(|| err.lines().map(str::trim).find(|l| !l.is_empty()))
-        .unwrap_or("git refused");
-    Err(reason.to_string())
+        .unwrap_or("git refused")
+        .to_string()
 }
 
 /// Run git in `cwd`. `Ok(None)` is git refusing (not a repository, no HEAD);
@@ -463,6 +584,9 @@ fn command(cwd: &Path, args: &[&str]) -> Command {
         // lock. A session committing at the same moment would then fail on a
         // lock held by a panel that only wanted to look.
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // A push asking for a password on a terminal nobody can see would hang
+        // until killed; failing says what is missing instead.
+        .env("GIT_TERMINAL_PROMPT", "0")
         // Paths come back as they are, not octal-escaped.
         .args(["-c", "core.quotepath=off"])
         .args(args)
@@ -565,6 +689,30 @@ fn parse_log(out: &str) -> Vec<Commit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_commit_with_nothing_staged_takes_every_change() {
+        let dir = std::env::temp_dir().join(format!("fleet-commit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ok = |args: &[&str]| assert!(run(&dir, args).is_ok(), "git {args:?}");
+        ok(&["init", "-q"]);
+        ok(&["config", "user.name", "t"]);
+        ok(&["config", "user.email", "t@t"]);
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+
+        assert!(message_context(&dir).contains("a.txt"));
+        let hash = commit(&dir, "Add a\n\nBody").unwrap();
+        assert!(!hash.is_empty());
+        let State::Repo(snap) = read(&dir) else {
+            panic!("not read as a repository");
+        };
+        assert_eq!(snap.changes_total, 0);
+        assert_eq!(snap.log[0].subject, "Add a");
+        // Nothing left: saying so beats an empty commit.
+        assert_eq!(commit(&dir, "again"), Err("nothing to commit".to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_branch_with_an_upstream_says_how_far_apart_they_are() {

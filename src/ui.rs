@@ -14,7 +14,7 @@ use ratatui::{
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
-    app::{App, BranchRow, Mode},
+    app::{App, BranchRow, GitHit, GitJob, Mode},
     config, git,
     gitview::{GitView, Row},
     theme, usage,
@@ -118,8 +118,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
     let (sidebar, pane, git) = columns(body, app.show_git);
 
+    // Rebuilt by whatever draws a clickable part this frame; a hidden panel
+    // leaves nothing to click.
+    app.git_hits.clear();
     draw_sidebar(f, app, sidebar);
-    if app.mode == Mode::Git {
+    if app.mode.on_git() {
         draw_git_preview(f, app, pane);
     } else {
         draw_pane(f, app, pane);
@@ -189,7 +192,9 @@ pub fn pane_inner_rect(area: Rect) -> Rect {
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let focused = matches!(app.mode, Mode::Focus);
+    // The list has the keyboard unless a session or the git panel took it.
+    // Exactly one column is lit at a time, so it is plain where keys go.
+    let focused = !matches!(app.mode, Mode::Focus | Mode::Git | Mode::Commit);
     let mut items: Vec<ListItem> = Vec::new();
 
     for (i, s) in app.sessions.iter().enumerate() {
@@ -354,7 +359,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // The accent border marks which half of the screen has the keyboard.
-    let border_color = if focused { theme::faint() } else { theme::accent() };
+    let border_color = if focused { theme::accent() } else { theme::faint() };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
@@ -678,12 +683,21 @@ fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
 /// With the keyboard on it (`g`), it is a list with a cursor: commits open up
 /// to show their files, and the pane beside it previews what the cursor is on.
 fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
+    // Browsing lights the panel; typing a message lights only the message box.
     let focused = app.mode == Mode::Git;
+    let on_git = app.mode.on_git();
     let target = app.git_target();
     let since = app
         .selected_session()
         .map(|s| SystemTime::now() - s.started.elapsed());
-    let App { git, git_view, .. } = app;
+    let App {
+        git,
+        git_view,
+        commit_msg,
+        git_job,
+        mode,
+        ..
+    } = app;
     let state = git
         .as_ref()
         .filter(|(cwd, _)| *cwd == target)
@@ -699,7 +713,9 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
         ));
     }
     let hint = if focused {
-        " enter opens · esc leaves "
+        " enter opens · c message · esc leaves "
+    } else if on_git {
+        " enter commits · esc back "
     } else {
         " g browse · G hide "
     };
@@ -708,8 +724,29 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(if focused { theme::accent() } else { theme::faint() }))
         .title(Line::from(title))
         .title_bottom(Line::from(Span::styled(hint, Style::default().fg(theme::faint()))));
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     f.render_widget(block, area);
+
+    // The commit box and its buttons take the foot of the panel, whenever
+    // there is a repository to commit to and room left for the list above.
+    let mut hits = Vec::new();
+    if let Some(git::State::Repo(snap)) = state {
+        let msg_rows = wrap_message(commit_msg, inner.width.saturating_sub(2) as usize)
+            .len()
+            .clamp(1, 5) as u16;
+        if inner.height >= msg_rows + 3 + 6 {
+            let [list, message, buttons] = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(msg_rows + 2),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            inner = list;
+            draw_commit_box(f, commit_msg, *mode == Mode::Commit, snap.changes_total, message);
+            hits.push((message, GitHit::Message));
+            hits.extend(draw_git_buttons(f, *git_job, snap, buttons));
+        }
+    }
 
     let width = inner.width as usize;
     let lines = match state {
@@ -736,10 +773,138 @@ fn draw_git(f: &mut Frame, app: &mut App, area: Rect) {
             )),
         ],
         Some(git::State::Repo(snap)) => {
-            git_lines(git_view, snap, since, width, inner.height as usize, focused)
+            git_lines(git_view, snap, since, width, inner.height as usize, on_git)
         }
     };
     f.render_widget(Paragraph::new(lines), inner);
+    app.git_hits.extend(hits);
+}
+
+/// The message split into the rows the box shows: its own lines, each broken
+/// at `width` characters. Always at least one row, so the cursor has a place.
+fn wrap_message(msg: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for line in msg.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            rows.push(String::new());
+            continue;
+        }
+        for chunk in chars.chunks(width) {
+            rows.push(chunk.iter().collect());
+        }
+    }
+    rows
+}
+
+/// The box the commit message is typed into. Only the last rows show while it
+/// is being typed, the way a text field scrolls to keep the cursor in view.
+fn draw_commit_box(f: &mut Frame, msg: &str, typing: bool, changes: usize, area: Rect) {
+    let border = if typing { theme::accent() } else { theme::faint() };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(Span::styled(
+            format!(" message · {changes} changed "),
+            Style::default().fg(if typing { theme::accent() } else { theme::muted() }),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    if msg.is_empty() && !typing {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "c writes · m generates",
+                Style::default().fg(theme::faint()),
+            )),
+            inner,
+        );
+        return;
+    }
+    let rows = wrap_message(msg, inner.width as usize);
+    let skip = rows.len().saturating_sub(inner.height as usize);
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .map(|(i, r)| {
+            // The subject line is what `git log --oneline` will show.
+            let style = if i == 0 {
+                Style::default().fg(theme::text()).bold()
+            } else {
+                Style::default().fg(theme::text())
+            };
+            Line::from(Span::styled(r.clone(), style))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+    if typing {
+        let last = rows.last().map_or(0, |r| r.chars().count()) as u16;
+        let row = (rows.len() - skip).saturating_sub(1) as u16;
+        let (x, y) = if last >= inner.width {
+            // A full row: the next character starts the row below.
+            (inner.x, (inner.y + row + 1).min(inner.bottom() - 1))
+        } else {
+            (inner.x + last, inner.y + row)
+        };
+        f.set_cursor_position((x, y));
+    }
+}
+
+/// Commit, Push and Generate, side by side. Returns where each one landed,
+/// for the mouse.
+fn draw_git_buttons(
+    f: &mut Frame,
+    job: Option<GitJob>,
+    snap: &git::Snapshot,
+    area: Rect,
+) -> Vec<(Rect, GitHit)> {
+    let push = match (snap.upstream.is_some(), snap.ahead, snap.behind) {
+        (false, _, _) => "Push ↑new".to_string(),
+        (true, 0, 0) => "Push".to_string(),
+        (true, a, 0) => format!("Push ↑{a}"),
+        (true, 0, b) => format!("Push ↓{b}"),
+        (true, a, b) => format!("Push ↑{a}↓{b}"),
+    };
+    let buttons = [
+        (GitHit::Commit, GitJob::Commit, "Commit".to_string()),
+        (GitHit::Push, GitJob::Push, push),
+        (GitHit::Generate, GitJob::Generate, "✦ Generate".to_string()),
+    ];
+    let mut hits = Vec::new();
+    let mut spans = Vec::new();
+    let mut x = area.x;
+    for (hit, kind, label) in buttons {
+        let running = job == Some(kind);
+        let text = if running {
+            format!(" {} ", kind.doing())
+        } else {
+            format!(" {label} ")
+        };
+        let style = if running {
+            Style::default().bg(theme::busy()).fg(theme::surface()).bold()
+        } else if job.is_some() {
+            Style::default().bg(theme::surface()).fg(theme::faint())
+        } else if hit == GitHit::Commit {
+            Style::default().bg(theme::accent()).fg(theme::surface()).bold()
+        } else {
+            Style::default().bg(theme::surface()).fg(theme::text()).bold()
+        };
+        let w = (Span::raw(text.as_str()).width() as u16).min(area.right().saturating_sub(x));
+        if w == 0 {
+            break;
+        }
+        hits.push((Rect::new(x, area.y, w, 1), hit));
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+        x = x.saturating_add(w + 1);
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    hits
 }
 
 /// The panel's rows for a repository, fitted to `height`.
@@ -1397,8 +1562,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("enter", "open/close"),
             ("left", "close"),
             ("pgup/pgdn", "scroll the preview"),
+            ("c", "message"),
+            ("m", "generate it"),
+            ("p", "push"),
             ("b", "switch branch"),
             ("G", "hide the panel"),
+        ],
+        Mode::Commit => vec![
+            ("enter", "commit"),
+            ("shift+enter", "new line"),
+            ("ctrl+g", "generate"),
+            ("ctrl+p", "push"),
+            ("ctrl+u", "clear"),
+            ("esc", "back to the list"),
         ],
         Mode::Branch => vec![
             ("type", "filter"),
@@ -1858,6 +2034,11 @@ fn draw_help(f: &mut Frame) {
         ("", "yellow hash = not pushed yet"),
         ("b", "switch branch; a remote one is checked out"),
         ("", "tracking it, a new name starts a branch at HEAD"),
+        ("c", "type the commit message (or click the box)"),
+        ("m / ctrl+g", "have claude-haiku-4-5 write the message"),
+        ("enter", "commit: the staged files, or all if none are"),
+        ("shift+enter", "a new line in the message"),
+        ("p / ctrl+p", "push; a branch without upstream gets origin"),
         ("esc / g", "back to the list"),
         ("", ""),
         ("", "-- FOREIGN SESSIONS --"),
@@ -2045,6 +2226,13 @@ mod tests {
                 assert!(l.width() <= width, "a row takes {} of {width}", l.width());
             }
         }
+    }
+
+    #[test]
+    fn a_commit_message_wraps_at_the_box_and_keeps_its_blank_lines() {
+        assert_eq!(wrap_message("", 10), vec![String::new()]);
+        assert_eq!(wrap_message("abcdefgh", 3), ["abc", "def", "gh"]);
+        assert_eq!(wrap_message("subject\n\nbody", 20), ["subject", "", "body"]);
     }
 
     #[test]
