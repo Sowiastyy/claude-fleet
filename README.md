@@ -184,6 +184,7 @@ sooner.
 | `Alt+G` | straight to the git panel; `Alt+G` there comes back into the session |
 | `Alt+Shift+G` | show or hide the git panel |
 | `←` at the start of the input | leave focus too — the arrow has nowhere left to go in the box |
+| `→` at the end of the input | go to the git panel — the same move, the other way |
 | everything else | goes to Claude, including `Ctrl+anything` |
 | mouse wheel | scroll the history (see "Scrolling") |
 

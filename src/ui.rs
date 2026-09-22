@@ -18,8 +18,7 @@ use crate::{
     bigbrother::{Level, Scope},
     commitmsg, config, git,
     gitview::{GitView, Row},
-    msgedit,
-    theme, usage,
+    msgedit, theme, usage,
 };
 
 pub const SIDEBAR_WIDTH: u16 = 36;
@@ -990,9 +989,17 @@ fn draw_git_buttons(
     let buttons = [
         (GitHit::Commit, Some(GitJob::Commit), "Commit".to_string()),
         (GitHit::Push, Some(GitJob::Push), push),
-        (GitHit::Generate, Some(GitJob::Generate), "✦ Generate".to_string()),
+        (
+            GitHit::Generate,
+            Some(GitJob::Generate),
+            "✦ Generate".to_string(),
+        ),
         // Which model Generate asks; pressing it moves to the next one.
-        (GitHit::Model, None, format!("{} ▾", commitmsg::short_name(model))),
+        (
+            GitHit::Model,
+            None,
+            format!("{} ▾", commitmsg::short_name(model)),
+        ),
     ];
     let mut hits = Vec::new();
     let mut spans = Vec::new();
@@ -1947,11 +1954,17 @@ fn kind_lines(form: &NewSessionForm) -> Vec<Line<'static>> {
                 Style::default().fg(theme::accent()).bold(),
             )
         } else {
-            Span::styled(format!(" {} ", k.name()), Style::default().fg(theme::faint()))
+            Span::styled(
+                format!(" {} ", k.name()),
+                Style::default().fg(theme::faint()),
+            )
         });
         kinds.push(Span::raw(" "));
     }
-    kinds.push(Span::styled(" ctrl+r switches", Style::default().fg(theme::faint())));
+    kinds.push(Span::styled(
+        " ctrl+r switches",
+        Style::default().fg(theme::faint()),
+    ));
     let hint = match form.kind {
         SpawnKind::Local => " claude on this machine",
         SpawnKind::Remote => " claude --cloud: new session on claude.ai/code for the repository",
@@ -1991,7 +2004,10 @@ fn draw_remote_form(f: &mut Frame, app: &App, form: &NewSessionForm) {
     } else if app.repos_loading() && app.repos.is_none() {
         Some(" fetching repositories from GitHub…".to_string())
     } else {
-        app.repos.as_ref().and_then(|l| l.note.clone()).map(|n| format!(" {n}"))
+        app.repos
+            .as_ref()
+            .and_then(|l| l.note.clone())
+            .map(|n| format!(" {n}"))
     };
     lines.push(Line::from(Span::styled(
         status.unwrap_or_default(),
@@ -2305,7 +2321,10 @@ fn draw_help(f: &mut Frame) {
             "(sessions come back with their conversations, --resume)",
         ),
         ("i", "install a newer release from GitHub, then restart"),
-        ("", "(checked every five minutes, or now when none is known)"),
+        (
+            "",
+            "(checked every five minutes, or now when none is known)",
+        ),
         ("R", "resume an old conversation (transcript list)"),
         ("g", "browse the git panel (see below)"),
         ("G", "show or hide the git panel (hidden at start)"),
@@ -2367,9 +2386,15 @@ fn draw_help(f: &mut Frame) {
         ("esc / g", "back to the list"),
         ("", ""),
         ("", "-- BIG BROTHER --"),
-        ("t, then a-z", "put the selected session in a group (- = none)"),
+        (
+            "t, then a-z",
+            "put the selected session in a group (- = none)",
+        ),
         ("B, then a-z", "start a BIG BROTHER over that group"),
-        ("B, then *", "... over every session (enter = selected's group)"),
+        (
+            "B, then *",
+            "... over every session (enter = selected's group)",
+        ),
         ("", "a claude session that watches the others, reads"),
         ("", "their screens and transcripts, and reports what"),
         ("", "looks wrong; it can send, clear, kill and spawn"),
@@ -2488,7 +2513,10 @@ fn draw_big_brother(f: &mut Frame, app: &App) {
     for (g, n) in app.groups() {
         let plural = if n == 1 { "" } else { "s" };
         lines.push(Line::from(vec![
-            Span::styled(format!("   {g}  "), Style::default().fg(group_color(g)).bold()),
+            Span::styled(
+                format!("   {g}  "),
+                Style::default().fg(group_color(g)).bold(),
+            ),
             Span::styled(
                 format!("group {g} — {n} session{plural}"),
                 Style::default().fg(theme::muted()),
@@ -2541,7 +2569,10 @@ fn draw_reports(f: &mut Frame, app: &App) {
             Level::Info => theme::idle(),
         };
         lines.push(Line::from(vec![
-            Span::styled(format!(" {:<5} ", r.level.name()), Style::default().fg(color).bold()),
+            Span::styled(
+                format!(" {:<5} ", r.level.name()),
+                Style::default().fg(color).bold(),
+            ),
             Span::styled(r.from.clone(), Style::default().fg(theme::accent())),
             Span::styled(
                 format!("  {} ago", fmt_uptime(r.at.elapsed())),

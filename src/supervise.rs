@@ -135,11 +135,7 @@ pub fn supervise() -> Result<()> {
     // the file changed, so the next run has to take it again.
     let result = run_until_done(|| {
         fs::copy(&origin, &copy).with_context(|| {
-            format!(
-                "could not copy {} to {}",
-                origin.display(),
-                copy.display()
-            )
+            format!("could not copy {} to {}", origin.display(), copy.display())
         })?;
 
         let mut child = Command::new(&copy);
@@ -295,10 +291,8 @@ pub fn take_restore() -> Vec<Restore> {
             let fields: Vec<&str> = line.split('\t').collect();
             match fields.as_slice() {
                 [id, cwd, group, watch, ..] => {
-                    let mut r = Restore::new(
-                        PathBuf::from(cwd),
-                        (!id.is_empty()).then(|| id.to_string()),
-                    );
+                    let mut r =
+                        Restore::new(PathBuf::from(cwd), (!id.is_empty()).then(|| id.to_string()));
                     r.group = group.chars().next();
                     r.watch = (!watch.is_empty()).then(|| watch.to_string());
                     r

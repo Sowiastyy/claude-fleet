@@ -47,7 +47,10 @@ const MAX_PAGES: usize = 5;
 pub fn list() -> Listing {
     let local = local_clones();
     let (api, note) = match token() {
-        None => (Vec::new(), Some("no GitHub token — only local clones".to_string())),
+        None => (
+            Vec::new(),
+            Some("no GitHub token — only local clones".to_string()),
+        ),
         Some(token) => match api_repos(&token) {
             Ok(r) => (r, None),
             Err(e) => (Vec::new(), Some(format!("GitHub: {e} — only local clones"))),
@@ -89,7 +92,9 @@ fn local_clones() -> Vec<(String, PathBuf)> {
         let Some(url) = git_out(&dir, &["remote", "get-url", "origin"]) else {
             continue;
         };
-        let Some(name) = github_name(url.trim()) else { continue };
+        let Some(name) = github_name(url.trim()) else {
+            continue;
+        };
         let root = git_out(&dir, &["rev-parse", "--show-toplevel"])
             .map(|r| PathBuf::from(r.trim()))
             .unwrap_or(dir);
@@ -111,7 +116,8 @@ fn github_name(url: &str) -> Option<String> {
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     let mut parts = rest.split('/');
     let (owner, name) = (parts.next()?, parts.next()?);
-    (!owner.is_empty() && !name.is_empty() && parts.next().is_none()).then(|| format!("{owner}/{name}"))
+    (!owner.is_empty() && !name.is_empty() && parts.next().is_none())
+        .then(|| format!("{owner}/{name}"))
 }
 
 /// The token for github.com: the environment first, then git's credential
@@ -279,10 +285,22 @@ mod tests {
 
     #[test]
     fn github_urls_give_owner_and_name() {
-        assert_eq!(github_name("https://github.com/a/b.git").as_deref(), Some("a/b"));
-        assert_eq!(github_name("https://github.com/a/b/").as_deref(), Some("a/b"));
-        assert_eq!(github_name("git@github.com:a/b.git").as_deref(), Some("a/b"));
-        assert_eq!(github_name("ssh://git@github.com/a/b").as_deref(), Some("a/b"));
+        assert_eq!(
+            github_name("https://github.com/a/b.git").as_deref(),
+            Some("a/b")
+        );
+        assert_eq!(
+            github_name("https://github.com/a/b/").as_deref(),
+            Some("a/b")
+        );
+        assert_eq!(
+            github_name("git@github.com:a/b.git").as_deref(),
+            Some("a/b")
+        );
+        assert_eq!(
+            github_name("ssh://git@github.com/a/b").as_deref(),
+            Some("a/b")
+        );
         assert_eq!(github_name("https://gitlab.com/a/b"), None);
         assert_eq!(github_name("https://github.com/a"), None);
     }
@@ -290,8 +308,14 @@ mod tests {
     #[test]
     fn local_clones_join_their_api_entry_and_the_rest_go_last() {
         let api = vec![
-            ApiRepo { full_name: "me/one".into(), private: true },
-            ApiRepo { full_name: "me/two".into(), private: false },
+            ApiRepo {
+                full_name: "me/one".into(),
+                private: true,
+            },
+            ApiRepo {
+                full_name: "me/two".into(),
+                private: false,
+            },
         ];
         let local = vec![
             ("Me/Two".to_string(), PathBuf::from("C:/two")),

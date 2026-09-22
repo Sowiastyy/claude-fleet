@@ -132,9 +132,7 @@ fn tilde_key(n: u8, mods: KeyModifiers) -> Vec<u8> {
 fn function_key(n: u8, mods: KeyModifiers) -> Option<Vec<u8>> {
     // F1-F4 are SS3 when unmodified; the rest use the CSI ~ form.
     let plain: Vec<u8> = match n {
-        1..=4 if modifier_param(mods).is_none() => {
-            return Some(vec![0x1b, b'O', b'P' + (n - 1)])
-        }
+        1..=4 if modifier_param(mods).is_none() => return Some(vec![0x1b, b'O', b'P' + (n - 1)]),
         1 => b"\x1b[11".to_vec(),
         2 => b"\x1b[12".to_vec(),
         3 => b"\x1b[13".to_vec(),
@@ -202,7 +200,11 @@ pub fn encode_wheel(
             let mut out = b"\x1b[M".to_vec();
             for v in [button + 32, col + 32, row + 32] {
                 let mut buf = [0u8; 4];
-                out.extend_from_slice(char::from_u32(u32::from(v))?.encode_utf8(&mut buf).as_bytes());
+                out.extend_from_slice(
+                    char::from_u32(u32::from(v))?
+                        .encode_utf8(&mut buf)
+                        .as_bytes(),
+                );
             }
             Some(out)
         }
@@ -228,7 +230,10 @@ mod tests {
 
     #[test]
     fn altgr_letter_loses_its_modifiers() {
-        let k = normalize(key(KeyCode::Char('ą'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+        let k = normalize(key(
+            KeyCode::Char('ą'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
         assert_eq!(k.code, KeyCode::Char('ą'));
         assert!(k.modifiers.is_empty());
     }
@@ -242,13 +247,19 @@ mod tests {
 
     #[test]
     fn a_real_ctrl_alt_chord_is_left_alone() {
-        let k = normalize(key(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+        let k = normalize(key(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
         assert_eq!(k.modifiers, KeyModifiers::CONTROL | KeyModifiers::ALT);
     }
 
     #[test]
     fn a_polish_letter_encodes_as_its_utf8() {
-        let k = normalize(key(KeyCode::Char('ł'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+        let k = normalize(key(
+            KeyCode::Char('ł'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
         assert_eq!(encode(k, false).unwrap(), "ł".as_bytes());
     }
 

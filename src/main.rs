@@ -41,9 +41,9 @@ use crossterm::{
         MouseEventKind,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     app::{App, Drag, GitHit, Mode, SpawnKind},
@@ -275,7 +275,7 @@ fn fmt_ago(d: Duration) -> String {
 /// the child does not keep. This settles the first half — twenty seconds of
 /// whatever the terminal sends, counted by kind.
 fn mouse_probe() -> Result<()> {
-    use crossterm::event::{poll, MouseEventKind};
+    use crossterm::event::{MouseEventKind, poll};
 
     enable_raw_mode()?;
     let mut out = io::stdout();
@@ -325,7 +325,7 @@ fn mouse_probe() -> Result<()> {
 /// Diagnostic only: it answers "what did the child actually send" without the
 /// parser or the UI in the way.
 fn raw_probe(args: &[String]) -> Result<()> {
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::io::{Read, Write};
 
     let Some((program, rest)) = args.split_first() else {
@@ -406,7 +406,7 @@ fn raw_probe(args: &[String]) -> Result<()> {
 /// a break anywhere along it looks the same from outside: a key that does
 /// nothing.
 fn restart_selftest() -> Result<()> {
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
@@ -513,10 +513,27 @@ fn source_selftest() -> Result<()> {
     let source = supervise::resolve_source(&own);
     println!("exe:        {}", own.display());
     println!("source:     {}", source.display());
-    println!("stamp:      {:?}", std::fs::metadata(&source).ok().and_then(|m| m.modified().ok()));
-    println!("{}:  {:?}", supervise::BUILD_VAR, env::var_os(supervise::BUILD_VAR));
-    println!("{}: {:?}", supervise::ORIGIN_VAR, env::var_os(supervise::ORIGIN_VAR));
-    println!("{}:  {:?}", supervise::RUN_MARKER, env::var_os(supervise::RUN_MARKER));
+    println!(
+        "stamp:      {:?}",
+        std::fs::metadata(&source)
+            .ok()
+            .and_then(|m| m.modified().ok())
+    );
+    println!(
+        "{}:  {:?}",
+        supervise::BUILD_VAR,
+        env::var_os(supervise::BUILD_VAR)
+    );
+    println!(
+        "{}: {:?}",
+        supervise::ORIGIN_VAR,
+        env::var_os(supervise::ORIGIN_VAR)
+    );
+    println!(
+        "{}:  {:?}",
+        supervise::RUN_MARKER,
+        env::var_os(supervise::RUN_MARKER)
+    );
     match supervise::source_warning(&own, &source) {
         Some(w) => println!("warning: {w}"),
         None => println!("warning: none"),
@@ -620,7 +637,7 @@ fn config_selftest() -> Result<()> {
 /// closed tidily, and exits: exactly what a process being replaced looks like.
 /// Whoever runs it then checks whether the printed pid is still there.
 fn orphan_probe() -> Result<()> {
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
     let pair = native_pty_system().openpty(PtySize {
         rows: 24,
@@ -650,7 +667,7 @@ fn orphan_probe() -> Result<()> {
 /// a pseudo-terminal, let the reader thread feed the parser, and print what the
 /// emulated screen ended up holding.
 fn selftest(kind: Option<&str>) -> Result<()> {
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{Arc, atomic::AtomicBool};
 
     if kind == Some("config") {
         return config_selftest();
@@ -676,14 +693,8 @@ fn selftest(kind: Option<&str>) -> Result<()> {
         vec!["--version".to_string()]
     };
 
-    let mut s = session::PtySession::spawn(
-        "selftest".into(),
-        cwd,
-        24,
-        80,
-        Arc::clone(&dirty),
-        &args,
-    )?;
+    let mut s =
+        session::PtySession::spawn("selftest".into(), cwd, 24, 80, Arc::clone(&dirty), &args)?;
 
     println!("spawned pid={:?} interactive={interactive}", s.child_pid);
 
@@ -843,7 +854,8 @@ fn dispatch(app: &mut App, input: &Input, ev: Event) -> Result<()> {
                     // as a key press would submit half a prompt.
                     if app.paste_open || burst.text.chars().count() > BURST_MIN {
                         handle_paste(app, &burst.text, burst.capped);
-                    } else if app.mode == Mode::Focus && burst.text == "u" && understand_chord(app) {
+                    } else if app.mode == Mode::Focus && burst.text == "u" && understand_chord(app)
+                    {
                         // A `u` on its own, moments after landing in a session,
                         // is the second half of the chord. A `u` that starts a
                         // word is not: the burst carries the rest of it.
@@ -917,13 +929,15 @@ fn drain_key_burst(input: &Input, first: char) -> Burst {
             break;
         };
         match ev {
-            Event::Key(key) if key.kind != KeyEventKind::Release => match typed_text(keys::normalize(key)) {
-                Some(c) => text.push(c),
-                None => {
-                    carry = Some(Event::Key(key));
-                    break;
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                match typed_text(keys::normalize(key)) {
+                    Some(c) => text.push(c),
+                    None => {
+                        carry = Some(Event::Key(key));
+                        break;
+                    }
                 }
-            },
+            }
             // A real bracketed paste in the middle of the burst is still text.
             Event::Paste(p) => text.push_str(&p),
             Event::Key(_) => {}
@@ -1058,7 +1072,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.reports_scroll = app.reports_scroll.saturating_sub(1);
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                app.reports_scroll = (app.reports_scroll + 1).min(app.reports.len().saturating_sub(1));
+                app.reports_scroll =
+                    (app.reports_scroll + 1).min(app.reports.len().saturating_sub(1));
             }
             _ => app.mode = Mode::Nav,
         },
@@ -1088,7 +1103,10 @@ fn handle_reserved_fkey(app: &mut App, n: u8, understand: bool) -> Result<bool> 
             }
             if idx > app.sessions.len() {
                 // Silence here reads as a dropped keypress, so say it plainly.
-                app.notify(format!("no session on F{n} — the next free slot is F{}", app.sessions.len() + 1));
+                app.notify(format!(
+                    "no session on F{n} — the next free slot is F{}",
+                    app.sessions.len() + 1
+                ));
                 return Ok(true);
             }
             // The jump wins over whatever overlay was up, so drop a half-filled
@@ -1283,7 +1301,11 @@ fn handle_commit(app: &mut App, key: KeyEvent) {
 fn resize_by_key(app: &mut App, c: char) {
     const STEP: u16 = 4;
     match c {
-        '[' => ui::set_sidebar_width(ui::sidebar_width().saturating_sub(STEP), app.term, app.show_git),
+        '[' => ui::set_sidebar_width(
+            ui::sidebar_width().saturating_sub(STEP),
+            app.term,
+            app.show_git,
+        ),
         ']' => ui::set_sidebar_width(ui::sidebar_width() + STEP, app.term, app.show_git),
         '{' => ui::set_git_width(ui::git_width().saturating_sub(STEP), app.term),
         _ => ui::set_git_width(ui::git_width() + STEP, app.term),
@@ -1477,6 +1499,7 @@ fn understand_chord(app: &mut App) -> bool {
 }
 
 fn handle_focus(app: &mut App, key: KeyEvent) -> Result<()> {
+    let git_fits = app.git_fits;
     let Some(session) = app.selected_session_mut() else {
         app.mode = Mode::Nav;
         return Ok(());
@@ -1489,11 +1512,18 @@ fn handle_focus(app: &mut App, key: KeyEvent) -> Result<()> {
 
     // A left arrow with nowhere left to go in the input steps out to the
     // session list, which sits to the left — the same as F10.
-    if key.code == KeyCode::Left
-        && key.modifiers.is_empty()
-        && session.cursor_at_prompt_start()
-    {
+    if key.code == KeyCode::Left && key.modifiers.is_empty() && session.cursor_at_prompt_start() {
         app.mode = Mode::Nav;
+        return Ok(());
+    }
+    // And a right arrow past the end of the input steps over to the git
+    // panel on the right.
+    if key.code == KeyCode::Right
+        && key.modifiers.is_empty()
+        && git_fits
+        && session.cursor_at_prompt_end()
+    {
+        app.focus_git();
         return Ok(());
     }
 
@@ -1751,8 +1781,7 @@ mod tests {
         assert_eq!(up, b"[<64;3;7M".to_vec());
         let down = keys::encode_wheel(false, 1, 1, vt100::MouseProtocolEncoding::Sgr).unwrap();
         assert_eq!(down, b"[<65;1;1M".to_vec());
-        let legacy =
-            keys::encode_wheel(true, 1, 1, vt100::MouseProtocolEncoding::Default).unwrap();
+        let legacy = keys::encode_wheel(true, 1, 1, vt100::MouseProtocolEncoding::Default).unwrap();
         assert_eq!(legacy, vec![0x1b, b'[', b'M', 96, 33, 33]);
         // The one-byte encoding cannot address a far-right column at all.
         assert!(keys::encode_wheel(true, 300, 1, vt100::MouseProtocolEncoding::Default).is_none());
@@ -1773,14 +1802,20 @@ mod tests {
             typed_text(key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
             Some('A')
         );
-        assert_eq!(typed_text(key(KeyCode::Enter, KeyModifiers::NONE)), Some('\n'));
+        assert_eq!(
+            typed_text(key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some('\n')
+        );
     }
 
     #[test]
     fn chords_and_control_keys_are_not() {
         // These must stay real key presses: folding them into a paste would
         // strip their meaning.
-        assert_eq!(typed_text(key(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
+        assert_eq!(
+            typed_text(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            None
+        );
         assert_eq!(typed_text(key(KeyCode::Enter, KeyModifiers::SHIFT)), None);
         assert_eq!(typed_text(key(KeyCode::F(10), KeyModifiers::NONE)), None);
         assert_eq!(typed_text(key(KeyCode::Up, KeyModifiers::NONE)), None);

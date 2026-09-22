@@ -100,7 +100,9 @@ impl ThemeSpec {
     fn resolve(&self) -> Theme {
         let d = ThemeSpec::default();
         let pick = |v: &str, fallback: &str| {
-            parse_colour(v).or_else(|| parse_colour(fallback)).unwrap_or(Color::Reset)
+            parse_colour(v)
+                .or_else(|| parse_colour(fallback))
+                .unwrap_or(Color::Reset)
         };
         let accent = pick(&self.accent, &d.accent);
         let accent_dim = pick(&self.accent_dim, &d.accent_dim);
@@ -273,7 +275,9 @@ pub fn init() -> Result<(), String> {
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let cfg: Config = toml::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut cur = CURRENT.write().map_err(|_| "config lock poisoned".to_string())?;
+    let mut cur = CURRENT
+        .write()
+        .map_err(|_| "config lock poisoned".to_string())?;
     cur.theme = cfg.theme.resolve();
     cur.cfg = cfg;
     cur.stamp = stamp_of(&path);
@@ -560,7 +564,8 @@ mod tests {
 
     #[test]
     fn the_shipped_default_file_parses_into_the_defaults() {
-        let cfg: Config = toml::from_str(DEFAULT_FILE).expect("the shipped default file has to parse");
+        let cfg: Config =
+            toml::from_str(DEFAULT_FILE).expect("the shipped default file has to parse");
         assert_eq!(cfg.labels.waiting, "question");
         assert_eq!(cfg.understand.prompt, "understand project");
         assert_eq!(cfg.timings.finished_ttl_secs, 60);

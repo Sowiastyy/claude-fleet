@@ -26,16 +26,16 @@ use std::{
     net::{Shutdown, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
-        Arc,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
 use crate::{config, history};
 
@@ -192,8 +192,7 @@ pub struct Server {
 
 impl Server {
     pub fn start(dirty: Arc<AtomicBool>) -> Result<Self> {
-        let listener =
-            TcpListener::bind("127.0.0.1:0").context("could not open a local socket")?;
+        let listener = TcpListener::bind("127.0.0.1:0").context("could not open a local socket")?;
         let addr = listener.local_addr()?.to_string();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -322,7 +321,13 @@ pub fn claude_args(scope: Scope) -> Vec<String> {
     args.push(scope.label());
     // Last: the flag takes every argument after it.
     args.push("--allowedTools".to_string());
-    for tool in ["Bash(fleet:*)", "PowerShell(fleet:*)", "Read", "Grep", "Glob"] {
+    for tool in [
+        "Bash(fleet:*)",
+        "PowerShell(fleet:*)",
+        "Read",
+        "Grep",
+        "Glob",
+    ] {
         args.push(tool.to_string());
     }
     args
@@ -330,7 +335,8 @@ pub fn claude_args(scope: Scope) -> Vec<String> {
 
 /// The first message a fresh Big Brother gets, so it starts watching without
 /// anyone having to tell it to.
-pub const KICKOFF: &str = "Start watching now: run `fleet list`, then keep looping on `fleet wait`.";
+pub const KICKOFF: &str =
+    "Start watching now: run `fleet list`, then keep looping on `fleet wait`.";
 
 pub fn system_prompt(scope: Scope, extra: &str) -> String {
     let mut p = format!(
@@ -608,7 +614,15 @@ fn entry_lines(v: &Value) -> Vec<String> {
 }
 
 fn tool_summary(input: &Value) -> String {
-    for key in ["command", "file_path", "path", "pattern", "url", "description", "prompt"] {
+    for key in [
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "url",
+        "description",
+        "prompt",
+    ] {
         if let Some(s) = input[key].as_str() {
             return one_line(s);
         }
@@ -704,7 +718,10 @@ mod tests {
                 "  ! error: 3 failed",
             ]
         );
-        assert_eq!(transcript_tail(&path, 1).unwrap(), vec!["  ! error: 3 failed"]);
+        assert_eq!(
+            transcript_tail(&path, 1).unwrap(),
+            vec!["  ! error: 3 failed"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -716,13 +733,15 @@ mod tests {
             env::set_var(ADDR_VAR, &server.addr);
             env::set_var(TOKEN_VAR, "tok");
         }
-        let answerer = thread::spawn(move || loop {
-            if let Some(req) = server.try_recv() {
-                let text = format!("{} {} {}", req.token, req.cmd, req.args.join(","));
-                req.answer(ok(text));
-                return;
+        let answerer = thread::spawn(move || {
+            loop {
+                if let Some(req) = server.try_recv() {
+                    let text = format!("{} {} {}", req.token, req.cmd, req.args.join(","));
+                    req.answer(ok(text));
+                    return;
+                }
+                thread::sleep(Duration::from_millis(5));
             }
-            thread::sleep(Duration::from_millis(5));
         });
         let v = call("peek", &["web".to_string(), "5".to_string()]).unwrap();
         answerer.join().unwrap();

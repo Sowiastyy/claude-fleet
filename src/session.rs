@@ -8,16 +8,16 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Sender},
-        Arc, Mutex, RwLock,
     },
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::{bigbrother, dsr, keys};
 
@@ -172,7 +172,12 @@ impl PtySession {
 
         let writer: SharedWriter = Arc::new(Mutex::new(writer));
         let parser = Arc::new(RwLock::new(vt100::Parser::new(rows, cols, SCROLLBACK)));
-        spawn_reader(reader, Arc::clone(&parser), Arc::clone(&writer), Arc::clone(&output));
+        spawn_reader(
+            reader,
+            Arc::clone(&parser),
+            Arc::clone(&writer),
+            Arc::clone(&output),
+        );
 
         let queued = Arc::new(AtomicUsize::new(0));
         let input_tx = spawn_writer(Arc::clone(&writer), Arc::clone(&queued));
@@ -402,9 +407,7 @@ impl PtySession {
         self.parser
             .read()
             .ok()
-            .filter(|p| {
-                p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
-            })
+            .filter(|p| p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
             .map(|p| p.screen().mouse_protocol_encoding())
     }
 
@@ -434,6 +437,15 @@ impl PtySession {
         self.parser
             .read()
             .map(|p| cursor_at_prompt_start(p.screen()))
+            .unwrap_or(false)
+    }
+
+    /// Whether the cursor sits past the last character of the input box,
+    /// where a right arrow has nowhere further to go.
+    pub fn cursor_at_prompt_end(&self) -> bool {
+        self.parser
+            .read()
+            .map(|p| cursor_at_prompt_end(p.screen()))
             .unwrap_or(false)
     }
 
@@ -586,6 +598,64 @@ fn cursor_at_prompt_start(screen: &vt100::Screen) -> bool {
     rest == PROMPT_CARET.to_string() || rest == ">"
 }
 
+/// A cell that holds no input: empty, blank, the box border, or dim — the
+/// placeholder and suggestion text Claude paints into an empty prompt.
+fn blank_cell(cell: &vt100::Cell) -> bool {
+    cell.dim()
+        || cell
+            .contents()
+            .trim_matches(|ch: char| ch.is_whitespace() || ch == '│')
+            .is_empty()
+}
+
+/// A horizontal rule or box corner: the edge of the input box.
+fn rule_row(screen: &vt100::Screen, row: u16) -> bool {
+    let (_, cols) = screen.size();
+    (0..cols)
+        .filter_map(|c| screen.cell(row, c))
+        .map(|cell| cell.contents())
+        .find(|s| !s.trim().is_empty())
+        .and_then(|s| s.chars().next())
+        .is_some_and(|ch| matches!(ch, '─' | '╭' | '╰'))
+}
+
+/// True when nothing of the input follows the cursor: the rest of its row is
+/// blank, and so is every row below it down to the edge of the input box.
+///
+/// The cursor must be in the input itself — on the caret's row or on a
+/// continuation row under it.
+fn cursor_at_prompt_end(screen: &vt100::Screen) -> bool {
+    if screen.scrollback() > 0 {
+        return false;
+    }
+    let Some((row, col)) = prompt_cursor(screen) else {
+        return false;
+    };
+    let (rows, cols) = screen.size();
+    let row_blank_from = |r: u16, from: u16| {
+        (from..cols)
+            .filter_map(|c| screen.cell(r, c))
+            .all(blank_cell)
+    };
+
+    let caret_above = (0..=row)
+        .rev()
+        .take_while(|&r| r == row || !rule_row(screen, r))
+        .any(|r| {
+            (0..cols).any(|c| {
+                screen
+                    .cell(r, c)
+                    .is_some_and(|cell| cell.contents() == PROMPT_CARET.to_string())
+            })
+        });
+    if !caret_above || !row_blank_from(row, col) {
+        return false;
+    }
+    (row + 1..rows)
+        .take_while(|&r| !rule_row(screen, r))
+        .all(|r| row_blank_from(r, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +690,28 @@ mod tests {
     fn continuation_row_is_not_the_start() {
         let p = screen("\x1b[5;1H❯ first\r\n  ");
         assert!(!cursor_at_prompt_start(p.screen()));
+    }
+
+    #[test]
+    fn end_of_input_is_the_end() {
+        let p = screen("\x1b[4;1H────\x1b[5;1H❯ hello\x1b[6;1H────\x1b[5;8H");
+        assert!(cursor_at_prompt_end(p.screen()));
+        let p = screen("\x1b[4;1H────\x1b[5;1H❯ hello\x1b[6;1H────\x1b[5;5H");
+        assert!(!cursor_at_prompt_end(p.screen()));
+    }
+
+    #[test]
+    fn a_later_row_of_input_is_not_the_end() {
+        let p = screen("\x1b[4;1H────\x1b[5;1H❯ first\r\n  second\r\n────\x1b[5;8H");
+        assert!(!cursor_at_prompt_end(p.screen()));
+        let p = screen("\x1b[4;1H────\x1b[5;1H❯ first\r\n  second\r\n────\x1b[6;9H");
+        assert!(cursor_at_prompt_end(p.screen()));
+    }
+
+    #[test]
+    fn placeholder_does_not_count_as_input() {
+        let p = screen("\x1b[5;1H❯ \x1b[2mTry something\x1b[22m\x1b[5;3H");
+        assert!(cursor_at_prompt_end(p.screen()));
     }
 
     #[test]

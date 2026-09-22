@@ -19,8 +19,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -300,9 +300,10 @@ fn parse_rfc3339(s: &str) -> Option<i64> {
             let body = &tz[1..];
             let (oh, om) = match body.split_once(':') {
                 Some((a, b)) => (a.parse::<i64>().ok()?, b.parse::<i64>().ok()?),
-                None if body.len() == 4 => {
-                    (body[..2].parse::<i64>().ok()?, body[2..].parse::<i64>().ok()?)
-                }
+                None if body.len() == 4 => (
+                    body[..2].parse::<i64>().ok()?,
+                    body[2..].parse::<i64>().ok()?,
+                ),
                 None => (body.parse::<i64>().ok()?, 0),
             };
             let mag = oh * 3600 + om * 60;

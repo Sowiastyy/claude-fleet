@@ -15,7 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 const LATEST: &str = "https://api.github.com/repos/Sowiastyy/claude-fleet/releases/latest";
@@ -57,7 +57,13 @@ struct ApiAsset {
 /// that build has it. A release installed over the build knows its number.
 pub fn check(repo: Option<&Path>) -> Result<Option<Release>> {
     let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "20", "-H", "Accept: application/vnd.github+json"])
+        .args([
+            "-fsSL",
+            "--max-time",
+            "20",
+            "-H",
+            "Accept: application/vnd.github+json",
+        ])
         .args(["-H", &format!("User-Agent: claude-fleet/{CURRENT}")])
         .arg(LATEST)
         .stdin(Stdio::null())
@@ -67,7 +73,8 @@ pub fn check(repo: Option<&Path>) -> Result<Option<Release>> {
     if !out.status.success() {
         bail!("GitHub did not answer");
     }
-    let rel: ApiRelease = serde_json::from_slice(&out.stdout).context("unexpected answer from GitHub")?;
+    let rel: ApiRelease =
+        serde_json::from_slice(&out.stdout).context("unexpected answer from GitHub")?;
     let commit = rel.target_commitish.trim().to_string();
     let found = newer(rel, CURRENT);
     Ok(match repo {
@@ -93,7 +100,10 @@ fn in_head(repo: &Path, commit: &str) -> bool {
 
 /// The checkout a cargo build output belongs to: `<repo>\target\<profile>\x.exe`.
 pub fn dev_repo(origin: &Path) -> Option<PathBuf> {
-    is_dev_build(origin).then(|| origin.ancestors().nth(3)).flatten().map(Path::to_path_buf)
+    is_dev_build(origin)
+        .then(|| origin.ancestors().nth(3))
+        .flatten()
+        .map(Path::to_path_buf)
 }
 
 fn newer(rel: ApiRelease, current: &str) -> Option<Release> {
@@ -165,17 +175,21 @@ pub fn install(rel: &Release, origin: &Path) -> Result<()> {
     }
     // A redirect to an error page still ends in a file; an executable starts
     // with `MZ`, and anything else must not end up where the fleet starts from.
-    let head = fs::read(&part).ok().filter(|b| b.len() > 1024 && b.starts_with(b"MZ"));
+    let head = fs::read(&part)
+        .ok()
+        .filter(|b| b.len() > 1024 && b.starts_with(b"MZ"));
     if head.is_none() {
         let _ = fs::remove_file(&part);
         bail!("the download of {} is not an executable", rel.tag);
     }
 
-    fs::rename(origin, &old).with_context(|| format!("could not move {} aside", origin.display()))?;
+    fs::rename(origin, &old)
+        .with_context(|| format!("could not move {} aside", origin.display()))?;
     if let Err(e) = fs::rename(&part, origin) {
         // Put the old one back, so a failed update leaves a working fleet.
         let _ = fs::rename(&old, origin);
-        return Err(e).with_context(|| format!("could not put the new build at {}", origin.display()));
+        return Err(e)
+            .with_context(|| format!("could not put the new build at {}", origin.display()));
     }
     Ok(())
 }
@@ -241,12 +255,21 @@ mod tests {
 
     #[test]
     fn a_cargo_build_output_is_left_to_cargo() {
-        assert!(is_dev_build(Path::new(r"C:\src\claude-fleet\target\release\claude-fleet.exe")));
-        assert!(is_dev_build(Path::new(r"C:\src\claude-fleet\target\debug\claude-fleet.exe")));
+        assert!(is_dev_build(Path::new(
+            r"C:\src\claude-fleet\target\release\claude-fleet.exe"
+        )));
+        assert!(is_dev_build(Path::new(
+            r"C:\src\claude-fleet\target\debug\claude-fleet.exe"
+        )));
         assert!(!is_dev_build(Path::new(r"C:\tools\claude-fleet.exe")));
-        assert!(!is_dev_build(Path::new(r"C:\Users\me\.cargo\bin\claude-fleet.exe")));
+        assert!(!is_dev_build(Path::new(
+            r"C:\Users\me\.cargo\bin\claude-fleet.exe"
+        )));
         assert_eq!(
-            dev_repo(Path::new(r"C:\src\claude-fleet\target\debug\claude-fleet.exe")).as_deref(),
+            dev_repo(Path::new(
+                r"C:\src\claude-fleet\target\debug\claude-fleet.exe"
+            ))
+            .as_deref(),
             Some(Path::new(r"C:\src\claude-fleet"))
         );
         assert_eq!(dev_repo(Path::new(r"C:\tools\claude-fleet.exe")), None);
@@ -264,14 +287,28 @@ mod tests {
         let served = dir.join("served.exe");
         fs::write(&served, &body).unwrap();
 
-        let url = format!("file:///{}", served.display().to_string().replace('\\', "/"));
-        install(&Release { tag: "v9.9.9".into(), url }, &origin).unwrap();
+        let url = format!(
+            "file:///{}",
+            served.display().to_string().replace('\\', "/")
+        );
+        install(
+            &Release {
+                tag: "v9.9.9".into(),
+                url,
+            },
+            &origin,
+        )
+        .unwrap();
         assert_eq!(fs::read(&origin).unwrap(), body);
         let aside = |d: &Path| {
             fs::read_dir(d)
                 .unwrap()
                 .flatten()
-                .filter(|e| e.file_name().to_string_lossy().starts_with("claude-fleet.old-"))
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("claude-fleet.old-")
+                })
                 .count()
         };
         assert_eq!(aside(&dir), 1);
@@ -280,8 +317,20 @@ mod tests {
 
         // Something that is not an executable never replaces the binary.
         fs::write(&served, b"<html>not found</html>").unwrap();
-        let url = format!("file:///{}", served.display().to_string().replace('\\', "/"));
-        assert!(install(&Release { tag: "v9.9.9".into(), url }, &origin).is_err());
+        let url = format!(
+            "file:///{}",
+            served.display().to_string().replace('\\', "/")
+        );
+        assert!(
+            install(
+                &Release {
+                    tag: "v9.9.9".into(),
+                    url
+                },
+                &origin
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(&origin).unwrap(), body);
 
         let _ = fs::remove_dir_all(&dir);
@@ -290,6 +339,9 @@ mod tests {
     #[test]
     fn the_leftovers_sit_next_to_the_binary() {
         let p = Path::new(r"C:\tools\claude-fleet.exe");
-        assert_eq!(sibling(p, "old").unwrap(), Path::new(r"C:\tools\claude-fleet.old.exe"));
+        assert_eq!(
+            sibling(p, "old").unwrap(),
+            Path::new(r"C:\tools\claude-fleet.old.exe")
+        );
     }
 }

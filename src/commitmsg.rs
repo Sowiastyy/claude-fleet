@@ -30,13 +30,24 @@ pub fn generate(root: &Path, model: &str) -> Result<String, String> {
 
     let mut cmd = Command::new(session::claude_binary());
     cmd.current_dir(root)
-        .args(["-p", "--model", model, "--tools", "", "--no-session-persistence"])
+        .args([
+            "-p",
+            "--model",
+            model,
+            "--tools",
+            "",
+            "--no-session-persistence",
+        ])
         // Most of the wait was the child starting up rather than the model:
         // connecting every MCP server, loading skills, plugins and hooks, the
         // browser extension. A message needs none of them, and a hook that
         // rewrites replies has no business in one. Sign-in is not a setting,
         // so it still works without them.
-        .args(["--strict-mcp-config", "--disable-slash-commands", "--no-chrome"])
+        .args([
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-chrome",
+        ])
         .args(["--setting-sources", ""])
         .args(["--system-prompt", SYSTEM])
         .arg("Write the commit message for the change on stdin.")
@@ -131,8 +142,14 @@ mod tests {
 
     #[test]
     fn models_go_round_with_the_configured_one_in_front() {
-        assert_eq!(next_model("claude-haiku-4-5", "claude-haiku-4-5"), "claude-sonnet-5");
-        assert_eq!(next_model("claude-opus-5", "claude-haiku-4-5"), "claude-haiku-4-5");
+        assert_eq!(
+            next_model("claude-haiku-4-5", "claude-haiku-4-5"),
+            "claude-sonnet-5"
+        );
+        assert_eq!(
+            next_model("claude-opus-5", "claude-haiku-4-5"),
+            "claude-haiku-4-5"
+        );
         assert_eq!(next_model("claude-opus-5", "my-model"), "my-model");
         assert_eq!(next_model("my-model", "my-model"), "claude-haiku-4-5");
         assert_eq!(next_model("gone", "claude-haiku-4-5"), "claude-haiku-4-5");

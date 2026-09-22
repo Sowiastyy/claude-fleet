@@ -182,9 +182,10 @@ fn cwd_from_transcript(path: &Path) -> Option<String> {
             Err(_) => continue,
         };
         if let Some(cwd) = v["cwd"].as_str()
-            && !cwd.is_empty() {
-                return Some(cwd.to_owned());
-            }
+            && !cwd.is_empty()
+        {
+            return Some(cwd.to_owned());
+        }
     }
     None
 }

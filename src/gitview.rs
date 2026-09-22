@@ -11,8 +11,9 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
 };
 
@@ -469,7 +470,10 @@ mod tests {
         assert!(v.close());
         assert_eq!(v.cursor, Some(Row::Commit("c1".into())));
         assert!(v.close());
-        assert!(!v.rows(&s, None).contains(&Row::CommitFile("c1".into(), "x.rs".into())));
+        assert!(
+            !v.rows(&s, None)
+                .contains(&Row::CommitFile("c1".into(), "x.rs".into()))
+        );
     }
 
     #[test]

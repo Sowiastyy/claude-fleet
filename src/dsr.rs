@@ -24,9 +24,7 @@ impl Query {
     pub fn reply(self, cursor: (u16, u16)) -> Vec<u8> {
         match self {
             // Reports are one-based.
-            Self::CursorPosition => {
-                format!("\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1).into_bytes()
-            }
+            Self::CursorPosition => format!("\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1).into_bytes(),
             Self::DeviceStatus => b"\x1b[0n".to_vec(),
             // "VT100 with advanced video", which is what most emulators claim.
             Self::PrimaryAttributes => b"\x1b[?1;2c".to_vec(),
@@ -60,7 +58,11 @@ pub fn scan(buf: &[u8]) -> (Vec<Query>, usize) {
             CsiScan::NotCsi => {
                 i += 1;
             }
-            CsiScan::Complete { params, final_byte, len } => {
+            CsiScan::Complete {
+                params,
+                final_byte,
+                len,
+            } => {
                 if let Some(q) = classify(params, final_byte) {
                     found.push(q);
                 }

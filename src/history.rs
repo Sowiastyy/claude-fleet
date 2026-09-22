@@ -101,9 +101,7 @@ pub fn exists(id: &str) -> bool {
         return false;
     };
     let name = format!("{id}.jsonl");
-    projects
-        .flatten()
-        .any(|p| p.path().join(&name).is_file())
+    projects.flatten().any(|p| p.path().join(&name).is_file())
 }
 
 /// Where the transcript with this id lives, in whichever project holds it.

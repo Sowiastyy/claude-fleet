@@ -4,8 +4,9 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{
+        Arc,
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -19,7 +20,7 @@ use crate::{
     history,
     registry::{self, RegistryEntry},
     repos,
-    session::{label_for, PtySession},
+    session::{PtySession, label_for},
     supervise, update, usage,
 };
 
@@ -321,7 +322,9 @@ impl NewSessionForm {
 
     /// The subdirectory under the cursor, if the cursor is on one.
     pub fn selected_subdir(&self) -> Option<&PathBuf> {
-        (self.cursor > 0).then(|| self.subdirs.get(self.cursor - 1)).flatten()
+        (self.cursor > 0)
+            .then(|| self.subdirs.get(self.cursor - 1))
+            .flatten()
     }
 
     pub fn move_cursor(&mut self, delta: isize) {
@@ -1035,7 +1038,10 @@ impl App {
     pub fn cycle_commit_model(&mut self) {
         self.commit_model = commitmsg::next_model(&self.commit_model, &config::commit_model());
         commitmsg::save_model(&self.commit_model);
-        self.notify(format!("commit messages now come from {}", self.commit_model));
+        self.notify(format!(
+            "commit messages now come from {}",
+            self.commit_model
+        ));
     }
 
     /// Put the keyboard in the commit message box.
@@ -1107,9 +1113,11 @@ impl App {
         };
         let root = snap.root.clone();
         let upstream = snap.upstream.is_some();
-        self.start_job(GitJob::Push, move || match git::push(&root, &branch, upstream) {
-            Ok(()) => JobDone::Pushed,
-            Err(e) => JobDone::Failed(GitJob::Push, e),
+        self.start_job(GitJob::Push, move || {
+            match git::push(&root, &branch, upstream) {
+                Ok(()) => JobDone::Pushed,
+                Err(e) => JobDone::Failed(GitJob::Push, e),
+            }
         });
     }
 
@@ -1125,9 +1133,11 @@ impl App {
         }
         let root = snap.root.clone();
         let model = self.commit_model.clone();
-        self.start_job(GitJob::Generate, move || match commitmsg::generate(&root, &model) {
-            Ok(m) => JobDone::Generated(m),
-            Err(e) => JobDone::Failed(GitJob::Generate, e),
+        self.start_job(GitJob::Generate, move || {
+            match commitmsg::generate(&root, &model) {
+                Ok(m) => JobDone::Generated(m),
+                Err(e) => JobDone::Failed(GitJob::Generate, e),
+            }
         });
     }
 
@@ -1182,7 +1192,11 @@ impl App {
             items,
             filter: String::new(),
             cursor,
-            back: if self.mode.on_git() { Mode::Git } else { Mode::Nav },
+            back: if self.mode.on_git() {
+                Mode::Git
+            } else {
+                Mode::Nav
+            },
         });
         self.mode = Mode::Branch;
         self.dirty.store(true, Ordering::Relaxed);
@@ -1398,7 +1412,9 @@ impl App {
             self.notify(if resumed == n {
                 format!("{n} sessions came back after the restart, with their conversations")
             } else {
-                format!("{n} sessions came back after the restart, conversations resumed: {resumed}")
+                format!(
+                    "{n} sessions came back after the restart, conversations resumed: {resumed}"
+                )
             });
         }
         Ok(())
@@ -1419,8 +1435,7 @@ impl App {
     /// Consuming it either way keeps a stale window from firing much later.
     pub fn take_understand_window(&mut self) -> Option<usize> {
         let (idx, at) = self.understand_window.take()?;
-        (at.elapsed() <= config::understand_window() && idx < self.sessions.len())
-            .then_some(idx)
+        (at.elapsed() <= config::understand_window() && idx < self.sessions.len()).then_some(idx)
     }
 
     /// Put the prompt into a session that already exists.
@@ -1440,7 +1455,9 @@ impl App {
         s.queue_prompt(&prompt);
         self.selected = idx;
         self.mode = Mode::Focus;
-        self.notify(format!("{label}: \"{prompt}\" is in the prompt — enter sends it"));
+        self.notify(format!(
+            "{label}: \"{prompt}\" is in the prompt — enter sends it"
+        ));
     }
 
     /// Where a new session lands when nothing else says otherwise: next to the
@@ -1555,7 +1572,11 @@ impl App {
         }
         let cursor = self.form.as_ref().map_or(0, |f| f.repo_cursor);
         let Some(repo) = self.filtered_repos().get(cursor).map(|r| (*r).clone()) else {
-            let path = self.form.as_ref().map(|f| f.selected_path()).unwrap_or_default();
+            let path = self
+                .form
+                .as_ref()
+                .map(|f| f.selected_path())
+                .unwrap_or_default();
             return self.request_spawn(path);
         };
         self.form = None;
@@ -1773,9 +1794,11 @@ impl App {
     /// one already watching that scope.
     pub fn spawn_big_brother(&mut self, scope: Scope) -> Result<()> {
         self.mode = Mode::Nav;
-        if let Some(i) = self.sessions.iter().position(|s| {
-            s.is_alive() && s.watch.as_ref().is_some_and(|w| w.scope == scope)
-        }) {
+        if let Some(i) = self
+            .sessions
+            .iter()
+            .position(|s| s.is_alive() && s.watch.as_ref().is_some_and(|w| w.scope == scope))
+        {
             self.selected = i;
             self.mode = Mode::Focus;
             self.notify(format!("{} is already watching", self.sessions[i].label));
@@ -1811,7 +1834,11 @@ impl App {
         let (Some(server), Some(shim)) = (&self.bb_server, &self.bb_shim) else {
             return Ok(None);
         };
-        let cwd = if cwd.is_dir() { cwd } else { self.launch_cwd.clone() };
+        let cwd = if cwd.is_dir() {
+            cwd
+        } else {
+            self.launch_cwd.clone()
+        };
         let token = bigbrother::new_token();
         let env = bigbrother::child_env(&server.addr, &token, shim, &exe);
         let mut args = Vec::new();
@@ -1937,7 +1964,10 @@ impl App {
                 if names.is_empty() {
                     format!("no session called {name} — you watch none right now")
                 } else {
-                    format!("no session called {name} in your scope; there is: {}", names.join(", "))
+                    format!(
+                        "no session called {name} in your scope; there is: {}",
+                        names.join(", ")
+                    )
                 }
             })
     }
@@ -2075,11 +2105,17 @@ impl App {
             "spawn" => {
                 let dir = args.first().ok_or("usage: fleet spawn <dir> [prompt]")?;
                 let path = PathBuf::from(dir);
-                let path = if path.is_absolute() { path } else { my_cwd.join(path) };
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    my_cwd.join(path)
+                };
                 if !path.is_dir() {
                     return Err(format!("no such directory: {}", path.display()));
                 }
-                let idx = self.spawn_raw(path, &[], &[], None).map_err(|e| e.to_string())?;
+                let idx = self
+                    .spawn_raw(path, &[], &[], None)
+                    .map_err(|e| e.to_string())?;
                 let s = &mut self.sessions[idx];
                 if let Scope::Group(g) = scope {
                     s.group = Some(g);
@@ -2218,10 +2254,11 @@ impl App {
         }
 
         if let Some((_, at)) = &self.status
-            && at.elapsed() > Duration::from_secs(4) {
-                self.status = None;
-                self.dirty.store(true, Ordering::Relaxed);
-            }
+            && at.elapsed() > Duration::from_secs(4)
+        {
+            self.status = None;
+            self.dirty.store(true, Ordering::Relaxed);
+        }
     }
 }
 

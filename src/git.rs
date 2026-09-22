@@ -261,8 +261,16 @@ pub fn commit_detail(root: &Path, hash: &str) -> Option<CommitDetail> {
     let files = git(
         root,
         &[
-            "diff-tree", "--no-commit-id", "-r", "--root", "-m", "--first-parent",
-            "--numstat", "-z", "--no-ext-diff", hash,
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--root",
+            "-m",
+            "--first-parent",
+            "--numstat",
+            "-z",
+            "--no-ext-diff",
+            hash,
         ],
     )
     .ok()
@@ -289,15 +297,28 @@ pub fn diff(root: &Path, src: &DiffSource) -> Vec<String> {
         DiffSource::Worktree { path, has_head, .. } => {
             let spec = format!(":(top){path}");
             let base = if *has_head { "HEAD" } else { "--cached" };
-            git(root, &["diff", base, "--no-color", "--no-ext-diff", "--", &spec])
+            git(
+                root,
+                &["diff", base, "--no-color", "--no-ext-diff", "--", &spec],
+            )
         }
         DiffSource::Commit { hash, path } => {
             let spec = format!(":(top){path}");
             git(
                 root,
                 &[
-                    "diff-tree", "-p", "--no-commit-id", "-r", "--root", "-m",
-                    "--first-parent", "--no-color", "--no-ext-diff", hash, "--", &spec,
+                    "diff-tree",
+                    "-p",
+                    "--no-commit-id",
+                    "-r",
+                    "--root",
+                    "-m",
+                    "--first-parent",
+                    "--no-color",
+                    "--no-ext-diff",
+                    hash,
+                    "--",
+                    &spec,
                 ],
             )
         }
@@ -319,7 +340,10 @@ fn untracked_diff(path: &Path) -> Vec<String> {
         return vec!["(gone)".to_string()];
     };
     if meta.len() > COUNT_LIMIT * 4 {
-        return vec![format!("(new file, {} KB — too big to show)", meta.len() / 1024)];
+        return vec![format!(
+            "(new file, {} KB — too big to show)",
+            meta.len() / 1024
+        )];
     }
     let Ok(bytes) = fs::read(path) else {
         return vec!["(could not be read)".to_string()];
@@ -508,7 +532,10 @@ const MESSAGE_DIFF_LIMIT: usize = 40_000;
 /// them.
 pub fn message_context(root: &Path) -> String {
     let staged = has_staged(root);
-    let has_head = matches!(git(root, &["rev-parse", "--verify", "-q", "HEAD"]), Ok(Some(_)));
+    let has_head = matches!(
+        git(root, &["rev-parse", "--verify", "-q", "HEAD"]),
+        Ok(Some(_))
+    );
     let base: &[&str] = if staged || !has_head {
         &["--cached"]
     } else {
@@ -799,8 +826,10 @@ mod tests {
             format!(" {SEP}refs/remotes/origin/main{SEP}300"),
             format!(" {SEP}refs/remotes/origin/feature/x{SEP}100"),
         ]
-        .join("
-");
+        .join(
+            "
+",
+        );
         let b = parse_branches(&out);
         let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, ["main", "fix", "origin/feature/x"]);
