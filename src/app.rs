@@ -24,6 +24,9 @@ use crate::{
     supervise, update, usage,
 };
 
+/// The model a failed push is handed to.
+const PUSH_FIX_MODEL: &str = "sonnet";
+
 /// How many past conversations the resume list offers. Enough to hold a few
 /// days of work; past that one knows the directory and opens it by name.
 const RESUME_LIMIT: usize = 20;
@@ -1193,29 +1196,24 @@ impl App {
         self.push();
     }
 
-    /// Hand the failed push to Claude: the selected session when it works in
-    /// that repository and is still running, a new one there otherwise. The
-    /// prompt is sent, not left in the box — pressing the button was the ask.
+    /// Hand the failed push to a new Sonnet session started in the
+    /// repository, with the prompt sent at once — pressing the button was the
+    /// ask, and a fresh session carries nothing else it could mix it up with.
     pub fn fix_push(&mut self) -> Result<()> {
         let Some(failed) = self.push_failed.take() else {
             return Ok(());
         };
         self.mode = Mode::Nav;
         let prompt = push_fix_prompt(&failed.failure);
-        let here = self
-            .selected_session()
-            .is_some_and(|s| s.is_alive() && git::root_of(&s.cwd) == failed.root);
-        if !here {
-            let idx = self.spawn_raw(failed.root.clone(), &[], &[], None)?;
-            self.selected = idx;
-        }
-        let idx = self.selected;
+        let args = ["--model".to_string(), PUSH_FIX_MODEL.to_string()];
+        let idx = self.spawn_raw(failed.root.clone(), &args, &[], None)?;
+        self.selected = idx;
         let s = &mut self.sessions[idx];
         s.queue_submit(&prompt);
         let label = s.label.clone();
         self.mode = Mode::Focus;
         self.notify(format!(
-            "{label}: asked to fix the push ({})",
+            "{label}: {PUSH_FIX_MODEL} is fixing the push ({})",
             failed.failure.kind.name()
         ));
         Ok(())

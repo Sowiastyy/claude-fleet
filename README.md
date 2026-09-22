@@ -145,8 +145,8 @@ A push that fails opens a dialog with the kind of failure (merge conflict,
 rejected because the remote is ahead, authentication, network, declined by a
 hook or protection rule, file too large, no remote), git's output and the
 branch's log against its remote. `f` or enter (or the **let Claude fix it**
-button) sends all of that to the selected session when it works in that
-repository, or to a new session started there; `r` pushes again, `esc` closes.
+button) starts a new Sonnet session in the repository and sends it all of
+that at once; `r` pushes again, `esc` closes.
 
 In the message box the arrows, `home`/`end` and `ctrl+←`/`ctrl+→` move the
 cursor, and typing goes in where it stands. `enter` commits, `shift+enter`
