@@ -1079,6 +1079,22 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             _ => app.mode = Mode::Nav,
         },
+        Mode::PushFailed => match key.code {
+            KeyCode::Char('f') | KeyCode::Char('c') | KeyCode::Enter => app.fix_push()?,
+            KeyCode::Char('r') | KeyCode::Char('p') => app.retry_push(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(p) = app.push_failed.as_mut() {
+                    p.scroll += 1;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(p) = app.push_failed.as_mut() {
+                    p.scroll = p.scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.close_push_failed(),
+            _ => {}
+        },
     }
     Ok(())
 }
@@ -1355,16 +1371,32 @@ fn leave_git(app: &mut App) {
 /// selects it, the pane goes into the session, the git panel takes the keys.
 /// Dialogs and prompts keep theirs — a stray click must not answer them.
 fn handle_click(app: &mut App, m: MouseEvent) {
-    if !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit) {
-        return;
-    }
     let hit = app
         .git_hits
         .iter()
         .find(|(r, _)| r.contains(ratatui::layout::Position::new(m.column, m.row)))
         .map(|(_, h)| *h);
+    if app.mode == Mode::PushFailed {
+        match hit {
+            Some(GitHit::FixPush) => {
+                if let Err(e) = app.fix_push() {
+                    app.notify(format!("could not start a session: {e}"));
+                }
+            }
+            Some(GitHit::RetryPush) => app.retry_push(),
+            Some(GitHit::CloseDialog) => app.close_push_failed(),
+            _ => {}
+        }
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
+    if !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit) {
+        return;
+    }
     if let Some(hit) = hit {
         match hit {
+            // Only the failed-push dialog draws these.
+            GitHit::FixPush | GitHit::RetryPush | GitHit::CloseDialog => {}
             GitHit::Message => app.focus_commit(),
             GitHit::Commit => app.commit(),
             GitHit::Push => app.push(),
@@ -1664,6 +1696,20 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         _ => return,
     };
 
+    // The failed-push dialog scrolls its own text, whatever is under it.
+    if let Some(p) = app
+        .push_failed
+        .as_mut()
+        .filter(|_| app.mode == Mode::PushFailed)
+    {
+        p.scroll = if up {
+            p.scroll.saturating_sub(SCROLL_STEP as usize)
+        } else {
+            p.scroll + SCROLL_STEP as usize
+        };
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
     // A notch over the sidebar moves the selection, not the terminal.
     if m.column < app.pane_x {
         app.select(if up { -1 } else { 1 });
@@ -1769,7 +1815,11 @@ fn finish_selection(app: &mut App, m: MouseEvent) {
         return;
     }
     let (start, end) = sel.ordered();
-    let Some(text) = app.sessions.get(sel.session).map(|s| s.text_between(start, end)) else {
+    let Some(text) = app
+        .sessions
+        .get(sel.session)
+        .map(|s| s.text_between(start, end))
+    else {
         return;
     };
     if text.trim().is_empty() {

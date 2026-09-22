@@ -220,7 +220,7 @@ pub fn read(cwd: &Path) -> State {
 /// between reads, so it is asked once.
 static ROOTS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(Default::default);
 
-fn root_of(cwd: &Path) -> PathBuf {
+pub fn root_of(cwd: &Path) -> PathBuf {
     if let Some(root) = ROOTS.lock().ok().and_then(|m| m.get(cwd).cloned()) {
         return root;
     }
@@ -514,12 +514,215 @@ pub fn commit(root: &Path, message: &str) -> Result<String, String> {
 
 /// Push the branch checked out. One without an upstream gets one on `origin`,
 /// the way the first push of a new branch is nearly always meant.
-pub fn push(root: &Path, branch: &str, has_upstream: bool) -> Result<(), String> {
-    if has_upstream {
-        run(root, &["push"])
+pub fn push(root: &Path, branch: &str, has_upstream: bool) -> Result<(), PushFailure> {
+    let args: &[&str] = if has_upstream {
+        &["push"]
     } else {
-        run(root, &["push", "-u", "origin", branch])
+        &["push", "-u", "origin", branch]
+    };
+    let out = match command(root, args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => {
+            return Err(PushFailure {
+                kind: PushError::Other,
+                reason: format!("git could not be run: {e}"),
+                output: String::new(),
+                log: String::new(),
+            });
+        }
+    };
+    if out.status.success() {
+        return Ok(());
     }
+    let mut output = String::from_utf8_lossy(&out.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !stdout.trim().is_empty() {
+        output.push_str(&stdout);
+    }
+    let kind = if in_conflict(root) {
+        PushError::Conflict
+    } else {
+        classify_push(&output)
+    };
+    Err(PushFailure {
+        kind,
+        reason: reason(&output),
+        output: output.trim_end().to_string(),
+        log: push_log(root),
+    })
+}
+
+/// What went wrong with a push, as far as git's words tell.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PushError {
+    /// A merge or rebase is stopped halfway on conflicting files.
+    Conflict,
+    /// The remote has commits this branch does not; it needs them first.
+    Rejected,
+    /// The remote wants credentials it did not get, or refuses them.
+    Auth,
+    /// The remote could not be reached at all.
+    Network,
+    /// A hook or a branch protection rule on the remote said no.
+    Declined,
+    /// A file is past the remote's size limit.
+    TooLarge,
+    /// No remote to push to, or it is not a repository.
+    NoRemote,
+    Other,
+}
+
+impl PushError {
+    pub fn name(self) -> &'static str {
+        match self {
+            PushError::Conflict => "merge conflict",
+            PushError::Rejected => "rejected — remote is ahead",
+            PushError::Auth => "authentication",
+            PushError::Network => "network",
+            PushError::Declined => "declined by the remote",
+            PushError::TooLarge => "file too large",
+            PushError::NoRemote => "no remote",
+            PushError::Other => "other error",
+        }
+    }
+}
+
+/// A push that did not go through: what kind of failure, git's own words,
+/// and where the branch stood against its remote when it happened.
+#[derive(Clone, Debug)]
+pub struct PushFailure {
+    pub kind: PushError,
+    /// The one line of `output` that says it.
+    pub reason: String,
+    pub output: String,
+    pub log: String,
+}
+
+/// Sort git's complaint into a kind. The checks go from the most particular
+/// wording to the most general, since a rejection can also mention the URL.
+pub fn classify_push(output: &str) -> PushError {
+    let o = output.to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| o.contains(n));
+    if has(&["conflict"]) {
+        PushError::Conflict
+    } else if has(&[
+        "exceeds github's file size limit",
+        "gh001",
+        "large files detected",
+    ]) {
+        PushError::TooLarge
+    } else if has(&[
+        "pre-receive hook declined",
+        "protected branch",
+        "gh006",
+        "gh013",
+        "hook declined",
+    ]) {
+        PushError::Declined
+    } else if has(&[
+        "non-fast-forward",
+        "fetch first",
+        "[rejected]",
+        "tip of your current branch is behind",
+    ]) {
+        PushError::Rejected
+    } else if has(&[
+        "authentication failed",
+        "permission denied",
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "returned error: 403",
+        "returned error: 401",
+        "invalid username or password",
+        "permission to",
+    ]) {
+        PushError::Auth
+    } else if has(&[
+        "could not resolve host",
+        "failed to connect",
+        "connection timed out",
+        "connection refused",
+        "network is unreachable",
+        "ssl",
+        "the remote end hung up",
+        "early eof",
+    ]) {
+        PushError::Network
+    } else if has(&[
+        "does not appear to be a git repository",
+        "no configured push destination",
+        "no such remote",
+        "repository not found",
+        "has no upstream branch",
+    ]) {
+        PushError::NoRemote
+    } else {
+        PushError::Other
+    }
+}
+
+/// Whether a merge, rebase or cherry-pick is stopped on conflicting files.
+fn in_conflict(root: &Path) -> bool {
+    let unmerged = git(root, &["diff", "--name-only", "--diff-filter=U"])
+        .ok()
+        .flatten()
+        .is_some_and(|out| !out.trim().is_empty());
+    let halfway = [
+        "MERGE_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "CHERRY_PICK_HEAD",
+    ]
+    .iter()
+    .any(|p| {
+        git(root, &["rev-parse", "--git-path", p])
+            .ok()
+            .flatten()
+            .is_some_and(|path| root.join(path.trim()).exists())
+    });
+    unmerged || halfway
+}
+
+/// The branch against its remote, as text for the failure dialog: the status
+/// line with ahead and behind, then the last commits on both sides.
+fn push_log(root: &Path) -> String {
+    let mut out = String::new();
+    if let Ok(Some(status)) = git(root, &["status", "-sb", "--no-renames"]) {
+        out.push_str(status.trim_end());
+        out.push_str(
+            "
+
+",
+        );
+    }
+    // `@{u}` is missing on a branch never pushed; the plain log is then all.
+    let log = git(
+        root,
+        &[
+            "log",
+            "--oneline",
+            "--graph",
+            "--decorate",
+            "-n20",
+            "HEAD",
+            "@{u}",
+        ],
+    )
+    .ok()
+    .flatten()
+    .or_else(|| {
+        git(root, &["log", "--oneline", "--graph", "--decorate", "-n20"])
+            .ok()
+            .flatten()
+    })
+    .unwrap_or_default();
+    out.push_str(log.trim_end());
+    out
 }
 
 /// The longest diff handed to the model writing a commit message. Past this
@@ -746,6 +949,46 @@ fn parse_log(out: &str) -> Vec<Commit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_errors_are_sorted_by_kind() {
+        let cases = [
+            (
+                " ! [rejected]        main -> main (fetch first)
+error: failed to push some refs to 'github.com:a/b.git'",
+                PushError::Rejected,
+            ),
+            (
+                " ! [rejected]        main -> main (non-fast-forward)",
+                PushError::Rejected,
+            ),
+            (
+                "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+                PushError::Auth,
+            ),
+            (
+                "fatal: unable to access 'https://github.com/a/b.git/': Could not resolve host: github.com",
+                PushError::Network,
+            ),
+            (
+                "remote: error: GH006: Protected branch update failed for refs/heads/main.
+ ! [remote rejected] main -> main (protected branch hook declined)",
+                PushError::Declined,
+            ),
+            (
+                "remote: error: File big.bin is 120.00 MB; this exceeds GitHub's file size limit of 100.00 MB",
+                PushError::TooLarge,
+            ),
+            (
+                "fatal: 'origin' does not appear to be a git repository",
+                PushError::NoRemote,
+            ),
+            ("something else entirely", PushError::Other),
+        ];
+        for (output, kind) in cases {
+            assert_eq!(classify_push(output), kind, "{output}");
+        }
+    }
 
     #[test]
     fn a_commit_with_nothing_staged_takes_every_change() {

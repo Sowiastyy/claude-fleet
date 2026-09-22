@@ -156,6 +156,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Tag => draw_tag(f, app),
         Mode::BigBrother => draw_big_brother(f, app),
         Mode::Reports => draw_reports(f, app),
+        Mode::PushFailed => draw_push_failed(f, app),
         _ => {}
     }
 }
@@ -1803,6 +1804,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("esc", "cancel"),
         ],
         Mode::Reports => vec![("up/dn", "scroll"), ("any key", "close")],
+        Mode::PushFailed => vec![
+            ("f/enter", "Claude fixes it"),
+            ("r", "push again"),
+            ("up/dn", "scroll"),
+            ("esc", "close"),
+        ],
         Mode::Understand => vec![
             ("F1-F9", "that session"),
             ("u", "new session"),
@@ -2611,6 +2618,122 @@ fn draw_reports(f: &mut Frame, app: &App) {
         ),
         area,
     );
+}
+
+/// A push that failed: the kind of failure, git's words, the branch against
+/// its remote, and the buttons for what to do about it.
+fn draw_push_failed(f: &mut Frame, app: &mut App) {
+    let Some(failed) = app.push_failed.as_mut() else {
+        return;
+    };
+    let full = f.area();
+    let width = full.width.saturating_sub(8).clamp(40, 110);
+    let height = full.height.saturating_sub(4).max(10);
+    let area = centered(width, height, full);
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::dead()))
+        .title(Line::from(Span::styled(
+            " push failed ",
+            Style::default().fg(theme::dead()).bold(),
+        )));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [head, body, buttons] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let text_w = usize::from(inner.width).saturating_sub(2).max(10);
+
+    let kind = failed.failure.kind;
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(" error type  ", Style::default().fg(theme::muted())),
+                Span::styled(
+                    format!(" {} ", kind.name()),
+                    Style::default()
+                        .bg(theme::dead())
+                        .fg(theme::surface())
+                        .bold(),
+                ),
+            ]),
+            Line::from(Span::styled(
+                format!(" {}", truncate(&failed.failure.reason, text_w)),
+                Style::default().fg(theme::text()),
+            )),
+            Line::from(""),
+        ]),
+        head,
+    );
+
+    let section = |title: &str| {
+        Line::from(Span::styled(
+            format!(" {title}"),
+            Style::default().fg(theme::accent()).bold(),
+        ))
+    };
+    let mut lines = vec![section("git said")];
+    for row in wrap_message(&failed.failure.output, text_w) {
+        lines.push(Line::from(Span::styled(
+            format!("  {row}"),
+            Style::default().fg(theme::text()),
+        )));
+    }
+    if !failed.failure.log.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(section("git log"));
+        for row in wrap_message(&failed.failure.log, text_w) {
+            lines.push(Line::from(Span::styled(
+                format!("  {row}"),
+                Style::default().fg(theme::muted()),
+            )));
+        }
+    }
+    let max_scroll = lines.len().saturating_sub(usize::from(body.height));
+    failed.scroll = failed.scroll.min(max_scroll);
+    let scroll = u16::try_from(failed.scroll).unwrap_or(u16::MAX);
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), body);
+
+    let choices = [
+        (
+            GitHit::FixPush,
+            " ✦ f  let Claude fix it ",
+            Style::default()
+                .bg(theme::accent())
+                .fg(theme::surface())
+                .bold(),
+        ),
+        (
+            GitHit::RetryPush,
+            " r  push again ",
+            Style::default()
+                .bg(theme::surface())
+                .fg(theme::text())
+                .bold(),
+        ),
+        (
+            GitHit::CloseDialog,
+            " esc  close ",
+            Style::default().bg(theme::surface()).fg(theme::muted()),
+        ),
+    ];
+    let mut spans = vec![Span::raw(" ")];
+    let mut x = buttons.x + 1;
+    for (hit, label, style) in choices {
+        let w = (Span::raw(label).width() as u16).min(buttons.right().saturating_sub(x));
+        if w == 0 {
+            break;
+        }
+        app.git_hits.push((Rect::new(x, buttons.y, w, 1), hit));
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw("  "));
+        x = x.saturating_add(w + 2);
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), buttons);
 }
 
 fn centered(width: u16, height: u16, area: Rect) -> Rect {

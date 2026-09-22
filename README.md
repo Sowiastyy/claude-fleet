@@ -141,6 +141,13 @@ buttons **Commit**, **Push**, **Generate** and the model Generate uses
 | `M` | move Generate on to the next model: haiku, sonnet, opus |
 | `p` | push; a branch without an upstream is pushed to `origin` with `-u` |
 
+A push that fails opens a dialog with the kind of failure (merge conflict,
+rejected because the remote is ahead, authentication, network, declined by a
+hook or protection rule, file too large, no remote), git's output and the
+branch's log against its remote. `f` or enter (or the **let Claude fix it**
+button) sends all of that to the selected session when it works in that
+repository, or to a new session started there; `r` pushes again, `esc` closes.
+
 In the message box the arrows, `home`/`end` and `ctrl+←`/`ctrl+→` move the
 cursor, and typing goes in where it stands. `enter` commits, `shift+enter`
 (or `ctrl+j`) starts a new line, `ctrl+g` generates, `ctrl+o` picks the next

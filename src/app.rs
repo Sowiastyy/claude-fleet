@@ -104,6 +104,8 @@ pub enum Mode {
     BigBrother,
     /// The reports the Big Brothers filed.
     Reports,
+    /// A push failed; what git said, and whether Claude should sort it out.
+    PushFailed,
 }
 
 impl Mode {
@@ -140,6 +142,10 @@ pub enum GitHit {
     Generate,
     /// The name of the model Generate uses; a click moves to the next one.
     Model,
+    /// The failed-push dialog's buttons.
+    FixPush,
+    RetryPush,
+    CloseDialog,
 }
 
 /// What a background git job came back with.
@@ -147,7 +153,18 @@ enum JobDone {
     Committed(String),
     Pushed,
     Generated(String),
+    PushFailed(PathBuf, git::PushFailure),
     Failed(GitJob, String),
+}
+
+/// A push that failed, held open in a dialog until dealt with.
+pub struct PushFailed {
+    pub root: PathBuf,
+    pub failure: git::PushFailure,
+    /// How far the dialog's text is scrolled down.
+    pub scroll: usize,
+    /// Where the keyboard was when the dialog came up.
+    back: Mode,
 }
 
 /// The list of past conversations, and where in it the cursor is.
@@ -551,6 +568,8 @@ pub struct App {
     pub unread_level: Option<Level>,
     /// How far the report list is scrolled from its newest entry.
     pub reports_scroll: usize,
+    /// The last push that failed, while its dialog is up.
+    pub push_failed: Option<PushFailed>,
 }
 
 /// How many session events the fleet keeps for Big Brothers to collect.
@@ -683,6 +702,7 @@ impl App {
             unread_reports: 0,
             unread_level: None,
             reports_scroll: 0,
+            push_failed: None,
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -1151,9 +1171,54 @@ impl App {
         self.start_job(GitJob::Push, move || {
             match git::push(&root, &branch, upstream) {
                 Ok(()) => JobDone::Pushed,
-                Err(e) => JobDone::Failed(GitJob::Push, e),
+                Err(e) => JobDone::PushFailed(root, e),
             }
         });
+    }
+
+    /// Close the failed-push dialog, back to wherever the keyboard was.
+    pub fn close_push_failed(&mut self) {
+        let back = self.push_failed.take().map_or(Mode::Nav, |p| p.back);
+        self.mode = if back.on_git() && !(self.show_git && self.git_fits) {
+            Mode::Nav
+        } else {
+            back
+        };
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Close the failed-push dialog and push again.
+    pub fn retry_push(&mut self) {
+        self.close_push_failed();
+        self.push();
+    }
+
+    /// Hand the failed push to Claude: the selected session when it works in
+    /// that repository and is still running, a new one there otherwise. The
+    /// prompt is sent, not left in the box — pressing the button was the ask.
+    pub fn fix_push(&mut self) -> Result<()> {
+        let Some(failed) = self.push_failed.take() else {
+            return Ok(());
+        };
+        self.mode = Mode::Nav;
+        let prompt = push_fix_prompt(&failed.failure);
+        let here = self
+            .selected_session()
+            .is_some_and(|s| s.is_alive() && git::root_of(&s.cwd) == failed.root);
+        if !here {
+            let idx = self.spawn_raw(failed.root.clone(), &[], &[], None)?;
+            self.selected = idx;
+        }
+        let idx = self.selected;
+        let s = &mut self.sessions[idx];
+        s.queue_submit(&prompt);
+        let label = s.label.clone();
+        self.mode = Mode::Focus;
+        self.notify(format!(
+            "{label}: asked to fix the push ({})",
+            failed.failure.kind.name()
+        ));
+        Ok(())
     }
 
     /// Have a model write the message for what a commit would hold now.
@@ -1189,6 +1254,24 @@ impl App {
                     self.notify(format!("committed {hash} — p pushes it"));
                 }
                 JobDone::Pushed => self.notify("pushed"),
+                JobDone::PushFailed(root, failure) => {
+                    self.notify(format!(
+                        "push failed ({}): {}",
+                        failure.kind.name(),
+                        failure.reason
+                    ));
+                    let back = match self.mode {
+                        Mode::Git | Mode::Commit | Mode::Focus => self.mode,
+                        _ => Mode::Nav,
+                    };
+                    self.push_failed = Some(PushFailed {
+                        root,
+                        failure,
+                        scroll: 0,
+                        back,
+                    });
+                    self.mode = Mode::PushFailed;
+                }
                 JobDone::Generated(m) => {
                     self.commit_cursor = m.len();
                     self.commit_msg = m;
@@ -2307,6 +2390,51 @@ fn spawn_registry_scanner() -> mpsc::Receiver<Vec<RegistryEntry>> {
         }
     });
     rx
+}
+
+/// What a session is told when asked to sort out a failed push.
+fn push_fix_prompt(failure: &git::PushFailure) -> String {
+    let what = match failure.kind {
+        git::PushError::Conflict => {
+            "The repository is stopped on a merge conflict. Resolve the conflicts \
+             keeping the intent of both sides, finish the merge or rebase, then push."
+        }
+        git::PushError::Rejected => {
+            "The remote has commits this branch does not. Pull them in (rebase unless \
+             the history says merges are the norm here), resolve any conflicts keeping \
+             the intent of both sides, then push. Do not force-push."
+        }
+        git::PushError::Auth => {
+            "The remote refused the credentials. Find out why (credential helper, \
+             token, SSH key, remote URL) and fix what can be fixed from here; tell me \
+             exactly what I have to do myself for the rest."
+        }
+        git::PushError::Network => {
+            "The remote could not be reached. Check whether it is the network, a \
+             proxy or a wrong remote URL, and push again once it is sorted out."
+        }
+        git::PushError::Declined => {
+            "The remote declined the push (a hook or branch protection). Find out \
+             what rule it hit and what the way through is; do not force-push or \
+             bypass the protection."
+        }
+        git::PushError::TooLarge => {
+            "A file in the commits is over the remote's size limit. Take it out of \
+             the unpushed commits (or move it to Git LFS if that is set up here), \
+             then push."
+        }
+        git::PushError::NoRemote => {
+            "There is no usable remote to push to. Find out what is missing and set \
+             it up if the right remote is clear; ask me otherwise."
+        }
+        git::PushError::Other => "Find out what went wrong and fix it, then push.",
+    };
+    format!(
+        "git push failed ({kind}). {what}\n\nWhat git said:\n{output}\n\nThe branch at the time:\n{log}",
+        kind = failure.kind.name(),
+        output = failure.output,
+        log = failure.log,
+    )
 }
 
 #[cfg(test)]
