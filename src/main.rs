@@ -980,6 +980,8 @@ fn sync_pane_size(terminal: &Tui, app: &mut App) -> Result<()> {
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     close_open_paste(app);
+    // What was marked is on the clipboard already; a key moves on from it.
+    app.selection = None;
     app.dirty.store(true, Ordering::Relaxed);
 
     // Reserved function keys work in every mode, so a pane that swallows all
@@ -1638,11 +1640,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 app.drag = Some(drag);
                 return;
             }
+            start_selection(app, m);
             return handle_click(app, m);
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(drag) = app.drag {
                 drag_to(app, drag, m.column);
+            } else if let Some(sel) = app.selection.as_mut().filter(|s| s.dragging) {
+                sel.head = pane_cell(app.pane_x, app.pane_y, app.pane_rows, app.pane_cols, m);
+                app.dirty.store(true, Ordering::Relaxed);
             }
             return;
         }
@@ -1650,6 +1656,8 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             if let Some(drag) = app.drag.take() {
                 drag_to(app, drag, m.column);
                 ui::save_widths();
+            } else {
+                finish_selection(app, m);
             }
             return;
         }
@@ -1710,6 +1718,69 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         s.scroll_by(delta);
     }
     app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// The pane cell under the pointer, clamped to the pane: a drag that runs off
+/// its edge keeps marking up to that edge.
+fn pane_cell(px: u16, py: u16, rows: u16, cols: u16, m: MouseEvent) -> (u16, u16) {
+    let row = m.row.saturating_sub(py).min(rows.saturating_sub(1));
+    let col = m.column.saturating_sub(px).min(cols.saturating_sub(1));
+    (row, col)
+}
+
+/// A press inside the pane may be the start of a selection; one anywhere else
+/// drops the last one.
+fn start_selection(app: &mut App, m: MouseEvent) {
+    let inside = m.column >= app.pane_x
+        && m.column < app.pane_x + app.pane_cols
+        && m.row >= app.pane_y
+        && m.row < app.pane_y + app.pane_rows;
+    if app.selection.take().is_some() {
+        app.dirty.store(true, Ordering::Relaxed);
+    }
+    if !inside
+        || !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
+        || app.selected_session().is_none()
+    {
+        return;
+    }
+    let cell = pane_cell(app.pane_x, app.pane_y, app.pane_rows, app.pane_cols, m);
+    app.selection = Some(app::Selection {
+        session: app.selected,
+        anchor: cell,
+        head: cell,
+        dragging: true,
+    });
+}
+
+/// The button came up: a drag is copied, the way terminals copy on release;
+/// a plain click was only a click and leaves nothing marked.
+fn finish_selection(app: &mut App, m: MouseEvent) {
+    let head = pane_cell(app.pane_x, app.pane_y, app.pane_rows, app.pane_cols, m);
+    let Some(sel) = app.selection.as_mut().filter(|s| s.dragging) else {
+        return;
+    };
+    sel.head = head;
+    sel.dragging = false;
+    let sel = *sel;
+    app.dirty.store(true, Ordering::Relaxed);
+    if sel.anchor == sel.head {
+        app.selection = None;
+        return;
+    }
+    let (start, end) = sel.ordered();
+    let Some(text) = app.sessions.get(sel.session).map(|s| s.text_between(start, end)) else {
+        return;
+    };
+    if text.trim().is_empty() {
+        return;
+    }
+    let chars = text.chars().count();
+    if clipimg::copy_text(&text) {
+        app.notify(format!("copied {chars} characters"));
+    } else {
+        app.notify("copying to the clipboard failed");
+    }
 }
 
 fn handle_paste(app: &mut App, text: &str, keep_open: bool) {

@@ -195,6 +195,11 @@ git panel starts browsing.
 Dragging a column border with the mouse resizes the sidebar or the git panel.
 The widths are kept in `~/.claude/fleet-layout` for the next start.
 
+Dragging across the pane marks text, and letting go copies it to the
+clipboard, the way a terminal copies on release. Fleet has to do this itself:
+it captures the mouse, so the terminal it runs in can no longer select. The
+marking stays until the next click or key press.
+
 ## Pasting
 
 PTY input is queued and pushed out in 8 KB chunks by a writer thread of its

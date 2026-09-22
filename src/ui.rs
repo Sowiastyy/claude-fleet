@@ -747,6 +747,18 @@ fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
 
     let term = PseudoTerminal::new(screen).block(block).cursor(cursor);
     f.render_widget(term, area);
+
+    if let Some(sel) = app.selection.filter(|s| s.session == app.selected) {
+        let inner = pane_inner_rect(area);
+        let marked = Style::default().add_modifier(Modifier::REVERSED);
+        for row in 0..inner.height {
+            for col in 0..inner.width {
+                if sel.contains(row, col) {
+                    f.buffer_mut()[(inner.x + col, inner.y + row)].set_style(marked);
+                }
+            }
+        }
+    }
 }
 
 /// The repository the selected session works in: branch, what is not

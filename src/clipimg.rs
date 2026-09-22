@@ -1,4 +1,4 @@
-//! Pasting an image that lives only on the clipboard.
+//! The clipboard: pasting an image that lives only there, and copying text.
 //!
 //! Windows Terminal answers Ctrl+V by pasting the clipboard's text, and an
 //! image has none, so a screenshot never reaches the session at all. Dragging
@@ -54,4 +54,35 @@ fn quote(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// Put text on the clipboard. It goes to `clip.exe` as UTF-16: in the
+/// console's code page the frames and bullets Claude Code draws would not
+/// survive, and a byte order mark would end up on the clipboard itself.
+pub fn copy_text(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = Command::new("clip");
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    for unit in text.replace('\n', "\r\n").encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(&bytes).is_ok());
+    child.wait().is_ok_and(|s| s.success()) && wrote
 }

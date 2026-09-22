@@ -411,6 +411,20 @@ impl PtySession {
             .map(|p| p.screen().mouse_protocol_encoding())
     }
 
+    /// The text between two visible cells, both inclusive, as `(row, col)`.
+    /// Trailing blanks are the empty rest of a row, not something anyone
+    /// meant to copy.
+    pub fn text_between(&self, start: (u16, u16), end: (u16, u16)) -> String {
+        let Ok(p) = self.parser.read() else {
+            return String::new();
+        };
+        let text = p
+            .screen()
+            .contents_between(start.0, start.1, end.0, end.1.saturating_add(1));
+        text.lines().map(str::trim_end).collect::<Vec<_>>().join("
+")
+    }
+
     /// Hand bytes to the child without touching the scroll position. A wheel
     /// notch is not a keystroke: it must not yank the view back to the tail.
     pub fn write_passthrough(&mut self, bytes: &[u8]) -> Result<()> {

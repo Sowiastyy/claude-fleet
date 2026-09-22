@@ -492,6 +492,9 @@ pub struct App {
     pub show_git: bool,
     /// The column border being dragged with the mouse, if any.
     pub drag: Option<Drag>,
+    /// Text being marked in the pane with the mouse. Fleet captures the mouse,
+    /// so the terminal around it can no longer select anything itself.
+    pub selection: Option<Selection>,
     /// The terminal's size as of the last layout, which a drag is clamped to.
     pub term: ratatui::layout::Rect,
     /// The last git read, and the directory it was made in. The panel shows it
@@ -564,6 +567,37 @@ pub enum Drag {
     Git,
 }
 
+/// A run of pane cells marked with the mouse, pane-relative `(row, col)`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Selection {
+    /// The session it was made on; another one's screen has other text.
+    pub session: usize,
+    /// Where the press was.
+    pub anchor: (u16, u16),
+    /// Where the pointer is now, or was when the button came up.
+    pub head: (u16, u16),
+    /// The button is still down.
+    pub dragging: bool,
+}
+
+impl Selection {
+    /// Both ends in reading order.
+    pub fn ordered(&self) -> ((u16, u16), (u16, u16)) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    /// Whether a cell falls inside, the way a terminal marks lines: the first
+    /// row from the start column on, the last up to the end one, all between.
+    pub fn contains(&self, row: u16, col: u16) -> bool {
+        let (start, end) = self.ordered();
+        (row, col) >= start && (row, col) <= end
+    }
+}
+
 /// What the update thread reports back.
 enum UpdateEvent {
     Found(update::Release),
@@ -619,6 +653,7 @@ impl App {
             spent_since_refresh: false,
             show_git: false,
             drag: None,
+            selection: None,
             term: ratatui::layout::Rect::default(),
             git: None,
             git_busy: Arc::new(AtomicBool::new(false)),
