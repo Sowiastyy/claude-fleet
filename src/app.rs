@@ -18,6 +18,7 @@ use crate::{
     commitmsg, config, git,
     gitview::GitView,
     history,
+    ide::Ide,
     registry::{self, RegistryEntry},
     repos,
     session::{PtySession, label_for},
@@ -109,6 +110,8 @@ pub enum Mode {
     Reports,
     /// A push failed; what git said, and whether Claude should sort it out.
     PushFailed,
+    /// The editor has the pane: a file tree and the files open in it.
+    Ide,
 }
 
 impl Mode {
@@ -580,6 +583,12 @@ pub struct App {
     pub reports_scroll: usize,
     /// The last push that failed, while its dialog is up.
     pub push_failed: Option<PushFailed>,
+    /// The file tree and the files open in the editor. Kept while the pane
+    /// shows a session, so nothing typed there is lost by looking away.
+    pub ide: Ide,
+    /// When quitting was refused over unsaved files; a second try soon
+    /// after goes ahead.
+    unsaved_warned: Option<Instant>,
 }
 
 /// How many session events the fleet keeps for Big Brothers to collect.
@@ -645,6 +654,7 @@ impl App {
         let (update_tx, update_rx) = mpsc::channel();
         let (git_tx, git_rx) = mpsc::channel();
         let (job_tx, job_rx) = mpsc::channel();
+        let ide = Ide::new(launch_cwd.clone());
         Self {
             sessions: Vec::new(),
             selected: 0,
@@ -713,6 +723,8 @@ impl App {
             unread_level: None,
             reports_scroll: 0,
             push_failed: None,
+            ide,
+            unsaved_warned: None,
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -1052,6 +1064,9 @@ impl App {
 
     /// Restart, asking first when there is something to lose.
     pub fn request_restart(&mut self) {
+        if !self.unsaved_guard("r") {
+            return;
+        }
         if supervise::origin().is_none() {
             // Started outside the supervisor, so there is nothing to come back
             // as. Saying so beats a key that looks broken.
@@ -1151,6 +1166,38 @@ impl App {
         if self.mode == Mode::Git {
             self.mode = Mode::Commit;
         }
+    }
+
+    /// Put the editor on the pane, its tree rooted where the selected
+    /// session works.
+    pub fn open_ide(&mut self) {
+        let root = self.default_cwd();
+        self.ide.tree.set_root(root);
+        self.mode = Mode::Ide;
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether quitting or restarting may go ahead. Unsaved files in the
+    /// editor stop the first try with a word about them; the same key again
+    /// within a few seconds goes ahead without them.
+    pub fn unsaved_guard(&mut self, key: &str) -> bool {
+        let unsaved = self.ide.unsaved();
+        if unsaved.is_empty() {
+            return true;
+        }
+        if self
+            .unsaved_warned
+            .take()
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+        {
+            return true;
+        }
+        self.unsaved_warned = Some(Instant::now());
+        self.notify(format!(
+            "unsaved in the editor: {} — e shows them, {key} again goes ahead without them",
+            unsaved.join(", ")
+        ));
+        false
     }
 
     /// The snapshot the panel is showing, when it is of a repository.
@@ -1465,7 +1512,8 @@ impl App {
                 self.dirty.store(true, Ordering::Relaxed);
             }
         }
-        if !self.show_git {
+        // The editor's tree marks changed files, so it wants the reads too.
+        if !self.show_git && self.mode != Mode::Ide {
             return;
         }
         let target = self.git_target();
@@ -2434,6 +2482,19 @@ impl App {
         self.poll_git();
         self.poll_git_jobs();
         self.poll_repos();
+
+        let on_ide = self.mode == Mode::Ide;
+        if on_ide {
+            // The wheel over the list can move the selection meanwhile.
+            let root = self.default_cwd();
+            self.ide.tree.set_root(root);
+        }
+        if self.ide.tick(on_ide) {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+        if let Some(msg) = self.ide.message.take() {
+            self.notify(msg);
+        }
 
         if self.last_registry_scan.elapsed() >= REGISTRY_REFRESH {
             if let Some(latest) = self.registry_rx.try_iter().last() {

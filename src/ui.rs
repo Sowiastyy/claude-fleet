@@ -1,6 +1,7 @@
 //! All rendering. The pane is a `tui-term` widget over the session's vt100
 //! screen; everything else is chrome drawn around it.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,9 +17,12 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 use crate::{
     app::{App, BranchRow, GitHit, GitJob, Mode, NewSessionForm, SpawnKind},
     bigbrother::{Level, Scope},
-    commitmsg, config, git,
+    commitmsg, config, editor, git,
     gitview::{GitView, Row},
-    msgedit, theme, usage,
+    ide::PromptKind,
+    msgedit,
+    syntax::{self, Tok},
+    theme, usage,
 };
 
 pub const SIDEBAR_WIDTH: u16 = 36;
@@ -130,7 +134,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // leaves nothing to click.
     app.git_hits.clear();
     draw_sidebar(f, app, sidebar);
-    if app.mode.on_git() && app.git_view.preview_open {
+    if app.mode == Mode::Ide {
+        draw_ide(f, app, pane);
+    } else if app.mode.on_git() && app.git_view.preview_open {
         draw_git_preview(f, app, pane);
     } else {
         draw_pane(f, app, pane);
@@ -208,7 +214,7 @@ pub fn pane_inner_rect(area: Rect) -> Rect {
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     // The list has the keyboard unless a session or the git panel took it.
     // Exactly one column is lit at a time, so it is plain where keys go.
-    let focused = !matches!(app.mode, Mode::Focus | Mode::Git | Mode::Commit);
+    let focused = !matches!(app.mode, Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide);
     let mut items: Vec<ListItem> = Vec::new();
 
     for (i, s) in app.sessions.iter().enumerate() {
@@ -1475,6 +1481,552 @@ fn draw_git_preview(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(visible), inner);
 }
 
+/// The editor on the pane: the file tree on the left, the open file on the
+/// right with its tabs on the frame, and a prompt on its last row when one is
+/// open.
+fn draw_ide(f: &mut Frame, app: &mut App, area: Rect) {
+    // Files git counts as changed, by a normalised path, so the tree can
+    // mark them. Folders holding one get a dot.
+    let target = app.git_target();
+    let mut marks: HashMap<String, (char, Color)> = HashMap::new();
+    let mut dirty_dirs: HashSet<String> = HashSet::new();
+    if let Some((cwd, git::State::Repo(snap))) = &app.git
+        && *cwd == target
+    {
+        for c in &snap.changes {
+            let path = snap.root.join(&c.path);
+            marks.insert(norm_path(&path), change_mark(&c.code));
+            let mut p = path.parent();
+            while let Some(dir) = p {
+                if !dir.starts_with(&snap.root) || !dirty_dirs.insert(norm_path(dir)) {
+                    break;
+                }
+                p = dir.parent();
+            }
+        }
+    }
+
+    let ide = &mut app.ide;
+    f.render_widget(Clear, area);
+    let tree_w = (area.width / 4).clamp(area.width.min(22), 40);
+    let [tree_area, edit_area] =
+        Layout::horizontal([Constraint::Length(tree_w), Constraint::Min(1)]).areas(area);
+    ide.areas.all = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    ide.areas.tabs.clear();
+
+    // ---- the tree
+    let tree_keys = !ide.editing || ide.buffers.is_empty();
+    let root_name = ide.tree.root.file_name().map_or_else(
+        || ide.tree.root.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if tree_keys {
+            theme::accent()
+        } else {
+            theme::faint()
+        }))
+        .title(Line::from(vec![
+            Span::styled(" FILES ", Style::default().fg(theme::accent()).bold()),
+            Span::styled(
+                format!(
+                    "{} ",
+                    truncate(&root_name, tree_w.saturating_sub(10) as usize)
+                ),
+                Style::default().fg(theme::muted()),
+            ),
+        ]));
+    let inner = block.inner(tree_area);
+    f.render_widget(block, tree_area);
+    ide.areas.tree = inner;
+
+    let rows = ide.tree.rows();
+    let cursor = ide.tree.cursor_index(&rows);
+    let height = inner.height as usize;
+    if ide.tree.follow {
+        if cursor < ide.tree.scroll {
+            ide.tree.scroll = cursor;
+        } else if cursor >= ide.tree.scroll + height {
+            ide.tree.scroll = cursor + 1 - height;
+        }
+    }
+    ide.tree.scroll = ide.tree.scroll.min(rows.len().saturating_sub(height));
+    let width = inner.width as usize;
+    let open: HashMap<String, bool> = ide
+        .buffers
+        .iter()
+        .map(|b| (norm_path(&b.path), b.dirty()))
+        .collect();
+    let lines: Vec<Line> = if rows.is_empty() {
+        vec![Line::from(Span::styled(
+            " empty — a makes a file",
+            Style::default().fg(theme::faint()),
+        ))]
+    } else {
+        rows.iter()
+            .enumerate()
+            .skip(ide.tree.scroll)
+            .take(height)
+            .map(|(i, r)| {
+                let key = norm_path(&r.path);
+                let mut name_style = if r.dir {
+                    Style::default().fg(theme::text()).bold()
+                } else {
+                    Style::default().fg(theme::text())
+                };
+                let mut right = String::new();
+                let mut right_style = Style::default().fg(theme::faint());
+                if let Some((m, color)) = marks.get(&key) {
+                    name_style = name_style.fg(*color);
+                    right = m.to_string();
+                    right_style = Style::default().fg(*color).bold();
+                } else if r.dir && dirty_dirs.contains(&key) {
+                    right = "•".to_string();
+                    right_style = Style::default().fg(theme::busy());
+                }
+                if let Some(unsaved) = open.get(&key) {
+                    name_style = name_style.add_modifier(Modifier::UNDERLINED);
+                    if *unsaved {
+                        right = "●".to_string();
+                        right_style = Style::default().fg(theme::accent()).bold();
+                    }
+                }
+                let lead = format!(
+                    " {}{}",
+                    "  ".repeat(r.depth),
+                    if r.dir { open_mark(r.open) } else { " " }
+                );
+                let line = fit(
+                    vec![Span::styled(
+                        format!("{lead} "),
+                        Style::default().fg(theme::faint()),
+                    )],
+                    r.name.clone(),
+                    name_style,
+                    vec![Span::styled(format!("{right} "), right_style)],
+                    width,
+                    false,
+                );
+                if i == cursor {
+                    let bg = if tree_keys {
+                        theme::surface()
+                    } else {
+                        Color::Reset
+                    };
+                    line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))
+                } else {
+                    line
+                }
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(lines), inner);
+
+    // ---- the editor
+    let text_keys = !tree_keys && ide.prompt.is_none();
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if text_keys {
+            theme::accent()
+        } else {
+            theme::faint()
+        }));
+
+    // Tabs on the top border, scrolled so the active one is always there.
+    let room = edit_area.width.saturating_sub(4) as usize;
+    let labels: Vec<String> = ide
+        .buffers
+        .iter()
+        .map(|b| format!(" {}{} ", b.name(), if b.dirty() { " ●" } else { "" }))
+        .collect();
+    let widths: Vec<usize> = labels
+        .iter()
+        .map(|l| Span::raw(l.as_str()).width() + 1)
+        .collect();
+    let mut first = 0;
+    while first < ide.active && widths[first..=ide.active].iter().sum::<usize>() > room {
+        first += 1;
+    }
+    let mut spans = vec![Span::raw(" ")];
+    let mut x = edit_area.x + 2;
+    let mut used = 0;
+    for (i, label) in labels.iter().enumerate().skip(first) {
+        if used + widths[i] > room {
+            break;
+        }
+        let style = if i == ide.active && text_keys {
+            Style::default()
+                .bg(theme::accent())
+                .fg(theme::surface())
+                .bold()
+        } else if i == ide.active {
+            Style::default().fg(theme::accent()).bold()
+        } else {
+            Style::default().fg(theme::muted())
+        };
+        let w = widths[i] as u16 - 1;
+        ide.areas.tabs.push((Rect::new(x, edit_area.y, w, 1), i));
+        spans.push(Span::styled(label.clone(), style));
+        spans.push(Span::raw(" "));
+        x += w + 1;
+        used += widths[i];
+    }
+    if ide.buffers.is_empty() {
+        spans.push(Span::styled(
+            " EDITOR ",
+            Style::default().fg(theme::accent()).bold(),
+        ));
+    }
+    block = block.title(Line::from(spans));
+
+    if let Some(b) = ide.buffers.get(ide.active) {
+        let shown = b
+            .path
+            .strip_prefix(&ide.tree.root)
+            .unwrap_or(&b.path)
+            .display()
+            .to_string();
+        let mut left = vec![Span::styled(
+            format!(
+                " {} ",
+                truncate_left(&shown, (edit_area.width / 2) as usize)
+            ),
+            Style::default().fg(theme::muted()),
+        )];
+        if b.gone {
+            left.push(Span::styled(
+                " deleted on disk ",
+                Style::default().fg(theme::dead()).bold(),
+            ));
+        } else if b.changed_on_disk {
+            left.push(Span::styled(
+                " changed on disk ",
+                Style::default().fg(theme::ask()).bold(),
+            ));
+        }
+        let indent = if b.indent == "\t" {
+            "tabs".to_string()
+        } else {
+            format!("spaces {}", b.indent.len())
+        };
+        let right = format!(
+            " ln {}/{}, col {} · {} · {} · {} ",
+            b.cursor.line + 1,
+            b.lines.len(),
+            b.cursor.col + 1,
+            b.lang.name,
+            if b.crlf { "CRLF" } else { "LF" },
+            indent,
+        );
+        block = block.title_bottom(Line::from(left)).title_bottom(
+            Line::from(Span::styled(right, Style::default().fg(theme::faint()))).right_aligned(),
+        );
+    }
+
+    let inner = block.inner(edit_area);
+    f.render_widget(block, edit_area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let prompt_rows = u16::from(ide.prompt.is_some());
+    let text_h = inner.height.saturating_sub(prompt_rows);
+    let text_rect = Rect {
+        height: text_h,
+        ..inner
+    };
+
+    if ide.buffers.is_empty() {
+        ide.areas.text = Rect::default();
+        ide.areas.gutter = Rect::default();
+        let hint = |k: &'static str, v: &'static str| {
+            Line::from(vec![
+                Span::styled(k, Style::default().fg(theme::accent()).bold()),
+                Span::styled(v, Style::default().fg(theme::muted())),
+            ])
+        };
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No file open.",
+                Style::default().fg(theme::muted()),
+            )),
+            Line::from(""),
+            hint("enter", "  opens the file under the cursor in the tree"),
+            hint("ctrl+p", "  finds a file by name"),
+            hint("a", "  makes a new file (end with / for a folder)"),
+            hint("esc", "  gives the pane back to the session"),
+        ];
+        f.render_widget(
+            Paragraph::new(lines).alignment(Alignment::Center),
+            text_rect,
+        );
+    } else {
+        let query = ide.query.clone();
+        let b = &mut ide.buffers[ide.active];
+        let digits = b.lines.len().to_string().len();
+        let gutter_w = (digits + 2) as u16;
+        let gutter = Rect {
+            width: gutter_w.min(text_rect.width),
+            ..text_rect
+        };
+        let text = Rect {
+            x: text_rect.x + gutter.width,
+            width: text_rect.width.saturating_sub(gutter.width),
+            ..text_rect
+        };
+        ide.areas.gutter = gutter;
+        ide.areas.text = text;
+        if b.follow {
+            b.scroll_to_cursor(text.height as usize, text.width as usize);
+        }
+        b.scroll = b.scroll.min(b.lines.len().saturating_sub(1));
+
+        let sel = b.selection();
+        let qlen = query.chars().count();
+        let mut in_block = syntax::block_open_before(&b.lines, b.scroll, b.lang);
+        let mut gutter_lines = Vec::new();
+        let mut text_lines = Vec::new();
+        for row in 0..text.height as usize {
+            let li = b.scroll + row;
+            let Some(line) = b.lines.get(li) else {
+                gutter_lines.push(Line::from(""));
+                text_lines.push(Line::from(""));
+                continue;
+            };
+            let here = li == b.cursor.line;
+            gutter_lines.push(Line::from(Span::styled(
+                format!(" {:>digits$} ", li + 1),
+                if here {
+                    Style::default().fg(theme::text()).bold()
+                } else {
+                    Style::default().fg(theme::faint())
+                },
+            )));
+            let (toks, next) = syntax::highlight(line, b.lang, in_block);
+            in_block = next;
+            let hits = b.matches_in_line(li, &query);
+            text_lines.push(code_line(
+                line,
+                &toks,
+                li,
+                sel,
+                &hits,
+                qlen,
+                b.hscroll,
+                text.width as usize,
+            ));
+        }
+        f.render_widget(Paragraph::new(gutter_lines), gutter);
+        f.render_widget(Paragraph::new(text_lines), text);
+
+        if text_keys && b.cursor.line >= b.scroll && b.cursor.line < b.scroll + text.height as usize
+        {
+            let dc = editor::display_col(&b.lines[b.cursor.line], b.cursor.col);
+            if dc >= b.hscroll && dc < b.hscroll + text.width as usize {
+                f.set_cursor_position((
+                    text.x + (dc - b.hscroll) as u16,
+                    text.y + (b.cursor.line - b.scroll) as u16,
+                ));
+            }
+        }
+    }
+
+    // ---- the prompt
+    if let Some(p) = &ide.prompt {
+        let row = Rect {
+            y: inner.bottom() - 1,
+            height: 1,
+            ..inner
+        };
+        let label = format!(" {} ", p.label());
+        let mut spans = vec![Span::styled(
+            label.clone(),
+            Style::default()
+                .bg(theme::surface())
+                .fg(theme::accent())
+                .bold(),
+        )];
+        if !p.is_question() {
+            spans.push(Span::styled(
+                format!(" {}", p.input),
+                Style::default().fg(theme::text()),
+            ));
+        }
+        f.render_widget(Clear, row);
+        f.render_widget(Paragraph::new(Line::from(spans)), row);
+        if !p.is_question() {
+            let x =
+                row.x + (Span::raw(label.as_str()).width() + 1 + p.input.chars().count()) as u16;
+            f.set_cursor_position((x.min(row.right().saturating_sub(1)), row.y));
+        }
+
+        if p.kind == PromptKind::Open {
+            let matches = p.matches();
+            let n = matches.len().max(1) as u16;
+            let list = Rect {
+                y: row.y.saturating_sub(n).max(inner.y),
+                height: n.min(row.y.saturating_sub(inner.y)),
+                ..inner
+            };
+            f.render_widget(Clear, list);
+            let lines: Vec<Line> = if matches.is_empty() {
+                vec![Line::from(Span::styled(
+                    if p.files.is_empty() {
+                        " no files here"
+                    } else {
+                        " nothing matches"
+                    },
+                    Style::default().fg(theme::faint()),
+                ))]
+            } else {
+                matches
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        let line = Line::from(Span::styled(
+                            format!(
+                                " {}",
+                                truncate_left(m, (inner.width as usize).saturating_sub(2))
+                            ),
+                            Style::default().fg(theme::text()),
+                        ));
+                        if i == p.pick {
+                            line.style(
+                                Style::default()
+                                    .bg(theme::surface())
+                                    .fg(theme::accent())
+                                    .bold(),
+                            )
+                        } else {
+                            line
+                        }
+                    })
+                    .collect()
+            };
+            f.render_widget(Paragraph::new(lines), list);
+        }
+    }
+}
+
+/// A path as a map key: one separator, one case, so git's `C:/x/y` and the
+/// file system's `C:\x\y` meet.
+fn norm_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+/// The letter the tree shows for a file git counts as changed, and its colour.
+fn change_mark(code: &str) -> (char, Color) {
+    let mut chars = code.chars();
+    let x = chars.next().unwrap_or(' ');
+    let y = chars.next().unwrap_or(' ');
+    match (x, y) {
+        ('?', _) => ('U', theme::idle()),
+        ('A', _) | (_, 'A') => ('A', theme::idle()),
+        ('D', _) | (_, 'D') => ('D', theme::dead()),
+        ('R', _) => ('R', theme::busy()),
+        ('U', _) | (_, 'U') => ('!', theme::dead()),
+        _ => ('M', theme::busy()),
+    }
+}
+
+fn tok_style(t: Tok) -> Style {
+    match t {
+        Tok::Plain => Style::default().fg(theme::text()),
+        Tok::Keyword => Style::default().fg(theme::accent()).bold(),
+        Tok::Str => Style::default().fg(theme::idle()),
+        Tok::Comment => Style::default()
+            .fg(theme::faint())
+            .add_modifier(Modifier::ITALIC),
+        Tok::Number => Style::default().fg(theme::busy()),
+        Tok::Type => Style::default().fg(theme::ask()),
+        Tok::Call => Style::default().fg(theme::text()).bold(),
+        Tok::Heading => Style::default().fg(theme::accent()).bold(),
+    }
+}
+
+/// One line of code as the editor shows it: coloured, with the selection and
+/// search matches marked, tabs expanded, cut to the columns in view.
+#[allow(clippy::too_many_arguments)]
+fn code_line(
+    line: &str,
+    toks: &[Tok],
+    li: usize,
+    sel: Option<(editor::Pos, editor::Pos)>,
+    hits: &[usize],
+    qlen: usize,
+    hscroll: usize,
+    width: usize,
+) -> Line<'static> {
+    let selected = |col: usize| {
+        sel.is_some_and(|(s, e)| {
+            let p = editor::Pos::new(li, col);
+            p >= s && p < e
+        })
+    };
+    let marked = Style::default().bg(theme::accent_dim()).fg(theme::text());
+    let found = Style::default().bg(theme::surface());
+    let end = hscroll + width;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_style = Style::default();
+    let mut push = |text: &str, style: Style, spans: &mut Vec<Span<'static>>, run: &mut String| {
+        if style != run_style && !run.is_empty() {
+            spans.push(Span::styled(std::mem::take(run), run_style));
+        }
+        run_style = style;
+        run.push_str(text);
+    };
+    let mut w = 0;
+    for (ci, c) in line.chars().enumerate() {
+        if w >= end {
+            break;
+        }
+        let cw = editor::char_width(c, w);
+        let mut style = tok_style(toks.get(ci).copied().unwrap_or(Tok::Plain));
+        if hits.iter().any(|&h| ci >= h && ci < h + qlen) {
+            style = style.patch(found);
+        }
+        if selected(ci) {
+            style = style.patch(marked);
+        }
+        let start = w;
+        w += cw;
+        if w <= hscroll {
+            continue;
+        }
+        // A wide character cut by an edge shows as blanks, not half a glyph.
+        let cut = start < hscroll || w > end;
+        let visible = w.min(end) - start.max(hscroll);
+        let text = if c == '\t' || cut {
+            " ".repeat(visible)
+        } else if c.is_control() {
+            "·".to_string()
+        } else {
+            c.to_string()
+        };
+        push(&text, style, &mut spans, &mut run);
+    }
+    // The line break itself is selected: one marked cell past the end.
+    let len = line.chars().count();
+    if sel.is_some_and(|(s, e)| {
+        let p = editor::Pos::new(li, len);
+        p >= s && p < e
+    }) && w >= hscroll
+        && w < end
+    {
+        push(" ", marked, &mut spans, &mut run);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, run_style));
+    }
+    Line::from(spans)
+}
+
 /// Title and lines for the preview, by the row under the cursor.
 fn preview_content(
     view: &GitView,
@@ -1736,6 +2288,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("up/dn", "select"),
             ("enter", "focus"),
             ("n", "new"),
+            ("e", "editor"),
             ("s", "shell"),
             ("R", "resume a conversation"),
             ("u", "understand project"),
@@ -1751,6 +2304,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::Focus => vec![
             ("F10", "LEAVE FOCUS"),
             ("alt+g", "git"),
+            ("alt+e", "editor"),
             ("F1-F9", "session"),
             ("F11", "new"),
             ("F12", "help"),
@@ -1820,6 +2374,42 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("r", "push again"),
             ("up/dn", "scroll"),
             ("esc", "close"),
+        ],
+        Mode::Ide if app.ide.prompt.as_ref().is_some_and(|p| p.is_question()) => {
+            vec![("the letter", "answers"), ("esc", "cancel")]
+        }
+        Mode::Ide if app.ide.prompt.is_some() => vec![
+            ("enter", "go"),
+            ("up/dn", "pick"),
+            ("ctrl+u", "clear"),
+            ("esc", "cancel"),
+        ],
+        Mode::Ide if app.ide.editing && !app.ide.buffers.is_empty() => vec![
+            ("ctrl+s", "save"),
+            ("ctrl+z/y", "undo/redo"),
+            ("ctrl+f", "find"),
+            ("ctrl+h", "replace"),
+            ("ctrl+g", "line"),
+            ("ctrl+p", "open"),
+            ("ctrl+/", "comment"),
+            ("ctrl+d", "duplicate"),
+            ("alt+up/dn", "move line"),
+            ("ctrl+w", "close"),
+            ("alt+left/right", "tabs"),
+            ("esc", "tree"),
+            ("alt+e", "session"),
+        ],
+        Mode::Ide => vec![
+            ("enter", "open"),
+            ("up/dn", "move"),
+            ("left/right", "fold"),
+            ("a", "new"),
+            ("r", "rename"),
+            ("d", "delete"),
+            ("ctrl+p", "find a file"),
+            ("y", "copy path"),
+            ("tab", "to the file"),
+            ("esc", "leave"),
         ],
         Mode::Understand => vec![
             ("F1-F9", "that session"),
@@ -2420,6 +3010,30 @@ fn draw_help(f: &mut Frame) {
         ("f", "fetch, so the ↓ count is current"),
         ("esc / g", "back to the list"),
         ("", ""),
+        ("", "-- EDITOR (e, alt+e) --"),
+        ("", "a file tree and tabs of open files, in the pane;"),
+        ("", "the session's directory, git changes marked"),
+        ("tree: enter", "open a file or a folder (left/right fold)"),
+        (
+            "tree: a / r / d",
+            "new file (dir/ = folder), rename, delete",
+        ),
+        ("ctrl+s / ctrl+w", "save / close the tab"),
+        ("ctrl+z / ctrl+y", "undo / redo"),
+        ("ctrl+f", "find; enter next, shift+enter previous"),
+        ("ctrl+h / ctrl+r", "replace all"),
+        ("ctrl+g", "go to line"),
+        ("ctrl+p", "open a file by name"),
+        (
+            "ctrl+c / x / v",
+            "copy, cut, paste (the line if none selected)",
+        ),
+        ("ctrl+d / ctrl+k", "duplicate / delete the line"),
+        ("alt+up / alt+down", "move the line"),
+        ("ctrl+/", "comment the lines in or out"),
+        ("esc", "text -> tree -> back to the list"),
+        ("", "files changed on disk reload; unsaved edits stay"),
+        ("", ""),
         ("", "-- BIG BROTHER --"),
         (
             "t, then a-z",
@@ -2827,6 +3441,44 @@ pub fn fmt_uptime(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_editor_draws_the_tree_the_tabs_and_the_code() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = std::env::temp_dir().join(format!("fleet-ui-ide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {\n\tlet x = 1;\n}\n").unwrap();
+
+        let mut app = App::new(dir.clone());
+        app.open_ide();
+        assert!(app.ide.open(&dir.join("src/main.rs")));
+        app.ide.tree.reveal(&dir.join("src/main.rs"));
+        app.ide.buffers[0].select_all();
+
+        let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let screen: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        assert!(screen.contains("FILES"), "{screen}");
+        assert!(screen.contains(" main.rs "), "{screen}");
+        assert!(screen.contains("fn main() {"), "{screen}");
+        // The tab is expanded, not printed.
+        assert!(screen.contains("    let x = 1;"), "{screen}");
+        assert!(screen.contains("ln 4/4"), "{screen}");
+        // The mouse knows where the text went.
+        assert!(app.ide.areas.text.width > 0);
+        assert!(!app.ide.areas.tabs.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn window(pct: u8, secs: u64, expired: bool) -> usage::Window {
         usage::Window {

@@ -153,6 +153,7 @@ dependencies = [
  "serde_json",
  "toml",
  "tui-term",
+ "unicode-width",
  "vt100",
 ]
 

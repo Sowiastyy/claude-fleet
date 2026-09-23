@@ -87,6 +87,7 @@ transcript instead.
 | `Enter` / `Tab` | enter the session |
 | `n` | new session |
 | `s` | a command shell (see below) |
+| `e` | the editor: a file tree and open files (see below) |
 | `R` | resume an old conversation (see below) |
 | `U` | refresh the account limits now (see below) |
 | `u` | understand project (see below) |
@@ -118,6 +119,64 @@ steps out to the list, `→` past the end of the command onto the git panel
 `x` kills it. A shell is not a Claude
 session: `u` does not type into it, a Big Brother sees it as a command shell,
 and a restart does not bring it back.
+
+## Editor
+
+`e` in the list (or `Alt+E` from anywhere, a session included) puts an editor
+on the pane: the files of the selected session's directory on the left, the
+open files as tabs on the right. The session keeps running behind it;
+`Alt+E`, `F10` or `esc` from the tree give the pane back. Open files and
+their unsaved edits stay open in between.
+
+The tree lists folders first, hides `.git`, and colours what git counts as
+changed (`M` modified, `U` untracked, `A` added, `D` deleted); a folder holding
+a change gets a `•`, an open file is underlined and an unsaved one marked `●`.
+
+| in the tree | does |
+|---|---|
+| `↑` `↓` / `j` `k` | move |
+| `enter` | open the file, or open/close the folder |
+| `→` / `←` | open a folder / close it, or climb to the one above |
+| `a` | a new file where the cursor is; a name ending in `/` makes a folder |
+| `r` | rename |
+| `d` | delete (asks first) |
+| `y` | copy the path |
+| `ctrl+p` | open a file by typing letters of its name |
+| `tab` | into the open file |
+| `esc` | back to the list |
+
+| in a file | does |
+|---|---|
+| typing, `enter`, `tab` | what they always do; enter keeps the indent and opens a block after `{` |
+| `shift` + arrows / `home` / `end` | select; `ctrl+a` all; drag with the mouse |
+| `ctrl+s` | save |
+| `ctrl+z` / `ctrl+y` | undo / redo, a word at a time |
+| `ctrl+c` / `ctrl+x` / `ctrl+v` | copy, cut, paste — the whole line when nothing is selected |
+| `ctrl+f` | find; `enter` goes to the next match, `shift+enter` to the previous |
+| `ctrl+h` / `ctrl+r` | replace every match, as one undo step |
+| `ctrl+g` | go to a line |
+| `ctrl+d` / `ctrl+k` | duplicate / delete the line |
+| `alt+↑` / `alt+↓` | move the line |
+| `ctrl+/` | comment the lines out or back in |
+| `alt+←` / `alt+→`, `ctrl+pgup` / `ctrl+pgdn` | the tab to the left / right |
+| `ctrl+w` | close the tab (asks when it holds unsaved edits) |
+| `esc` | drop the selection, then back to the tree |
+
+Sessions write the same files the editor has open, so every open file is
+compared with the disk a few times a second. One with no unsaved edits is
+read again at once; one with unsaved edits is left alone and marked `changed
+on disk`, and `ctrl+s` then asks whether to overwrite it or take the disk's
+version. Files keep their line endings (`CRLF` stays `CRLF`) and byte order
+mark. Binary files, text that is not UTF-8, and files over 8 MB are not
+opened.
+
+Syntax colouring knows Rust, JavaScript/TypeScript, Python, Go, C/C++,
+Java/C#/Kotlin, shell, PowerShell, SQL, TOML, YAML, JSON, CSS, HTML and
+Markdown by their extensions — keywords, strings, comments, numbers — and
+nothing deeper: it is there to read the code by, not to check it.
+
+`q` (and `r`) with unsaved files in the editor stop once to say which; the
+same key again within a few seconds goes ahead without them.
 
 ## Git panel
 
@@ -211,6 +270,7 @@ sooner.
 |---|---|
 | **`F10`** | **leave focus** |
 | `Alt+G` | straight to the git panel; `Alt+G` there comes back into the session |
+| `Alt+E` | the editor on the pane; `Alt+E` there gives the pane back to the session |
 | `Alt+Shift+G` | show or hide the git panel |
 | `←` at the start of the input | leave focus too — the arrow has nowhere left to go in the box |
 | `→` at the end of the input | go to the git panel — the same move, the other way |

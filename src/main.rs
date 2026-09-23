@@ -10,9 +10,12 @@ mod clipimg;
 mod commitmsg;
 mod config;
 mod dsr;
+mod editor;
+mod files;
 mod git;
 mod gitview;
 mod history;
+mod ide;
 mod input;
 mod keys;
 mod msgedit;
@@ -20,6 +23,7 @@ mod registry;
 mod repos;
 mod session;
 mod supervise;
+mod syntax;
 mod theme;
 mod ui;
 mod update;
@@ -844,7 +848,8 @@ fn dispatch(app: &mut App, input: &Input, ev: Event) -> Result<()> {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 let key = keys::normalize(key);
                 if let Some(text) = typed_text(key)
-                    && matches!(app.mode, Mode::Focus | Mode::Commit)
+                    && (matches!(app.mode, Mode::Focus | Mode::Commit)
+                        || (app.mode == Mode::Ide && app.ide.takes_text()))
                 {
                     let burst = drain_key_burst(input, text);
                     // One character is someone typing; a burst is a paste. So
@@ -1004,7 +1009,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         && !key.modifiers.contains(KeyModifiers::CONTROL)
         && (key.code == KeyCode::Char('G')
             || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::SHIFT)))
-        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
+        && matches!(
+            app.mode,
+            Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
+        )
     {
         app.toggle_git();
         return Ok(());
@@ -1014,12 +1022,32 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // is only a letter typed into Claude. Pressed on the panel, it goes back.
     if key.code == KeyCode::Char('g')
         && key.modifiers == KeyModifiers::ALT
-        && matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
+        && matches!(
+            app.mode,
+            Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
+        )
     {
         if app.mode.on_git() {
             leave_git(app);
         } else {
             app.focus_git();
+        }
+        return Ok(());
+    }
+
+    // Alt+E puts the editor on the pane from anywhere, a session included;
+    // pressed in the editor, it gives the pane back to the session.
+    if key.code == KeyCode::Char('e')
+        && key.modifiers == KeyModifiers::ALT
+        && matches!(
+            app.mode,
+            Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
+        )
+    {
+        if app.mode == Mode::Ide {
+            leave_git(app);
+        } else {
+            app.open_ide();
         }
         return Ok(());
     }
@@ -1049,6 +1077,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         Mode::Git => handle_git(app, key),
         Mode::Branch => handle_branch(app, key),
         Mode::Commit => handle_commit(app, key),
+        Mode::Ide => handle_ide(app, key),
         Mode::Tag => match key.code {
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 app.set_group(Some(c.to_ascii_lowercase()));
@@ -1166,7 +1195,12 @@ fn handle_reserved_fkey(app: &mut App, n: u8, understand: bool) -> Result<bool> 
 
 fn handle_nav(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+        KeyCode::Char('q') | KeyCode::Esc => {
+            if app.unsaved_guard("q") {
+                app.should_quit = true;
+            }
+        }
+        KeyCode::Char('e') => app.open_ide(),
         KeyCode::Char('j') | KeyCode::Down => app.select(1),
         KeyCode::Char('k') | KeyCode::Up => app.select(-1),
         KeyCode::Enter | KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
@@ -1272,6 +1306,16 @@ fn handle_git(app: &mut App, key: KeyEvent) {
         KeyCode::Char('K') => app.git_view.scroll_preview(-1),
         KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
         _ => {}
+    }
+    app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// The editor: the tree or the file in it has the keyboard, and a prompt
+/// takes it over while one is open.
+fn handle_ide(app: &mut App, key: KeyEvent) {
+    let page = app.pane_rows.saturating_sub(3).max(1) as usize;
+    if app.ide.key(key, page) == ide::Outcome::Leave {
+        app.mode = Mode::Nav;
     }
     app.dirty.store(true, Ordering::Relaxed);
 }
@@ -1397,7 +1441,10 @@ fn handle_click(app: &mut App, m: MouseEvent) {
         app.dirty.store(true, Ordering::Relaxed);
         return;
     }
-    if !matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit) {
+    if !matches!(
+        app.mode,
+        Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
+    ) {
         return;
     }
     if let Some(hit) = hit {
@@ -1677,13 +1724,21 @@ fn handle_form(app: &mut App, key: KeyEvent) -> Result<()> {
 /// over the way a real terminal hands it over. A child that never asked for the
 /// mouse still gets the old behaviour, where the scrollback is ours to move.
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    // The editor takes what lands on it; the list and the git panel beside it
+    // still work as they do everywhere else.
+    if app.mode == Mode::Ide && app.drag.is_none() && app.ide.mouse(m) {
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
     let up = match m.kind {
         MouseEventKind::ScrollUp => true,
         MouseEventKind::ScrollDown => false,
         MouseEventKind::Down(MouseButton::Left) => {
             // A press on a column border picks it up rather than clicking.
-            if matches!(app.mode, Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit)
-                && let Some(drag) = border_at(app, m.column)
+            if matches!(
+                app.mode,
+                Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
+            ) && let Some(drag) = border_at(app, m.column)
             {
                 app.drag = Some(drag);
                 return;
@@ -1850,6 +1905,11 @@ fn finish_selection(app: &mut App, m: MouseEvent) {
 }
 
 fn handle_paste(app: &mut App, text: &str, keep_open: bool) {
+    if app.mode == Mode::Ide {
+        app.ide.paste(text);
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
     if app.mode == Mode::Commit {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         msgedit::insert(&mut app.commit_msg, &mut app.commit_cursor, &text);

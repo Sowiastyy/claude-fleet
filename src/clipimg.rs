@@ -56,6 +56,29 @@ fn quote(path: &str) -> String {
     }
 }
 
+/// The clipboard's text, for the editor's Ctrl+V when the terminal did not
+/// paste it itself. `None` when there is none.
+pub fn read_text() -> Option<String> {
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw",
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    // PowerShell ends its output with a newline of its own.
+    let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 /// Put text on the clipboard. It goes to `clip.exe` as UTF-16: in the
 /// console's code page the frames and bullets Claude Code draws would not
 /// survive, and a byte order mark would end up on the clipboard itself.
