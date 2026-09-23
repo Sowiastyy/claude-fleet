@@ -1425,9 +1425,17 @@ fn handle_click(app: &mut App, m: MouseEvent) {
         let Some(row) = m.row.checked_sub(app.pane_y) else {
             return;
         };
+        // A card takes the keyboard into its session, the way its F-key
+        // does; a finished one, or the space under the cards, is the list.
         let idx = (row / 2) as usize;
         if idx < app.sessions.len() {
             app.select_index(idx);
+            app.mode = if app.sessions[idx].is_alive() {
+                Mode::Focus
+            } else {
+                Mode::Nav
+            };
+        } else {
             app.mode = Mode::Nav;
         }
     } else if m.column > app.pane_x + app.pane_cols {

@@ -490,18 +490,32 @@ impl PtySession {
     /// Whether the cursor sits at the very start of the input box, where a
     /// left arrow has nowhere further to go.
     pub fn cursor_at_prompt_start(&self) -> bool {
+        let shell = self.shell;
         self.parser
             .read()
-            .map(|p| cursor_at_prompt_start(p.screen()))
+            .map(|p| {
+                if shell {
+                    shell_cursor_at_start(p.screen())
+                } else {
+                    cursor_at_prompt_start(p.screen())
+                }
+            })
             .unwrap_or(false)
     }
 
     /// Whether the cursor sits past the last character of the input box,
     /// where a right arrow has nowhere further to go.
     pub fn cursor_at_prompt_end(&self) -> bool {
+        let shell = self.shell;
         self.parser
             .read()
-            .map(|p| cursor_at_prompt_end(p.screen()))
+            .map(|p| {
+                if shell {
+                    shell_cursor_at_end(p.screen())
+                } else {
+                    cursor_at_prompt_end(p.screen())
+                }
+            })
             .unwrap_or(false)
     }
 
@@ -712,6 +726,67 @@ fn cursor_at_prompt_end(screen: &vt100::Screen) -> bool {
         .all(|r| row_blank_from(r, 0))
 }
 
+/// The column just past a shell prompt at the start of `row`: `C:\dir>`
+/// (cmd), `PS C:\dir> ` (PowerShell), or up to the first `$ `, `# `, `% ` or
+/// `> ` (a POSIX shell). `None` when the row does not start with one — output,
+/// or the second row of a long command.
+fn shell_prompt_end(screen: &vt100::Screen, row: u16) -> Option<u16> {
+    let (_, cols) = screen.size();
+    // One char per column, so an index into this is a column.
+    let line: Vec<char> = (0..cols)
+        .map(|c| {
+            screen
+                .cell(row, c)
+                .and_then(|cell| cell.contents().chars().next())
+                .unwrap_or(' ')
+        })
+        .collect();
+    let windows = line.starts_with(&['P', 'S', ' '])
+        || (line.len() > 2 && line[0].is_ascii_alphabetic() && line[1] == ':' && line[2] == '\\')
+        || line.starts_with(&['\\', '\\']);
+    let end = if windows {
+        line.iter().position(|&ch| ch == '>')?
+    } else {
+        line.windows(2)
+            .position(|w| matches!(w[0], '$' | '#' | '%' | '>') && w[1] == ' ')?
+    };
+    Some(end as u16 + 1)
+}
+
+/// The shell's cursor sits on a prompt row with nothing typed before it.
+/// A full-screen program (an editor, a pager) owns the arrows, so its
+/// alternate screen never counts.
+fn shell_cursor_at_start(screen: &vt100::Screen) -> bool {
+    if screen.scrollback() > 0 || screen.alternate_screen() {
+        return false;
+    }
+    let (row, col) = screen.cursor_position();
+    let Some(end) = shell_prompt_end(screen, row) else {
+        return false;
+    };
+    col >= end
+        && (end..col)
+            .filter_map(|c| screen.cell(row, c))
+            .all(|cell| cell.contents().trim().is_empty())
+}
+
+/// The shell's cursor sits on a prompt row past everything typed on it.
+fn shell_cursor_at_end(screen: &vt100::Screen) -> bool {
+    if screen.scrollback() > 0 || screen.alternate_screen() {
+        return false;
+    }
+    let (row, col) = screen.cursor_position();
+    let (rows, cols) = screen.size();
+    let blank_from = |r: u16, from: u16| {
+        (from..cols)
+            .filter_map(|c| screen.cell(r, c))
+            .all(|cell| cell.contents().trim().is_empty())
+    };
+    shell_prompt_end(screen, row).is_some_and(|end| col >= end)
+        && blank_from(row, col)
+        && (row + 1..rows).all(|r| blank_from(r, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,6 +795,30 @@ mod tests {
         let mut p = vt100::Parser::new(10, 40, 0);
         p.process(bytes.as_bytes());
         p
+    }
+
+    #[test]
+    fn a_shell_prompt_bounds_the_arrows() {
+        // cmd: cursor right after `>`, at the start and the end alike.
+        let p = screen(r"C:\Users\p>");
+        assert!(shell_cursor_at_start(p.screen()));
+        assert!(shell_cursor_at_end(p.screen()));
+        // Something typed: past it is the end, not the start.
+        let p = screen(r"C:\Users\p>dir");
+        assert!(!shell_cursor_at_start(p.screen()));
+        assert!(shell_cursor_at_end(p.screen()));
+        // In the middle of it: neither.
+        let p = screen("C:\\Users\\p>dir\x1b[2D");
+        assert!(!shell_cursor_at_start(p.screen()));
+        assert!(!shell_cursor_at_end(p.screen()));
+        // PowerShell and a POSIX shell, with the blank after the prompt.
+        assert!(shell_cursor_at_start(screen(r"PS C:\x> ").screen()));
+        assert!(shell_cursor_at_start(screen("me@box:~$ ").screen()));
+        assert!(!shell_cursor_at_start(screen("me@box:~$ ls").screen()));
+        // Output of a running program is not a prompt.
+        assert!(!shell_cursor_at_end(screen("building...").screen()));
+        // Nor is anything on the alternate screen.
+        assert!(!shell_cursor_at_end(screen("\x1b[?1049hC:\\x>").screen()));
     }
 
     #[test]

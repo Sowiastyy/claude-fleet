@@ -111,7 +111,11 @@ transcript instead.
 `%COMSPEC%` (`cmd.exe`) on Windows, `$SHELL` elsewhere — as one more card on
 the list, marked `$`. It lives under the same kind of PTY a session does, so
 focusing it, `F1`–`F9`, scrolling, selecting with the mouse and the git panel
-all work the same; `exit` ends it and `x` kills it. A shell is not a Claude
+all work the same, and so do the arrows at the edges: `←` on an empty prompt
+steps out to the list, `→` past the end of the command onto the git panel
+(the prompt is recognised as `C:\dir>`, `PS C:\dir>`, or one ending in
+`$ `, `# `, `% `; a full-screen program keeps its arrows). `exit` ends it and
+`x` kills it. A shell is not a Claude
 session: `u` does not type into it, a Big Brother sees it as a command shell,
 and a restart does not bring it back.
 
@@ -214,8 +218,9 @@ sooner.
 | mouse wheel | scroll the history (see "Scrolling") |
 
 A left click moves the keyboard to what it lands on, in the list, in focus and
-on the git panel alike: a card selects that session, the pane goes into it, the
-git panel starts browsing.
+on the git panel alike: a card goes into that session (as its `F`-key does; a
+finished one, or the space under the cards, puts the keyboard on the list),
+the pane goes into it, the git panel starts browsing.
 
 Dragging a column border with the mouse resizes the sidebar or the git panel.
 The widths are kept in `~/.claude/fleet-layout` for the next start.
