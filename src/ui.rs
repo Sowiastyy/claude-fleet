@@ -221,6 +221,9 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 .map(|d| ttl.saturating_sub(d))
                 .unwrap_or(ttl);
             ("x", theme::dead(), fmt_countdown(left))
+        } else if s.shell {
+            // Never registers, so it has no busy or idle to tell.
+            ("$", theme::muted(), "shell".to_string())
         } else {
             let labels = config::labels();
             match entry.map(|e| e.status.as_str()) {
@@ -1733,6 +1736,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("up/dn", "select"),
             ("enter", "focus"),
             ("n", "new"),
+            ("s", "shell"),
             ("R", "resume a conversation"),
             ("u", "understand project"),
             ("g", "git"),
@@ -2337,6 +2341,8 @@ fn draw_help(f: &mut Frame) {
         ("F1 .. F9", "jump to a session (always works)"),
         ("", "the first free F starts a new session"),
         ("n", "new session"),
+        ("s", "a command shell where the selected session works"),
+        ("", "(cmd.exe from %COMSPEC%, or $SHELL; not restored)"),
         ("u", "understand project (see below)"),
         ("x", "kill the selected session"),
         ("w", "close a finished session's card now"),

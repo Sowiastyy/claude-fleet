@@ -1175,6 +1175,11 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Char('n') => app.open_new_session_form(),
+        KeyCode::Char('s') => {
+            if let Err(e) = app.spawn_shell() {
+                app.notify(format!("no shell: {e:#}"));
+            }
+        }
         KeyCode::Char('u') => app.arm_understand(),
         KeyCode::Char('r') => app.request_restart(),
         // Shift, because `r` is the restart and the two are one keypress apart

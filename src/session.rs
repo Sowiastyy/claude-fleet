@@ -71,6 +71,9 @@ pub struct PtySession {
     /// Set on a Big Brother: what it watches and the token it talks with.
     pub watch: Option<bigbrother::Watch>,
     pub cwd: PathBuf,
+    /// A plain command shell rather than `claude`: it never registers, has
+    /// no conversation to resume and no prompt box to type a prompt into.
+    pub shell: bool,
     pub parser: Arc<RwLock<vt100::Parser>>,
     pub child_pid: Option<u32>,
     pub started: Instant,
@@ -115,6 +118,19 @@ pub fn claude_binary() -> PathBuf {
     PathBuf::from("claude")
 }
 
+/// The shell `s` opens: `%COMSPEC%` (cmd.exe) on Windows, `$SHELL` elsewhere.
+pub fn shell_program() -> String {
+    let (var, fallback) = if cfg!(windows) {
+        ("COMSPEC", "cmd.exe")
+    } else {
+        ("SHELL", "/bin/sh")
+    };
+    std::env::var(var)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 impl PtySession {
     pub fn spawn(
         label: String,
@@ -137,6 +153,37 @@ impl PtySession {
         extra_args: &[String],
         env: &[(String, String)],
     ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new(claude_binary());
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        Self::spawn_command(label, cwd, rows, cols, output, cmd, false)
+    }
+
+    /// A command shell in `cwd`, under the same kind of PTY a session gets.
+    pub fn spawn_shell(
+        label: String,
+        cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        output: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        let cmd = CommandBuilder::new(shell_program());
+        Self::spawn_command(label, cwd, rows, cols, output, cmd, true)
+    }
+
+    fn spawn_command(
+        label: String,
+        cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        output: Arc<AtomicBool>,
+        mut cmd: CommandBuilder,
+        shell: bool,
+    ) -> Result<Self> {
         let size = PtySize {
             rows,
             cols,
@@ -147,22 +194,16 @@ impl PtySession {
             .openpty(size)
             .context("could not open a PTY")?;
 
-        let mut cmd = CommandBuilder::new(claude_binary());
-        for arg in extra_args {
-            cmd.arg(arg);
-        }
         cmd.cwd(&cwd);
         // Claude Code renders 24-bit colour; announce a terminal that supports it.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
 
+        let what = if shell { "the shell" } else { "`claude`" };
         let child = pair
             .slave
             .spawn_command(cmd)
-            .context("could not start `claude`")?;
+            .with_context(|| format!("could not start {what}"))?;
         // The slave handle must be dropped or the reader never sees EOF.
         drop(pair.slave);
 
@@ -188,6 +229,7 @@ impl PtySession {
             group: None,
             watch: None,
             cwd,
+            shell,
             parser,
             child_pid,
             started: Instant::now(),
@@ -678,6 +720,29 @@ mod tests {
         let mut p = vt100::Parser::new(10, 40, 0);
         p.process(bytes.as_bytes());
         p
+    }
+
+    #[test]
+    fn a_shell_runs_what_is_typed_into_it() {
+        let dir = std::env::temp_dir();
+        let output = Arc::new(AtomicBool::new(false));
+        let mut s = PtySession::spawn_shell("sh".into(), dir, 24, 80, output).unwrap();
+        assert!(s.shell);
+        s.write_input(b"echo fleet-$((6*7))-%OS%\r").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let seen = loop {
+            let text = s.parser.read().unwrap().screen().contents();
+            // cmd.exe expands `%OS%`, a POSIX shell the arithmetic.
+            if text.contains("-Windows_NT") || text.contains("fleet-42") {
+                break true;
+            }
+            if Instant::now() > deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(100));
+        };
+        s.kill();
+        assert!(seen, "the shell never ran the echo");
     }
 
     #[test]

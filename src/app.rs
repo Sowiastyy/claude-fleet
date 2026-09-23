@@ -858,15 +858,7 @@ impl App {
         env: &[(String, String)],
         base: Option<String>,
     ) -> Result<usize> {
-        let taken: Vec<String> = self.sessions.iter().map(|s| s.label.clone()).collect();
-        let label = match base {
-            Some(b) if !taken.contains(&b) => b,
-            Some(b) => (2..)
-                .map(|n| format!("{b}-{n}"))
-                .find(|c| !taken.contains(c))
-                .expect("an unbounded range always finds a free name"),
-            None => label_for(&cwd, &taken),
-        };
+        let label = self.free_label(&cwd, base);
         let session = PtySession::spawn_with_env(
             label,
             cwd,
@@ -878,6 +870,48 @@ impl App {
         )?;
         self.sessions.push(session);
         Ok(self.sessions.len() - 1)
+    }
+
+    /// `base`, or `base-2` and on when it is taken; with no base, a name
+    /// made from the directory.
+    fn free_label(&self, cwd: &std::path::Path, base: Option<String>) -> String {
+        let taken: Vec<String> = self.sessions.iter().map(|s| s.label.clone()).collect();
+        match base {
+            Some(b) if !taken.contains(&b) => b,
+            Some(b) => (2..)
+                .map(|n| format!("{b}-{n}"))
+                .find(|c| !taken.contains(c))
+                .expect("an unbounded range always finds a free name"),
+            None => label_for(cwd, &taken),
+        }
+    }
+
+    /// Open a command shell where the selected session works, as one more
+    /// card on the list, and put the keyboard in it.
+    pub fn spawn_shell(&mut self) -> Result<()> {
+        let cwd = self.default_cwd();
+        if !cwd.is_dir() {
+            self.notify(format!("no such directory: {}", cwd.display()));
+            return Ok(());
+        }
+        let program = crate::session::shell_program();
+        let name = std::path::Path::new(&program)
+            .file_stem()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_else(|| "shell".to_string());
+        let label = self.free_label(&cwd, Some(name));
+        let session = PtySession::spawn_shell(
+            label.clone(),
+            cwd.clone(),
+            self.pane_rows.max(4),
+            self.pane_cols.max(20),
+            Arc::new(AtomicBool::new(true)),
+        )?;
+        self.sessions.push(session);
+        self.selected = self.sessions.len() - 1;
+        self.mode = Mode::Focus;
+        self.notify(format!("{label}: {program} in {}", cwd.display()));
+        Ok(())
     }
 
     /// Arm `u` and wait for the key that says which session it is for.
@@ -920,7 +954,9 @@ impl App {
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.is_alive())
+            // A shell has no conversation, and restoring it as `claude`
+            // would start a session nobody asked for.
+            .filter(|(_, s)| s.is_alive() && !s.shell)
             .map(|(i, _)| i)
             .collect();
 
@@ -1611,6 +1647,11 @@ impl App {
             self.notify(format!("{label} has finished — nowhere to type"));
             return;
         }
+        if s.shell {
+            let label = s.label.clone();
+            self.notify(format!("{label} is a shell, not a Claude session"));
+            return;
+        }
         let label = s.label.clone();
         let prompt = config::understand_prompt();
         s.queue_prompt(&prompt);
@@ -2029,6 +2070,9 @@ impl App {
         };
         if !s.is_alive() {
             return "finished".to_string();
+        }
+        if s.shell {
+            return "a command shell".to_string();
         }
         match self.entry_for(idx) {
             Some(e) if e.status == "busy" => "working".to_string(),

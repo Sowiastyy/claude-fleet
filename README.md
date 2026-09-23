@@ -86,6 +86,7 @@ transcript instead.
 | `↑` `↓` / `j` `k` | select a session |
 | `Enter` / `Tab` | enter the session |
 | `n` | new session |
+| `s` | a command shell (see below) |
 | `R` | resume an old conversation (see below) |
 | `U` | refresh the account limits now (see below) |
 | `u` | understand project (see below) |
@@ -103,6 +104,16 @@ transcript instead.
 | `A` | the reports the Big Brothers filed |
 | `?` | help |
 | `q` | quit |
+
+## Shell
+
+`s` opens a command shell in the directory of the selected session —
+`%COMSPEC%` (`cmd.exe`) on Windows, `$SHELL` elsewhere — as one more card on
+the list, marked `$`. It lives under the same kind of PTY a session does, so
+focusing it, `F1`–`F9`, scrolling, selecting with the mouse and the git panel
+all work the same; `exit` ends it and `x` kills it. A shell is not a Claude
+session: `u` does not type into it, a Big Brother sees it as a command shell,
+and a restart does not bring it back.
 
 ## Git panel
 
