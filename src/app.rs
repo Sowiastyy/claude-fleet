@@ -123,6 +123,8 @@ impl Mode {
 pub enum GitJob {
     Commit,
     Push,
+    Fetch,
+    Pull,
     Generate,
 }
 
@@ -131,6 +133,8 @@ impl GitJob {
         match self {
             GitJob::Commit => "committing…",
             GitJob::Push => "pushing…",
+            GitJob::Fetch => "fetching…",
+            GitJob::Pull => "pulling…",
             GitJob::Generate => "writing a message…",
         }
     }
@@ -142,6 +146,7 @@ pub enum GitHit {
     Message,
     Commit,
     Push,
+    Pull,
     Generate,
     /// The name of the model Generate uses; a click moves to the next one.
     Model,
@@ -155,6 +160,8 @@ pub enum GitHit {
 enum JobDone {
     Committed(String),
     Pushed,
+    Fetched,
+    Pulled,
     Generated(String),
     PushFailed(PathBuf, git::PushFailure),
     Failed(GitJob, String),
@@ -1179,6 +1186,40 @@ impl App {
         });
     }
 
+    /// Fetch the remote, so ahead and behind count against what it has now.
+    pub fn fetch(&mut self) {
+        let Some(snap) = self.git_snapshot() else {
+            self.notify("not in a git repository");
+            return;
+        };
+        let root = snap.root.clone();
+        self.start_job(GitJob::Fetch, move || match git::fetch(&root) {
+            Ok(()) => JobDone::Fetched,
+            Err(e) => JobDone::Failed(GitJob::Fetch, e),
+        });
+    }
+
+    /// Pull the upstream's new commits in under the local ones.
+    pub fn pull(&mut self) {
+        let Some(snap) = self.git_snapshot() else {
+            self.notify("not in a git repository");
+            return;
+        };
+        if snap.branch.is_none() {
+            self.notify("HEAD is detached — no branch to pull into");
+            return;
+        }
+        if snap.upstream.is_none() {
+            self.notify("this branch has no upstream to pull from — p pushes it first");
+            return;
+        }
+        let root = snap.root.clone();
+        self.start_job(GitJob::Pull, move || match git::pull(&root) {
+            Ok(()) => JobDone::Pulled,
+            Err(e) => JobDone::Failed(GitJob::Pull, git::reason(&e)),
+        });
+    }
+
     /// Close the failed-push dialog, back to wherever the keyboard was.
     pub fn close_push_failed(&mut self) {
         let back = self.push_failed.take().map_or(Mode::Nav, |p| p.back);
@@ -1252,6 +1293,8 @@ impl App {
                     self.notify(format!("committed {hash} — p pushes it"));
                 }
                 JobDone::Pushed => self.notify("pushed"),
+                JobDone::Fetched => self.notify("fetched"),
+                JobDone::Pulled => self.notify("pulled — up to date with the remote"),
                 JobDone::PushFailed(root, failure) => {
                     self.notify(format!(
                         "push failed ({}): {}",
@@ -1279,6 +1322,8 @@ impl App {
                     let what = match job {
                         GitJob::Commit => "commit failed",
                         GitJob::Push => "push failed",
+                        GitJob::Fetch => "fetch failed",
+                        GitJob::Pull => "pull failed",
                         GitJob::Generate => "no message",
                     };
                     self.notify(format!("{what}: {why}"));

@@ -512,48 +512,107 @@ pub fn commit(root: &Path, message: &str) -> Result<String, String> {
         .unwrap_or_default())
 }
 
+/// Bring the remote-tracking branches up to date, so ahead and behind count
+/// against what the remote has now rather than at the last fetch.
+pub fn fetch(root: &Path) -> Result<(), String> {
+    run(root, &["fetch", "--prune"])
+}
+
+/// Fetch, then replay the local commits on top of the upstream. Uncommitted
+/// changes are stashed around it, so a dirty tree is no reason to refuse.
+///
+/// A rebase that stops on conflicts is aborted: the sessions keep working in
+/// this tree, and one left halfway through a rebase is in nobody's interest.
+/// The error then says so, with git's words.
+pub fn pull(root: &Path) -> Result<(), String> {
+    let (ok, output) = capture(root, &["pull", "--rebase", "--autostash"])?;
+    if ok {
+        return Ok(());
+    }
+    if in_conflict(root) {
+        let _ = run(root, &["rebase", "--abort"]);
+        return Err(format!(
+            "{}\n\nfleet ran `git pull --rebase --autostash` and it stopped on \
+             conflicting files; the rebase was aborted, so the branch is back \
+             where it was before the pull.",
+            output.trim_end()
+        ));
+    }
+    Err(output.trim_end().to_string())
+}
+
 /// Push the branch checked out. One without an upstream gets one on `origin`,
 /// the way the first push of a new branch is nearly always meant.
+///
+/// A push the remote rejects for being behind pulls the new commits in (see
+/// `pull`) and goes again, so new work on the remote does not stand in the
+/// way. Only when that pull cannot be done cleanly does the push fail.
 pub fn push(root: &Path, branch: &str, has_upstream: bool) -> Result<(), PushFailure> {
     let args: &[&str] = if has_upstream {
         &["push"]
     } else {
         &["push", "-u", "origin", branch]
     };
-    let out = match command(root, args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-    {
-        Ok(out) => out,
-        Err(e) => {
-            return Err(PushFailure {
-                kind: PushError::Other,
-                reason: format!("git could not be run: {e}"),
-                output: String::new(),
-                log: String::new(),
-            });
-        }
+    let failure = |kind: PushError, output: String| PushFailure {
+        kind,
+        reason: reason(&output),
+        output: output.trim_end().to_string(),
+        log: push_log(root),
     };
-    if out.status.success() {
+    let (ok, output) = capture(root, args).map_err(|e| PushFailure {
+        kind: PushError::Other,
+        reason: e,
+        output: String::new(),
+        log: String::new(),
+    })?;
+    if ok {
         return Ok(());
-    }
-    let mut output = String::from_utf8_lossy(&out.stderr).into_owned();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if !stdout.trim().is_empty() {
-        output.push_str(&stdout);
     }
     let kind = if in_conflict(root) {
         PushError::Conflict
     } else {
         classify_push(&output)
     };
-    Err(PushFailure {
-        kind,
-        reason: reason(&output),
-        output: output.trim_end().to_string(),
-        log: push_log(root),
-    })
+    if kind != PushError::Rejected || !has_upstream {
+        return Err(failure(kind, output));
+    }
+
+    if let Err(why) = pull(root) {
+        let kind = if why.contains("conflicting files") {
+            PushError::Conflict
+        } else {
+            PushError::Rejected
+        };
+        return Err(failure(kind, format!("{output}\n{why}")));
+    }
+    match capture(root, args) {
+        Ok((true, _)) => Ok(()),
+        Ok((false, again)) => {
+            let kind = if in_conflict(root) {
+                PushError::Conflict
+            } else {
+                classify_push(&again)
+            };
+            Err(failure(kind, again))
+        }
+        Err(e) => Err(failure(PushError::Other, e)),
+    }
+}
+
+/// Run git and keep everything it said, stderr first. `Ok((success, output))`;
+/// `Err` only when git could not be run.
+fn capture(root: &Path, args: &[&str]) -> Result<(bool, String), String> {
+    let out = command(root, args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("git could not be run: {e}"))?;
+    let mut output = String::from_utf8_lossy(&out.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !stdout.trim().is_empty() {
+        output.push_str(&stdout);
+    }
+    Ok((out.status.success(), output))
 }
 
 /// What went wrong with a push, as far as git's words tell.
@@ -811,7 +870,7 @@ fn run(cwd: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 /// The line of git's complaint worth a status line.
-fn reason(err: &str) -> String {
+pub fn reason(err: &str) -> String {
     // The first `error:`/`fatal:` line is the reason; the hints under it are
     // advice for a terminal the user is not looking at.
     err.lines()
@@ -1012,6 +1071,61 @@ error: failed to push some refs to 'github.com:a/b.git'",
         // Nothing left: saying so beats an empty commit.
         assert_eq!(commit(&dir, "again"), Err("nothing to commit".to_string()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_push_behind_the_remote_pulls_first_and_a_conflict_is_undone() {
+        let base = std::env::temp_dir().join(format!("fleet-push-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let ok = |dir: &Path, args: &[&str]| assert!(run(dir, args).is_ok(), "git {args:?}");
+        let (remote, a, b) = (base.join("remote"), base.join("a"), base.join("b"));
+        ok(&base, &["init", "-q", "--bare", "-b", "main", "remote"]);
+        for dir in [&a, &b] {
+            ok(
+                &base,
+                &[
+                    "clone",
+                    "-q",
+                    remote.to_str().unwrap(),
+                    dir.to_str().unwrap(),
+                ],
+            );
+            ok(dir, &["config", "user.name", "t"]);
+            ok(dir, &["config", "user.email", "t@t"]);
+            ok(dir, &["checkout", "-q", "-B", "main"]);
+        }
+        fs::write(a.join("one.txt"), "a\n").unwrap();
+        commit(&a, "one").unwrap();
+        assert!(push(&a, "main", false).is_ok());
+        ok(&b, &["pull", "-q", "origin", "main"]);
+        ok(&b, &["branch", "-q", "-u", "origin/main"]);
+
+        // Both add a commit; b is behind and its push still goes through.
+        fs::write(a.join("two.txt"), "a\n").unwrap();
+        commit(&a, "two").unwrap();
+        assert!(push(&a, "main", true).is_ok());
+        fs::write(b.join("three.txt"), "b\n").unwrap();
+        commit(&b, "three").unwrap();
+        fs::write(b.join("dirty.txt"), "not committed\n").unwrap();
+        push(&b, "main", true).unwrap();
+        assert!(b.join("two.txt").exists() && b.join("dirty.txt").exists());
+
+        // Both change the same line: the push fails as a conflict, and b is
+        // not left in the middle of a rebase.
+        ok(&a, &["pull", "-q"]);
+        fs::write(a.join("one.txt"), "from a\n").unwrap();
+        commit(&a, "a edits").unwrap();
+        assert!(push(&a, "main", true).is_ok());
+        fs::write(b.join("one.txt"), "from b\n").unwrap();
+        commit(&b, "b edits").unwrap();
+        let err = push(&b, "main", true).unwrap_err();
+        assert_eq!(err.kind, PushError::Conflict, "{}", err.output);
+        assert!(!in_conflict(&b));
+        // Trimmed: a machine with `core.autocrlf` checks it out with CRLF.
+        let one = fs::read_to_string(b.join("one.txt")).unwrap();
+        assert_eq!(one.trim_end(), "from b");
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

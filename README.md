@@ -131,7 +131,7 @@ touched. `esc` or `←` closes the preview and gives the pane back to the
 session.
 
 At the top of the panel, above the changes, sit a message box and the
-buttons **Commit**, **Push**, **Generate** and the model Generate uses
+buttons **Commit**, **Push**, **Pull**, **Generate** and the model Generate uses
 (`haiku ▾`), which the mouse can press too. On the panel:
 
 | key | does |
@@ -140,6 +140,13 @@ buttons **Commit**, **Push**, **Generate** and the model Generate uses
 | `m` | have a model write the message from the diff |
 | `M` | move Generate on to the next model: haiku, sonnet, opus |
 | `p` | push; a branch without an upstream is pushed to `origin` with `-u` |
+| `P` | pull: `git pull --rebase --autostash` — the upstream's new commits go under the local ones, uncommitted changes are stashed around it |
+| `f` | `git fetch --prune`, so `↓` counts what the remote has now |
+
+A push the remote rejects because it has new commits does not stop there: the
+panel pulls them in (as `P` does) and pushes again. Only a pull that stops on
+conflicting files fails the push; that rebase is aborted, so the tree is left
+as it was, and the dialog below offers Claude to sort it out.
 
 A push that fails opens a dialog with the kind of failure (merge conflict,
 rejected because the remote is ahead, authentication, network, declined by a

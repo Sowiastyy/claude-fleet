@@ -999,9 +999,14 @@ fn draw_git_buttons(
         (true, 0, b) => format!("Push ↓{b}"),
         (true, a, b) => format!("Push ↑{a}↓{b}"),
     };
+    let pull = match snap.behind {
+        0 => "Pull".to_string(),
+        b => format!("Pull ↓{b}"),
+    };
     let buttons = [
         (GitHit::Commit, Some(GitJob::Commit), "Commit".to_string()),
         (GitHit::Push, Some(GitJob::Push), push),
+        (GitHit::Pull, Some(GitJob::Pull), pull),
         (
             GitHit::Generate,
             Some(GitJob::Generate),
@@ -1774,6 +1779,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("m", "generate it"),
             ("M", "next model"),
             ("p", "push"),
+            ("P", "pull"),
+            ("f", "fetch"),
             ("b", "switch branch"),
             ("G", "hide the panel"),
         ],
@@ -2402,6 +2409,9 @@ fn draw_help(f: &mut Frame) {
         ("enter", "commit: the staged files, or all if none are"),
         ("shift+enter", "a new line in the message"),
         ("p / ctrl+p", "push; a branch without upstream gets origin"),
+        ("", "rejected as behind: pulls with rebase, pushes again"),
+        ("P", "pull: fetch, rebase onto upstream, autostash"),
+        ("f", "fetch, so the ↓ count is current"),
         ("esc / g", "back to the list"),
         ("", ""),
         ("", "-- BIG BROTHER --"),

@@ -1234,6 +1234,8 @@ fn handle_git(app: &mut App, key: KeyEvent) {
         KeyCode::Char('b') => app.open_branch_picker(),
         KeyCode::Char('c') => app.focus_commit(),
         KeyCode::Char('p') => app.push(),
+        KeyCode::Char('f') => app.fetch(),
+        KeyCode::Char('P') => app.pull(),
         KeyCode::Char('m') => app.generate_message(),
         KeyCode::Char('j') | KeyCode::Down => app.with_git(|v, s| {
             v.move_cursor(s, 1);
@@ -1400,6 +1402,7 @@ fn handle_click(app: &mut App, m: MouseEvent) {
             GitHit::Message => app.focus_commit(),
             GitHit::Commit => app.commit(),
             GitHit::Push => app.push(),
+            GitHit::Pull => app.pull(),
             GitHit::Generate => app.generate_message(),
             GitHit::Model => app.cycle_commit_model(),
         }
