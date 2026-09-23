@@ -42,6 +42,17 @@ const PROMPT_DEADLINE: Duration = Duration::from_secs(8);
 /// that burst is taken as a newline in the text rather than the submit.
 const SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
+/// How long after a resize what scrolls up is still the child reprinting
+/// itself for the new size. It arrives within a few hundred milliseconds.
+const RESIZE_SETTLE: Duration = Duration::from_secs(1);
+
+/// The screen as it was before a resize, history and all, and when the size
+/// last changed.
+struct Resized {
+    before: vt100::Screen,
+    at: Instant,
+}
+
 /// Hands out `PtySession::uid`, which stays put while indices shift.
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
@@ -98,6 +109,8 @@ pub struct PtySession {
     prompt_submit: bool,
     /// When the Enter submitting typed text is due.
     enter_at: Option<Instant>,
+    /// Set while a resize settles; see `settle_resize`.
+    resized: Option<Resized>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
 }
@@ -245,6 +258,7 @@ impl PtySession {
             prompt_since: None,
             prompt_submit: false,
             enter_at: None,
+            resized: None,
             master: pair.master,
             child,
         })
@@ -376,8 +390,47 @@ impl PtySession {
             pixel_height: 0,
         });
         if let Ok(mut p) = self.parser.write() {
+            if !self.shell {
+                // The first change of a drag keeps the history as it stood;
+                // the ones after it only push the deadline out.
+                let before = match self.resized.take() {
+                    Some(r) => r.before,
+                    None => p.screen().clone(),
+                };
+                self.resized = Some(Resized {
+                    before,
+                    at: Instant::now(),
+                });
+            }
             p.screen_mut().set_size(rows, cols);
         }
+    }
+
+    /// Once a resize has settled, puts the history back as it was before it,
+    /// under what the pane shows now. Returns whether the pane changed.
+    ///
+    /// Claude Code, through ConPTY, answers a new size by printing the tail
+    /// of its transcript again, laid out for the new width, and that reprint
+    /// scrolls up into the history. It is a copy of rows already there, and
+    /// after a narrow-then-wide round trip it left the history wrapped at the
+    /// narrow width. What scrolls up in the moments after a resize is that
+    /// copy, so it is dropped; the history keeps the layout it was printed in.
+    /// A shell streams output of its own, which must not be lost this way.
+    pub fn settle_resize(&mut self) -> bool {
+        match &self.resized {
+            Some(r) if r.at.elapsed() >= RESIZE_SETTLE => {}
+            _ => return false,
+        }
+        let Some(r) = self.resized.take() else {
+            return false;
+        };
+        let Ok(mut p) = self.parser.write() else {
+            return false;
+        };
+        drop_reprint(&mut p, r.before);
+        p.screen_mut().set_scrollback(self.scrollback);
+        self.scrollback = p.screen().scrollback();
+        true
     }
 
     pub fn set_scrollback(&mut self, lines: usize) {
@@ -552,6 +605,26 @@ fn spawn_writer(writer: SharedWriter, queued: Arc<AtomicUsize>) -> Sender<Vec<u8
         }
     });
     tx
+}
+
+/// Put `before`'s history behind what `p` shows now, dropping whatever
+/// scrolled up since `before` was taken.
+fn drop_reprint(p: &mut vt100::Parser, mut before: vt100::Screen) {
+    // Either screen on the alternate buffer: its main one is not what is shown,
+    // and the two could not be told apart anyway.
+    if before.alternate_screen() || p.screen().alternate_screen() {
+        return;
+    }
+    let (rows, cols) = p.screen().size();
+    p.screen_mut().set_scrollback(0);
+    let now = p.screen().state_formatted();
+    before.set_scrollback(0);
+    before.set_size(rows, cols);
+    *p.screen_mut() = before;
+    // Erasing the screen leaves the history alone, so what `before` showed
+    // does not end up in it.
+    p.process(b"\x1b[H\x1b[2J");
+    p.process(&now);
 }
 
 fn spawn_reader(
@@ -795,6 +868,25 @@ mod tests {
         let mut p = vt100::Parser::new(10, 40, 0);
         p.process(bytes.as_bytes());
         p
+    }
+
+    #[test]
+    fn a_reprint_after_a_resize_leaves_the_history() {
+        let mut p = vt100::Parser::new(3, 20, SCROLLBACK);
+        p.process(b"old 1\r\nold 2\r\nold 3\r\nold 4\r\nold 5");
+        let before = p.screen().clone();
+        p.screen_mut().set_size(3, 10);
+        // The child prints itself again for the new width, and the copy
+        // scrolls up.
+        p.process(b"\r\nold 1\r\nold 2\r\nold 3\r\nold 4\r\n\x1b[1mold\x1b[m 5");
+        drop_reprint(&mut p, before);
+        assert_eq!(p.screen().size(), (3, 10));
+        assert_eq!(p.screen().contents(), "old 3\nold 4\nold 5");
+        assert_eq!(p.screen().cursor_position(), (2, 5));
+        assert!(p.screen().cell(2, 0).unwrap().bold());
+        p.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(p.screen().scrollback(), 2);
+        assert_eq!(p.screen().contents(), "old 1\nold 2\nold 3");
     }
 
     #[test]

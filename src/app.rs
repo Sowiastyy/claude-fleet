@@ -2439,7 +2439,8 @@ impl App {
             // Output of a pane nobody is looking at changes nothing on screen,
             // so a busy session in the background no longer forces a redraw
             // every frame. Its card only changes when it dies.
-            if s.take_output() && i == self.selected || died {
+            let settled = s.settle_resize();
+            if (s.take_output() || settled) && i == self.selected || died {
                 self.dirty.store(true, Ordering::Relaxed);
             }
             // Text queued before the child painted its input box goes in as
