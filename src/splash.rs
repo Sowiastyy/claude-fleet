@@ -31,8 +31,9 @@ const MIN_ROWS: f32 = 1.0;
 /// The same across. A narrow pane squeezes the letters rather than losing
 /// them, but only this far.
 const MIN_COLS: f32 = 1.2;
-/// Above it the letters only get coarser.
-const MAX_ROWS: f32 = 2.5;
+/// The letters grow no larger than this however much room there is: at one
+/// row to a pixel they already read, and larger they crowd the pane.
+const MAX_ROWS: f32 = 1.0;
 /// Where the light comes from: above, to the left, in front.
 const LIGHT: [f32; 3] = [-0.45, 0.55, 0.7];
 /// Rows between the two words when they are stacked.
@@ -192,19 +193,38 @@ pub fn angle() -> f32 {
     (t / PERIOD).fract() * TAU
 }
 
+/// Which way the name is set on a pane `width` by `height`, as an index into
+/// `layouts`, and how large.
+fn pick(width: u16, height: u16) -> Option<(usize, (f32, f32))> {
+    // Two words stacked suit most panes; one line suits a wide, short one.
+    // Whichever shows the letters larger and less squeezed wins, and where
+    // both reach full size the stacked words do.
+    let size = |(cols, rows): (f32, f32)| rows.min(cols / CELL_ASPECT);
+    layouts()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| Some((i, l.scale(width, height)?)))
+        .reduce(|best, next| {
+            if size(next.1) > size(best.1) {
+                next
+            } else {
+                best
+            }
+        })
+}
+
+/// Whether the letters come out the same on a pane `width` by `height` as on
+/// one `rows` shorter: set the same way and as large, or not at all on both.
+pub fn unmoved_by(width: u16, height: u16, rows: u16) -> bool {
+    pick(width, height) == pick(width, height.saturating_sub(rows))
+}
+
 /// One frame, `width` by `height` cells row by row, with the letters turned
 /// `angle` radians: the character for each cell the letters cover and how lit
 /// it is, from 0 to 1. `None` when the area is too small to show them at all.
 pub fn render(width: u16, height: u16, angle: f32) -> Option<Vec<Option<(char, f32)>>> {
-    // Two words stacked suit most panes; one line suits a wide, short one.
-    // Whichever shows the letters larger and less squeezed wins.
-    let (letters, (sx, sy)) = layouts()
-        .iter()
-        .filter_map(|l| Some((l, l.scale(width, height)?)))
-        .max_by(|(_, a), (_, b)| {
-            let size = |(cols, rows): (f32, f32)| rows.min(cols / CELL_ASPECT);
-            size(*a).total_cmp(&size(*b))
-        })?;
+    let (layout, (sx, sy)) = pick(width, height)?;
+    let letters = &layouts()[layout];
     let dist = CAMERA * letters.reach();
     let (sin, cos) = angle.sin_cos();
     let len = LIGHT.iter().map(|c| c * c).sum::<f32>().sqrt();
@@ -305,6 +325,36 @@ mod tests {
     fn a_pane_too_small_for_the_letters_gets_none() {
         assert!(render(30, 8, 0.0).is_none());
         assert!(render(0, 0, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_roomy_pane_keeps_the_name_small_and_stacked() {
+        let (w, h) = (300, 100);
+        let cells = render(w, h, 0.0).expect("fits");
+        let rows_lit = (0..h as usize)
+            .filter(|r| {
+                cells[r * w as usize..(r + 1) * w as usize]
+                    .iter()
+                    .any(Option::is_some)
+            })
+            .count();
+        // Both words, at one row to a pixel of the font; the front faces
+        // stand a little nearer the camera than the axis.
+        assert!(
+            (2 * GLYPH_H..=2 * GLYPH_H + LINE_GAP + 2).contains(&rows_lit),
+            "{rows_lit}"
+        );
+        let (left, right) = span(&cells, w);
+        assert!(right - left < 100, "{left}..{right}");
+    }
+
+    #[test]
+    fn rows_taken_from_a_roomy_pane_leave_the_letters_as_they_were() {
+        assert!(unmoved_by(100, 40, 3));
+        // Just tall enough for the stacked words, and too narrow for one line.
+        assert!(!unmoved_by(100, 25, 3));
+        // Nothing fits either way.
+        assert!(unmoved_by(30, 8, 3));
     }
 
     #[test]

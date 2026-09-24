@@ -45,7 +45,8 @@ cargo install --git https://github.com/Sowiastyy/claude-fleet
 ```
 
 Then run `claude-fleet` in any directory. With no session or shell running
-yet, the pane shows the fleet's name in block letters turning in 3D.
+yet, the pane shows the fleet's name in block letters turning in 3D, and
+Clawd, Claude Code's mascot, dancing in the corner.
 
 ## How it works
 

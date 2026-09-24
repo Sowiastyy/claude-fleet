@@ -2527,8 +2527,8 @@ impl App {
             self.notify(msg);
         }
 
-        // Nothing else moves on an empty pane, so the turning name asks for
-        // its own frames.
+        // Nothing else moves on an empty pane, so the turning name and the
+        // dancing Clawd ask for their own frames.
         let empty_pane = self.sessions.is_empty()
             && !on_ide
             && !(self.mode.on_git() && self.git_view.preview_open);

@@ -6,6 +6,7 @@
 
 mod app;
 mod bigbrother;
+mod clawd;
 mod clipimg;
 mod commitmsg;
 mod config;

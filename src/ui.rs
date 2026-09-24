@@ -17,7 +17,7 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 use crate::{
     app::{App, BranchRow, GitHit, GitJob, Mode, NewSessionForm, SpawnKind},
     bigbrother::{Level, Scope},
-    commitmsg, config, editor, git,
+    clawd, commitmsg, config, editor, git,
     gitview::{GitView, Row},
     ide::PromptKind,
     msgedit, splash,
@@ -627,7 +627,8 @@ fn fmt_reset(w: &usage::Window) -> String {
 }
 
 /// The pane with nothing to show: the fleet's name turning above the keys that
-/// start something. A pane too small for the letters keeps only the keys.
+/// start something, and Clawd dancing in the corner beside them. A pane too
+/// small for the letters keeps only the keys.
 fn draw_empty_pane(f: &mut Frame, area: Rect) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -646,40 +647,75 @@ fn draw_empty_pane(f: &mut Frame, area: Rect) {
         key("?", "  keyboard shortcuts"),
         key("q", "  quit"),
     ];
-    let [art, hint] = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(keys.len() as u16 + 1),
-    ])
-    .areas(inner);
+    let hint_rows = keys.len() as u16 + 1;
+    // Clawd keeps clear of the keys centred beside it, and is drawn twice its
+    // usual size where the pane has room for that without the letters above
+    // coming out any smaller.
+    let keys_w = keys.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let mascot = [2, 1]
+        .into_iter()
+        .map(|scale| (scale, clawd::size(scale)))
+        .find(|&(_, (w, h))| {
+            inner.width >= keys_w + 2 * (w + 2)
+                && inner.height >= h
+                && splash::unmoved_by(
+                    inner.width,
+                    inner.height.saturating_sub(hint_rows),
+                    h.saturating_sub(hint_rows),
+                )
+        });
+    let foot = mascot.map_or(0, |(_, (_, h))| h).max(hint_rows);
+    let [art, bottom] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(foot)]).areas(inner);
+    let [_, hint] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(hint_rows)]).areas(bottom);
 
-    let Some(cells) = splash::render(art.width, art.height, splash::angle()) else {
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "No sessions running.",
-                Style::default().fg(theme::muted()),
-            )),
-            Line::from(""),
-        ];
-        lines.extend(keys);
-        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
-        return;
-    };
-    let buf = f.buffer_mut();
-    for (i, cell) in cells.into_iter().enumerate() {
-        let Some((ch, light)) = cell else { continue };
-        let x = art.x + (i % art.width as usize) as u16;
-        let y = art.y + (i / art.width as usize) as u16;
-        let style = if light > 0.66 {
-            Style::default().fg(theme::accent()).bold()
-        } else if light > 0.33 {
-            Style::default().fg(theme::accent())
-        } else {
-            Style::default().fg(theme::accent_dim())
-        };
-        buf[(x, y)].set_char(ch).set_style(style);
+    match splash::render(art.width, art.height, splash::angle()) {
+        Some(cells) => {
+            let buf = f.buffer_mut();
+            for (i, cell) in cells.into_iter().enumerate() {
+                let Some((ch, light)) = cell else { continue };
+                let x = art.x + (i % art.width as usize) as u16;
+                let y = art.y + (i / art.width as usize) as u16;
+                let style = if light > 0.66 {
+                    Style::default().fg(theme::accent()).bold()
+                } else if light > 0.33 {
+                    Style::default().fg(theme::accent())
+                } else {
+                    Style::default().fg(theme::accent_dim())
+                };
+                buf[(x, y)].set_char(ch).set_style(style);
+            }
+            f.render_widget(Paragraph::new(keys).alignment(Alignment::Center), hint);
+        }
+        None => {
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "No sessions running.",
+                    Style::default().fg(theme::muted()),
+                )),
+                Line::from(""),
+            ];
+            lines.extend(keys);
+            f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+        }
     }
-    f.render_widget(Paragraph::new(keys).alignment(Alignment::Center), hint);
+
+    if let Some((scale, (w, h))) = mascot {
+        // A column spare at the right, its feet on the bottom border.
+        let (x, y) = (inner.right() - w - 1, inner.bottom() - h);
+        let buf = f.buffer_mut();
+        for (row, line) in clawd::render(scale, clawd::beat()).iter().enumerate() {
+            for (col, ch) in line.chars().enumerate() {
+                if ch != ' ' {
+                    buf[(x + col as u16, y + row as u16)]
+                        .set_char(ch)
+                        .set_style(Style::default().fg(theme::accent()));
+                }
+            }
+        }
+    }
 }
 
 fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
@@ -3536,6 +3572,33 @@ mod tests {
             .map(|(x, y)| buf[(x, y)].symbol().to_string())
             .collect();
         assert!(screen.contains("new session in a directory you pick"));
+    }
+
+    #[test]
+    fn clawd_dances_in_the_corner_clear_of_the_keys() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(std::env::temp_dir());
+        let mut term = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let pane = pane_inner_rect(pane_area(buf.area, app.show_git));
+        let blocks: Vec<(u16, u16)> = (pane.y..pane.bottom())
+            .flat_map(|y| (pane.x..pane.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let s = buf[(x, y)].symbol();
+                s.chars().count() == 1 && "▘▝▀▖▌▞▛▗▚▐▜▄▙▟█".contains(s)
+            })
+            .collect();
+        assert!(blocks.len() > 20, "{}", blocks.len());
+        // All of it in the bottom right, beyond the keys.
+        let hint_right = pane.x + pane.width / 2 + 20;
+        assert!(
+            blocks
+                .iter()
+                .all(|&(x, y)| x > hint_right && y + 8 > pane.bottom()),
+            "{blocks:?}"
+        );
     }
 
     fn window(pct: u8, secs: u64, expired: bool) -> usage::Window {
