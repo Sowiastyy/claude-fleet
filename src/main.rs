@@ -22,6 +22,7 @@ mod msgedit;
 mod registry;
 mod repos;
 mod session;
+mod splash;
 mod supervise;
 mod syntax;
 mod theme;

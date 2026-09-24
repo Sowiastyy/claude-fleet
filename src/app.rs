@@ -22,7 +22,7 @@ use crate::{
     registry::{self, RegistryEntry},
     repos,
     session::{PtySession, label_for},
-    supervise, update, usage,
+    splash, supervise, update, usage,
 };
 
 /// The model a failed push is handed to.
@@ -125,6 +125,9 @@ impl Mode {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GitJob {
     Commit,
+    /// A commit pressed with an empty box: a model writes the message and the
+    /// commit goes ahead with it.
+    GenerateCommit,
     Push,
     Fetch,
     Pull,
@@ -135,6 +138,7 @@ impl GitJob {
     pub fn doing(self) -> &'static str {
         match self {
             GitJob::Commit => "committing…",
+            GitJob::GenerateCommit => "writing + committing…",
             GitJob::Push => "pushing…",
             GitJob::Fetch => "fetching…",
             GitJob::Pull => "pulling…",
@@ -161,7 +165,9 @@ pub enum GitHit {
 
 /// What a background git job came back with.
 enum JobDone {
-    Committed(String),
+    /// The new commit's hash, and the message a model wrote for it when the
+    /// box was empty.
+    Committed(String, Option<String>),
     Pushed,
     Fetched,
     Pulled,
@@ -466,6 +472,8 @@ pub struct App {
     pub launch_cwd: PathBuf,
     last_registry_scan: Instant,
     last_config_check: Instant,
+    /// The last frame of the turning name on an empty pane.
+    last_splash: Instant,
     /// Scans made by the registry thread. Listing the pipe namespace and
     /// parsing every descriptor takes milliseconds, which the UI thread spent
     /// stalled on input every refresh while it did the scan itself.
@@ -670,6 +678,7 @@ impl App {
             launch_cwd,
             last_registry_scan: Instant::now(),
             last_config_check: Instant::now(),
+            last_splash: Instant::now(),
             registry_rx: spawn_registry_scanner(),
             pane_rows: 24,
             pane_cols: 80,
@@ -1226,7 +1235,7 @@ impl App {
     }
 
     /// Commit with the message in the box: what is staged, or everything
-    /// when nothing is.
+    /// when nothing is. An empty box has a model write the message first.
     pub fn commit(&mut self) {
         let Some(snap) = self.git_snapshot() else {
             self.notify("not in a git repository");
@@ -1237,14 +1246,25 @@ impl App {
             return;
         }
         let message = self.commit_msg.trim().to_string();
+        let root = snap.root.clone();
         if message.is_empty() {
-            self.notify("write a message first — ctrl+g has one written");
-            self.focus_commit();
+            // Nothing typed is a request to have it written and committed in
+            // one go, not to be sent off to write it.
+            let model = self.commit_model.clone();
+            self.start_job(GitJob::GenerateCommit, move || {
+                let message = match commitmsg::generate(&root, &model) {
+                    Ok(m) => m,
+                    Err(e) => return JobDone::Failed(GitJob::GenerateCommit, e),
+                };
+                match git::commit(&root, &message) {
+                    Ok(hash) => JobDone::Committed(hash, Some(message)),
+                    Err(e) => JobDone::Failed(GitJob::Commit, e),
+                }
+            });
             return;
         }
-        let root = snap.root.clone();
         self.start_job(GitJob::Commit, move || match git::commit(&root, &message) {
-            Ok(hash) => JobDone::Committed(hash),
+            Ok(hash) => JobDone::Committed(hash, None),
             Err(e) => JobDone::Failed(GitJob::Commit, e),
         });
     }
@@ -1367,13 +1387,22 @@ impl App {
         while let Ok(done) = self.job_rx.try_recv() {
             self.git_job = None;
             match done {
-                JobDone::Committed(hash) => {
+                JobDone::Committed(hash, None) => {
                     self.commit_msg.clear();
                     self.commit_cursor = 0;
                     if self.mode == Mode::Commit {
                         self.mode = Mode::Git;
                     }
                     self.notify(format!("committed {hash} — p pushes it"));
+                }
+                // The box was empty when it started; whatever is in it now was
+                // typed meanwhile and is left alone.
+                JobDone::Committed(hash, Some(message)) => {
+                    if self.mode == Mode::Commit && self.commit_msg.is_empty() {
+                        self.mode = Mode::Git;
+                    }
+                    let subject = message.lines().next().unwrap_or_default();
+                    self.notify(format!("committed {hash} {subject} — p pushes it"));
                 }
                 JobDone::Pushed => self.notify("pushed"),
                 JobDone::Fetched => self.notify("fetched"),
@@ -1404,6 +1433,7 @@ impl App {
                 JobDone::Failed(job, why) => {
                     let what = match job {
                         GitJob::Commit => "commit failed",
+                        GitJob::GenerateCommit => "no message, nothing committed",
                         GitJob::Push => "push failed",
                         GitJob::Fetch => "fetch failed",
                         GitJob::Pull => "pull failed",
@@ -2495,6 +2525,16 @@ impl App {
         }
         if let Some(msg) = self.ide.message.take() {
             self.notify(msg);
+        }
+
+        // Nothing else moves on an empty pane, so the turning name asks for
+        // its own frames.
+        let empty_pane = self.sessions.is_empty()
+            && !on_ide
+            && !(self.mode.on_git() && self.git_view.preview_open);
+        if empty_pane && self.last_splash.elapsed() >= splash::FRAME {
+            self.last_splash = Instant::now();
+            self.dirty.store(true, Ordering::Relaxed);
         }
 
         if self.last_registry_scan.elapsed() >= REGISTRY_REFRESH {

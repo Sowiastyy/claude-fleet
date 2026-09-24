@@ -44,7 +44,8 @@ or build it yourself:
 cargo install --git https://github.com/Sowiastyy/claude-fleet
 ```
 
-Then run `claude-fleet` in any directory.
+Then run `claude-fleet` in any directory. With no session or shell running
+yet, the pane shows the fleet's name in block letters turning in 3D.
 
 ## How it works
 
@@ -234,7 +235,9 @@ cursor, and typing goes in where it stands. `enter` commits, `shift+enter`
 (or `ctrl+j`) starts a new line, `ctrl+g` generates, `ctrl+o` picks the next
 model, `ctrl+p` pushes, `ctrl+u` clears, and `↓` off the last line, `tab` or
 `esc` goes back to the list. A commit takes what is staged, or every change,
-untracked files included, when nothing is.
+untracked files included, when nothing is. **Commit** (or `enter`) with the box
+empty has the model write the message and commits with it straight away; the
+button says `writing + committing…` meanwhile.
 
 Generate runs `claude -p` with tools off on the diff. It starts that child
 lean — no MCP servers, skills, plugins, hooks or settings files — since most

@@ -20,7 +20,7 @@ use crate::{
     commitmsg, config, editor, git,
     gitview::{GitView, Row},
     ide::PromptKind,
-    msgedit,
+    msgedit, splash,
     syntax::{self, Tok},
     theme, usage,
 };
@@ -626,40 +626,67 @@ fn fmt_reset(w: &usage::Window) -> String {
     }
 }
 
-fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
-    let focused = matches!(app.mode, Mode::Focus);
+/// The pane with nothing to show: the fleet's name turning above the keys that
+/// start something. A pane too small for the letters keeps only the keys.
+fn draw_empty_pane(f: &mut Frame, area: Rect) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::faint()));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let Some(session) = app.selected_session() else {
-        let hint = Paragraph::new(vec![
+    let key = |k: &'static str, what: &'static str| {
+        Line::from(vec![
+            Span::styled(k, Style::default().fg(theme::accent()).bold()),
+            Span::styled(what, Style::default().fg(theme::muted())),
+        ])
+    };
+    let keys = vec![
+        key("n", "  new session in a directory you pick"),
+        key("?", "  keyboard shortcuts"),
+        key("q", "  quit"),
+    ];
+    let [art, hint] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(keys.len() as u16 + 1),
+    ])
+    .areas(inner);
+
+    let Some(cells) = splash::render(art.width, art.height, splash::angle()) else {
+        let mut lines = vec![
             Line::from(""),
             Line::from(Span::styled(
                 "No sessions running.",
                 Style::default().fg(theme::muted()),
             )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("n", Style::default().fg(theme::accent()).bold()),
-                Span::styled(
-                    "  new session in a directory you pick",
-                    Style::default().fg(theme::muted()),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("?", Style::default().fg(theme::accent()).bold()),
-                Span::styled("  keyboard shortcuts", Style::default().fg(theme::muted())),
-            ]),
-            Line::from(vec![
-                Span::styled("q", Style::default().fg(theme::accent()).bold()),
-                Span::styled("  quit", Style::default().fg(theme::muted())),
-            ]),
-        ])
-        .alignment(Alignment::Center)
-        .block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::faint())),
-        );
-        f.render_widget(hint, area);
+        ];
+        lines.extend(keys);
+        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+        return;
+    };
+    let buf = f.buffer_mut();
+    for (i, cell) in cells.into_iter().enumerate() {
+        let Some((ch, light)) = cell else { continue };
+        let x = art.x + (i % art.width as usize) as u16;
+        let y = art.y + (i / art.width as usize) as u16;
+        let style = if light > 0.66 {
+            Style::default().fg(theme::accent()).bold()
+        } else if light > 0.33 {
+            Style::default().fg(theme::accent())
+        } else {
+            Style::default().fg(theme::accent_dim())
+        };
+        buf[(x, y)].set_char(ch).set_style(style);
+    }
+    f.render_widget(Paragraph::new(keys).alignment(Alignment::Center), hint);
+}
+
+fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
+    let focused = matches!(app.mode, Mode::Focus);
+
+    let Some(session) = app.selected_session() else {
+        draw_empty_pane(f, area);
         return;
     };
 
@@ -1032,9 +1059,15 @@ fn draw_git_buttons(
     let mut spans = Vec::new();
     let mut x = area.x;
     for (hit, kind, label) in buttons {
-        let running = kind.is_some() && job == kind;
-        let text = match kind {
-            Some(kind) if running => format!(" {} ", kind.doing()),
+        // A commit that has its message written first is still the Commit
+        // button's doing.
+        let job_kind = job.map(|j| match j {
+            GitJob::GenerateCommit => GitJob::Commit,
+            j => j,
+        });
+        let running = kind.is_some() && job_kind == kind;
+        let text = match job {
+            Some(job) if running => format!(" {} ", job.doing()),
             _ => format!(" {label} "),
         };
         let style = if running {
@@ -3003,6 +3036,7 @@ fn draw_help(f: &mut Frame) {
         ("c", "type the commit message (or click the box)"),
         ("m / ctrl+g", "have claude-haiku-4-5 write the message"),
         ("enter", "commit: the staged files, or all if none are"),
+        ("", "an empty message is written first, then committed"),
         ("shift+enter", "a new line in the message"),
         ("p / ctrl+p", "push; a branch without upstream gets origin"),
         ("", "rejected as behind: pulls with rebase, pushes again"),
@@ -3478,6 +3512,30 @@ mod tests {
         assert!(app.ide.areas.text.width > 0);
         assert!(!app.ide.areas.tabs.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_fleet_turns_its_name_above_the_keys() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(std::env::temp_dir());
+        let mut term = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let pane = pane_inner_rect(pane_area(buf.area, app.show_git));
+        let shaded = (pane.y..pane.bottom())
+            .flat_map(|y| (pane.x..pane.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let s = buf[(x, y)].symbol();
+                s.len() == 1 && ".,-~:;=!*#$@".contains(s)
+            })
+            .count();
+        assert!(shaded > 200, "{shaded}");
+        let screen: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(screen.contains("new session in a directory you pick"));
     }
 
     fn window(pct: u8, secs: u64, expired: bool) -> usage::Window {
