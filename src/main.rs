@@ -30,6 +30,7 @@ mod theme;
 mod ui;
 mod update;
 mod usage;
+mod voice;
 
 use std::{
     env,
@@ -108,6 +109,23 @@ fn main() -> Result<()> {
             print_usage();
             return Ok(());
         }
+        // Engines for voice: fetched, listed and checked outside the TUI,
+        // where a download can show its progress.
+        Some("voice") => {
+            let _ = config::init();
+            let rest = args.get(2..).unwrap_or_default();
+            return match args.get(1).map(String::as_str) {
+                Some("setup") => voice::engines::setup(rest),
+                Some("devices") => voice::engines::devices(),
+                Some("test") => voice::engines::test(rest),
+                _ => {
+                    println!("claude-fleet voice setup [--cpu]   download whisper, piper and a voice");
+                    println!("claude-fleet voice devices         microphones and outputs by name");
+                    println!("claude-fleet voice test [--mic]    check every engine, with timings");
+                    Ok(())
+                }
+            };
+        }
         _ => {}
     }
 
@@ -150,6 +168,7 @@ fn print_usage() {
          \x20 claude-fleet [DIR]       run the TUI (default: current directory)\n\
          \x20 claude-fleet --list      print the running sessions and exit\n\
          \x20 claude-fleet bb help     commands a BIG BROTHER drives the fleet with\n\
+         \x20 claude-fleet voice ...   voice engines: setup, devices, test\n\
          \x20 claude-fleet --help      this help\n\
          \n\
          DIAGNOSTICS:\n\
@@ -1020,6 +1039,22 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // Alt+Shift+V turns voice on or off from anywhere, a session included:
+    // the hands are elsewhere when voice is wanted, and F10 first is a step
+    // too many. Plain Alt+V is the image paste, so the shift stays.
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && (key.code == KeyCode::Char('V')
+            || (key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::SHIFT)))
+        && matches!(
+            app.mode,
+            Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
+        )
+    {
+        app.toggle_voice();
+        return Ok(());
+    }
+
     // Alt+G reaches the git panel from inside a session too, where a plain `g`
     // is only a letter typed into Claude. Pressed on the panel, it goes back.
     if key.code == KeyCode::Char('g')
@@ -1256,6 +1291,7 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('B') => app.mode = Mode::BigBrother,
         KeyCode::Char('A') => app.open_reports(),
+        KeyCode::Char('v') => app.toggle_voice(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
         _ => {}

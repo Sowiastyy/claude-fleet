@@ -378,6 +378,26 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         ])));
     }
 
+    let voice = app.voice.status();
+    if voice != crate::voice::Status::Off {
+        use crate::voice::Status;
+        let color = match voice {
+            Status::Speaking => theme::accent(),
+            Status::Hearing | Status::Transcribing => theme::busy(),
+            Status::Starting => theme::muted(),
+            _ => theme::idle(),
+        };
+        let label = format!("voice: {}", voice.word());
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(" ~ ", Style::default().fg(color)),
+            Span::styled(label.clone(), Style::default().fg(color).bold()),
+            Span::raw(" ".repeat(
+                usize::from(sidebar_width()).saturating_sub(3 + label.chars().count() + 3),
+            )),
+            Span::styled("v", Style::default().fg(color)),
+        ])));
+    }
+
     let foreign = app.foreign();
     if !foreign.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
@@ -2366,6 +2386,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("t", "group"),
             ("B", "big brother"),
             ("A", "reports"),
+            ("v", "voice"),
             ("x", "kill"),
             ("?", "help"),
             ("q", "quit"),
@@ -2374,6 +2395,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("F10", "LEAVE FOCUS"),
             ("alt+g", "git"),
             ("alt+e", "editor"),
+            ("alt+shift+v", "voice"),
             ("F1-F9", "session"),
             ("F11", "new"),
             ("F12", "help"),
@@ -3043,6 +3065,19 @@ fn draw_help(f: &mut Frame) {
         ("", "(in the selected session's directory, no dialog)"),
         ("F11", "new session"),
         ("F12", "this help"),
+        ("", ""),
+        ("", "-- VOICE (v, alt+shift+v anywhere) --"),
+        ("", "listens all the time; what you say goes to the"),
+        ("", "selected session, and its replies are read out"),
+        ("", "talking cuts the voice off (headphones advised)"),
+        ("\"stop\" / \"cisza\"", "stop talking"),
+        ("\"przerwij\"", "stop Claude's turn, like Esc"),
+        ("\"powtórz\"", "say the last reply again"),
+        ("\"tak\" / \"nie, ...\"", "answer a permission prompt"),
+        ("\"przełącz na X\"", "go to session X"),
+        ("\"nowa sesja\"", "start a session"),
+        ("\"wyłącz głos\"", "stop listening"),
+        ("", "engines: claude-fleet voice setup / test"),
         ("", ""),
         ("", "-- LIVE CONFIG --"),
         ("", "~/.claude/fleet.toml — colours, labels, timings"),

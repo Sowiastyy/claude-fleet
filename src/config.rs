@@ -34,6 +34,7 @@ pub struct Config {
     pub updates: Updates,
     pub commit: CommitCfg,
     pub bigbrother: BigBrotherCfg,
+    pub voice: VoiceCfg,
 }
 
 /// Colours as written in the file: `#RRGGBB`, or a named terminal colour.
@@ -224,6 +225,74 @@ pub struct BigBrotherCfg {
     pub instructions: String,
 }
 
+/// Talking to the fleet: the engines, the devices and how listening behaves.
+/// Engine and device settings take effect the next time voice is turned on;
+/// the rest at once.
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VoiceCfg {
+    /// Where whisper, piper and their models live. Empty is
+    /// `claude-fleet/voice` under `%LOCALAPPDATA%`, where `voice setup` puts them.
+    pub dir: String,
+    /// The language spoken, as Whisper names it: `pl`, `en`, … It also picks
+    /// the language the fleet's own phrases are in.
+    pub language: String,
+    /// A file in `<dir>/models`. Empty picks the best one there.
+    pub whisper_model: String,
+    /// A Piper voice in `<dir>/voices`, like `pl_PL-gosia-medium`.
+    pub voice: String,
+    /// Speaking pace: 1.0 is the voice's own, 1.2 a fifth faster.
+    pub speed: f32,
+    /// Part of a device name, as `claude-fleet voice devices` lists them.
+    /// Empty is the system default.
+    pub input_device: String,
+    pub output_device: String,
+    /// How sure the voice detector must be that a 16 ms frame is speech, 0-1.
+    pub vad_threshold: f32,
+    /// Silence that ends an utterance and sends it off.
+    pub end_silence_ms: u64,
+    /// Speech shorter than this in total is taken for noise.
+    pub min_speech_ms: u64,
+    /// Starting to talk cuts the fleet's voice off. Needs headphones: through
+    /// speakers the microphone hears the voice and it would cut itself off.
+    pub barge_in: bool,
+    /// Say when another session finishes or stops on a question.
+    pub announce: bool,
+    /// The longest reply read out in full; past it, the rest is left on screen.
+    pub max_spoken_chars: usize,
+    /// When set, only utterances starting with it are taken, and it is cut
+    /// off. Empty takes everything said.
+    pub wake_word: String,
+    /// Sessions started while voice is on are told their replies are heard,
+    /// so they lead with a short plain answer.
+    pub spoken_style: bool,
+    /// Words the recogniser is nudged towards: names, jargon, projects.
+    pub vocabulary: String,
+}
+
+impl Default for VoiceCfg {
+    fn default() -> Self {
+        Self {
+            dir: String::new(),
+            language: "pl".into(),
+            whisper_model: String::new(),
+            voice: "pl_PL-gosia-medium".into(),
+            speed: 1.0,
+            input_device: String::new(),
+            output_device: String::new(),
+            vad_threshold: 0.5,
+            end_silence_ms: 800,
+            min_speech_ms: 300,
+            barge_in: true,
+            announce: true,
+            max_spoken_chars: 700,
+            wake_word: String::new(),
+            spoken_style: true,
+            vocabulary: String::new(),
+        }
+    }
+}
+
 /// Everything the loader tracks: the values, the palette they resolved to, and
 /// what the file looked like when they were read.
 struct Loaded {
@@ -399,6 +468,13 @@ pub fn bigbrother() -> BigBrotherCfg {
         .unwrap_or_default()
 }
 
+pub fn voice() -> VoiceCfg {
+    CURRENT
+        .read()
+        .map(|c| c.cfg.voice.clone())
+        .unwrap_or_default()
+}
+
 pub fn finished_ttl() -> Duration {
     let secs = CURRENT
         .read()
@@ -505,6 +581,27 @@ model = ""
 # Standing orders added to its system prompt, e.g. the language to report in
 # or what it may do without asking.
 instructions = ""
+
+[voice]
+# `v` in the list, or Alt+Shift+V anywhere, turns voice on: the fleet listens,
+# sends what you say to the selected session, and reads its replies out.
+# Engines first: `claude-fleet voice setup`. Devices: `claude-fleet voice devices`.
+language         = "pl"
+voice            = "pl_PL-gosia-medium"   # also darkman, mc_speech; see <dir>/voices
+speed            = 1.0
+whisper_model    = ""        # empty = the best model in <dir>/models
+input_device     = ""        # part of a name; empty = system default
+output_device    = ""
+vad_threshold    = 0.5       # 0-1: higher ignores more noise, and quiet speech
+end_silence_ms   = 800       # this much silence sends what you said
+min_speech_ms    = 300
+barge_in         = true      # talking cuts the voice off; with speakers, false
+announce         = true      # say when other sessions finish or ask something
+max_spoken_chars = 700
+wake_word        = ""        # e.g. "Claude": only what starts with it is taken
+spoken_style     = true      # new sessions answer for the ear
+vocabulary       = ""        # names and jargon the recogniser should expect
+dir              = ""        # empty = %LOCALAPPDATA%\claude-fleet\voice
 "##;
 
 #[cfg(test)]
@@ -572,6 +669,14 @@ mod tests {
         assert!(cfg.updates.check);
         assert_eq!(cfg.commit.model, "claude-haiku-4-5");
         assert_eq!(cfg.theme.resolve().ask, Color::Rgb(0x5C, 0x9F, 0xD8));
+        let voice = VoiceCfg::default();
+        assert_eq!(cfg.voice.language, voice.language);
+        assert_eq!(cfg.voice.voice, voice.voice);
+        assert_eq!(cfg.voice.end_silence_ms, voice.end_silence_ms);
+        assert_eq!(cfg.voice.min_speech_ms, voice.min_speech_ms);
+        assert_eq!(cfg.voice.max_spoken_chars, voice.max_spoken_chars);
+        assert_eq!(cfg.voice.barge_in, voice.barge_in);
+        assert!(cfg.voice.dir.is_empty());
     }
 
     #[test]
