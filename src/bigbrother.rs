@@ -473,7 +473,8 @@ quote the text
   fleet key <name> <key>...      press keys: enter esc tab up down left right space backspace \
 ctrl-c shift-tab, or any single character (enter allows a permission prompt, esc declines it \
 and stops a turn)
-  fleet spawn <dir> [prompt]     start a new session in <dir>, optionally with a first prompt
+  fleet spawn \"<dir>\" [\"<prompt>\"]  start a new session in <dir>, optionally with a first \
+prompt; quote both, and write the directory with forward slashes (C:/Users/me/project)
   fleet clear <name>             run /clear in the session, wiping its context
   fleet kill <name>              stop the session's process
 
@@ -492,6 +493,10 @@ turn, stopped on a question, or ended. Look with `fleet log <name> 8` and tell t
 or two sentences what came of it - the outcome, not the steps. If it stopped on a question or \
 a permission prompt, say what it asks; when the user answers, pass that on with `fleet send`, \
 or `fleet key <name> enter` to allow and `fleet key <name> esc` to decline.
+   A session started in a folder Claude Code has not worked in before stops at once on a \
+safety check: whether that folder is trusted. That is the user's to decide, never yours: ask \
+them, and on a yes press `fleet key <name> enter` (the check opens on yes), on a no `fleet key \
+<name> esc`. A first prompt given to `fleet spawn` waits until the check is answered.
 5. To stop what a session is doing because the user changed their mind: `fleet key <name> esc`, \
 then `fleet send` the new request.
 6. Never clear or kill a session unless the user says so in as many words.

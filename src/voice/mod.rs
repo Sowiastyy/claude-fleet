@@ -58,6 +58,8 @@ const AFTER_INTERRUPT: Duration = Duration::from_millis(400);
 /// For this long after a message went in, its session counts as working on
 /// it whatever the registry says: that news takes a moment to arrive.
 const JUST_SENT: Duration = Duration::from_secs(3);
+/// What a session stopped on the question of trusting its folder waits for.
+const TRUST: &str = "folder trust";
 
 /// What the list shows about voice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -764,9 +766,9 @@ impl App {
 
         let p = Phrases::for_lang(&cfg.language);
         let target = self.voice_target();
-        let waiting = target
-            .and_then(|i| self.entry_for(i))
-            .is_some_and(|e| e.is_waiting());
+        let waiting = target.is_some_and(|i| {
+            self.entry_for(i).is_some_and(|e| e.is_waiting()) || self.sessions[i].asks_for_trust()
+        });
         let intent = match speech::intent(&text, waiting) {
             // With a companion "przerwij" is a request like any other: it
             // knows which session is meant, and stopping it is no use.
@@ -930,6 +932,9 @@ impl App {
             }
             let state = if !s.is_alive() {
                 "finished".to_string()
+            } else if s.asks_for_trust() {
+                // Before the session is in the registry at all.
+                format!("waiting:{TRUST}")
             } else {
                 match self.entry_for(i) {
                     Some(e) if e.is_waiting() => format!("waiting:{}", e.waiting_for),
@@ -979,7 +984,9 @@ impl App {
                     let tool = follower.and_then(|f| f.last_tool.clone());
                     let question = follower.and_then(|f| f.last_question.clone());
                     let speak = |t: &str| speech::speakable(t, 300, &cfg.language);
-                    lines.push(if what.contains("permission") {
+                    lines.push(if what == TRUST {
+                        format!("{} {}", p.trust, p.say_yes_no)
+                    } else if what.contains("permission") {
                         match tool.as_deref().and_then(speak) {
                             Some(t) => format!("{} {t} {}", p.permission_for, p.say_yes_no),
                             None => format!("{} {}", p.permission, p.say_yes_no),

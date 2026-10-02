@@ -67,6 +67,30 @@ const PROMPT_CARET: char = '❯';
 const BOX_BOTTOM_LEFT: char = '╰';
 const BOX_BOTTOM_RIGHT: char = '╯';
 
+/// How Claude Code's question about a folder it has not worked in before
+/// reads, in the wordings it has had. Its options carry the caret the input
+/// box does, so it has to be told apart from one: text typed into it moves
+/// the choice, and the Enter after the text takes whatever that landed on —
+/// which, with a `j` in the text, is "No, exit".
+const TRUST_QUESTION: &[&str] = &[
+    "Yes, I trust this folder",
+    "Is this a project you created or one you trust",
+    "Do you trust the files in this folder",
+];
+
+fn asks_for_trust(screen: &str) -> bool {
+    TRUST_QUESTION.iter().any(|q| screen.contains(q))
+}
+
+/// Whether a screen shows a prompt box to type into.
+fn prompt_box_on(screen: &str) -> bool {
+    !asks_for_trust(screen)
+        && (screen.contains(PROMPT_CARET)
+            || screen.contains(BOX_BOTTOM_RIGHT)
+            || screen.contains(BOX_BOTTOM_LEFT)
+            || screen.contains("for shortcuts"))
+}
+
 /// Shared so the reader thread can answer terminal queries while the writer
 /// thread pushes keystrokes and pastes.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -315,16 +339,13 @@ impl PtySession {
     /// rounded box around its input, so its bottom border showing up is the
     /// cheapest signal that there is a prompt to type into.
     fn prompt_box_up(&self) -> bool {
-        self.parser
-            .read()
-            .map(|p| {
-                let screen = p.screen().contents();
-                screen.contains(PROMPT_CARET)
-                    || screen.contains(BOX_BOTTOM_RIGHT)
-                    || screen.contains(BOX_BOTTOM_LEFT)
-                    || screen.contains("for shortcuts")
-            })
-            .unwrap_or(false)
+        prompt_box_on(&self.screen_text())
+    }
+
+    /// Whether the child is stopped on the question of trusting its folder,
+    /// which only the user can answer.
+    pub fn asks_for_trust(&self) -> bool {
+        self.is_alive() && !self.shell && asks_for_trust(&self.screen_text())
     }
 
     /// Hand queued prompt text to the child once it can take it.
@@ -345,6 +366,13 @@ impl PtySession {
             // promising a prompt that is never coming.
             self.prompt_queue = None;
             self.prompt_since = None;
+            return;
+        }
+        // The question about trusting the folder is the user's, however long
+        // they take over it: nothing is typed into it, and the wait for a
+        // prompt box starts once it is answered.
+        if self.asks_for_trust() {
+            self.prompt_since = Some(Instant::now());
             return;
         }
         let waited = self.prompt_since.map(|t| t.elapsed()).unwrap_or_default();
@@ -877,6 +905,22 @@ mod tests {
         let mut p = vt100::Parser::new(10, 40, 0);
         p.process(bytes.as_bytes());
         p
+    }
+
+    #[test]
+    fn the_question_about_trusting_a_folder_is_not_a_prompt_box() {
+        let dialog = " Accessing workspace:\n\n C:\\Users\\piotr\\Wanderers\n\n Quick safety check: \
+Is this a project you created or one you trust? (Like your own code)\n\n ❯ 1. Yes, I trust this \
+folder\n   2. No, exit\n\n Enter to confirm · Esc to cancel";
+        assert!(asks_for_trust(dialog));
+        // For all that it carries the caret the box does.
+        assert!(dialog.contains(PROMPT_CARET));
+        assert!(!prompt_box_on(dialog));
+
+        let prompt = "────────\n❯ \n────────\n  ? for shortcuts";
+        assert!(!asks_for_trust(prompt));
+        assert!(prompt_box_on(prompt));
+        assert!(!prompt_box_on("Loading…"));
     }
 
     #[test]

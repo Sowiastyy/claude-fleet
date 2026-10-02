@@ -2201,6 +2201,9 @@ impl App {
         if s.shell {
             return "a command shell".to_string();
         }
+        if s.asks_for_trust() {
+            return "waiting for the user (asks whether its folder is trusted)".to_string();
+        }
         match self.entry_for(idx) {
             Some(e) if e.status == "busy" => "working".to_string(),
             Some(e) if e.status == "idle" => "idle".to_string(),
