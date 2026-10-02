@@ -99,21 +99,8 @@ pub fn intent(heard: &str, waiting: bool) -> Intent {
         ]) {
             return Intent::VoiceOff;
         }
-        // The recogniser hears "rozmówcę" several ways; all of them are it.
-        const COMPANION: &[&str] = &[
-            "rozmowce", "rozmowca", "rozmowcy", "rozmowce glosowego", "pomocnika", "asystenta",
-            "companion", "the companion",
-        ];
-        for (leads, on) in [
-            (&["wlacz", "uruchom", "daj", "turn on", "start"][..], true),
-            (&["wylacz", "zamknij", "turn off", "stop"][..], false),
-        ] {
-            if leads
-                .iter()
-                .any(|l| COMPANION.iter().any(|c| norm == format!("{l} {c}")))
-            {
-                return Intent::Companion(on);
-            }
+        if let Some(on) = companion_switch(&words) {
+            return Intent::Companion(on);
         }
         for lead in [
             "przelacz na sesje",
@@ -140,6 +127,26 @@ pub fn intent(heard: &str, waiting: bool) -> Intent {
         return Intent::Deny(Some(heard.trim().to_string()));
     }
     Intent::Message(heard.trim().to_string())
+}
+
+/// Whether a short utterance turns the companion on or off. It is taken by
+/// its shape rather than its letters, since the recogniser hears "włącz
+/// rozmówcę" as "włąd rozmówce" as readily: a word that begins the way
+/// "włącz" or "wyłącz" does, then the companion by any of its names.
+fn companion_switch(words: &[&str]) -> Option<bool> {
+    let (name, before) = words.split_last()?;
+    if !name.starts_with("rozmowc") && !matches!(*name, "pomocnika" | "asystenta" | "companion") {
+        return None;
+    }
+    match before {
+        ["turn", "on"] | ["turn", "on", "the"] | ["start", "the"] => Some(true),
+        ["turn", "off"] | ["turn", "off", "the"] | ["stop", "the"] => Some(false),
+        [verb] if verb.starts_with("wyl") || matches!(*verb, "zamknij" | "stop") => Some(false),
+        [verb] if verb.starts_with("wl") || matches!(*verb, "uruchom" | "daj" | "start") => {
+            Some(true)
+        }
+        _ => None,
+    }
 }
 
 /// When `norm` opens with one of `set`, what follows it in the original
@@ -631,6 +638,10 @@ mod tests {
         assert_eq!(intent("Włącz rozmówcę.", false), Intent::Companion(true));
         assert_eq!(intent("wyłącz rozmówcę", false), Intent::Companion(false));
         assert_eq!(intent("Turn on the companion", false), Intent::Companion(true));
+        // As the recogniser has written it down.
+        assert_eq!(intent("włąd, rozmówce.", false), Intent::Companion(true));
+        assert_eq!(intent("Wyłącz rozmówca", false), Intent::Companion(false));
+        assert!(matches!(intent("rozmówca", false), Intent::Message(_)));
         // A sentence about it is a message, not the switch.
         assert!(matches!(
             intent("włącz rozmówcę kiedy skończysz te testy", false),
