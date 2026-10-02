@@ -3089,6 +3089,7 @@ fn draw_help(f: &mut Frame) {
         ("", "listens all the time; what you say goes to the"),
         ("", "selected session, and its replies are read out"),
         ("", "talking cuts the voice off (headphones advised)"),
+        ("", "and what you say stops Claude's turn for itself"),
         ("", "the bottom line shows what it hears, as you talk"),
         ("", "pips: you are heard, it is sent, Claude works"),
         ("\"stop\" / \"cisza\"", "stop talking"),

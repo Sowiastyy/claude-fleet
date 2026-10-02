@@ -259,6 +259,9 @@ pub struct VoiceCfg {
     /// Starting to talk cuts the fleet's voice off. Needs headphones: through
     /// speakers the microphone hears the voice and it would cut itself off.
     pub barge_in: bool,
+    /// What you say while the session is working stops its turn first, as
+    /// Esc does, instead of waiting in the queue behind it.
+    pub interrupt: bool,
     /// Say when another session finishes or stops on a question.
     pub announce: bool,
     /// Pips: one when you start to be heard, two when what you said is sent,
@@ -293,6 +296,7 @@ impl Default for VoiceCfg {
             min_speech_ms: 300,
             live_text: true,
             barge_in: true,
+            interrupt: true,
             announce: true,
             sounds: true,
             sound_volume: 0.3,
@@ -608,8 +612,9 @@ end_silence_ms   = 800       # this much silence sends what you said
 min_speech_ms    = 300
 live_text        = true      # your words on the bottom line as you say them
 barge_in        = true      # talking cuts the voice off; with speakers, false
+interrupt        = true      # what you say stops a turn in progress, as Esc does
 announce         = true      # say when other sessions finish or ask something
-sounds           = true      # pips: you are heard, it is sent, Claude is working
+sounds           = true     # pips: you are heard, it is sent, Claude is working
 sound_volume     = 0.3       # 0-1
 max_spoken_chars = 700
 wake_word        = ""        # e.g. "Claude": only what starts with it is taken

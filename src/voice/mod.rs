@@ -52,6 +52,12 @@ const HEARD_SHOWN: Duration = Duration::from_secs(8);
 /// How long a working session may go without a sound before a pip says it
 /// is still at it.
 const WORKING_EVERY: Duration = Duration::from_secs(3);
+/// What a session is given to let go of its turn after the Esc that stops
+/// it, before what was said is typed in.
+const AFTER_INTERRUPT: Duration = Duration::from_millis(400);
+/// For this long after a message went in, its session counts as working on
+/// it whatever the registry says: that news takes a moment to arrive.
+const JUST_SENT: Duration = Duration::from_secs(3);
 
 /// What the list shows about voice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,8 +118,16 @@ pub struct Voice {
     last_status: Option<Status>,
     /// Messages waiting for their session to take typed text, by uid, in
     /// the order they were said. One goes in at a time: a second typed while
-    /// the first one's Enter is still pending would join it.
-    outbox: VecDeque<(u64, String)>,
+    /// the first one's Enter is still pending would join it. The flag is
+    /// whether a turn the session is in the middle of is stopped for it.
+    outbox: VecDeque<(u64, String, bool)>,
+    /// Nothing is typed before this: a session is letting go of its turn.
+    outbox_hold: Option<Instant>,
+    /// The session the last message went to, and when.
+    sent: Option<(u64, Instant)>,
+    /// What there was to say while you were talking. Said after all if that
+    /// turns out to have been nothing; dropped if you did say something.
+    held: Vec<String>,
     /// Counts utterances as they start.
     utterance: u64,
     /// Whether an unfinished utterance is with the recogniser. One at a time:
@@ -207,6 +221,32 @@ impl Voice {
     fn silence(&mut self) {
         if let Some(e) = &self.engines {
             e.tts.stop();
+        }
+    }
+
+    /// Whether you are talking, or what you said is still being recognised.
+    fn listening_to_you(&self) -> bool {
+        self.hearing || self.transcribing > 0
+    }
+
+    /// Say it, unless you are talking and talking cuts the voice off: then it
+    /// waits to see whether you said anything.
+    fn say_unless_talked_over(&mut self, text: &str, cfg: &VoiceCfg) {
+        if cfg.barge_in && self.listening_to_you() {
+            self.held.push(text.to_string());
+        } else {
+            self.say(text);
+        }
+    }
+
+    /// Say what waited while the microphone heard something that was not you
+    /// saying anything: a cough, a door.
+    fn release_held(&mut self) {
+        if self.listening_to_you() {
+            return;
+        }
+        for text in std::mem::take(&mut self.held) {
+            self.say(&text);
         }
     }
 
@@ -478,7 +518,8 @@ impl App {
             }
         }
 
-        self.voice_send();
+        self.voice.release_held();
+        self.voice_send(&cfg);
 
         if self
             .voice
@@ -514,20 +555,51 @@ impl App {
     }
 
     /// Hand the next queued message to its session once it can take one.
-    fn voice_send(&mut self) {
-        let Some(&(uid, _)) = self.voice.outbox.front() else {
+    fn voice_send(&mut self, cfg: &VoiceCfg) {
+        if self.voice.outbox_hold.is_some_and(|t| Instant::now() < t) {
+            return;
+        }
+        let Some(&(uid, _, stops_turn)) = self.voice.outbox.front() else {
             return;
         };
         match self.sessions.iter().position(|s| s.uid == uid) {
             Some(i) if self.sessions[i].is_alive() => {
-                if !self.sessions[i].prompt_pending() {
-                    let (_, text) = self.voice.outbox.pop_front().expect("peeked above");
-                    self.sessions[i].queue_submit(&text);
+                if self.sessions[i].prompt_pending() {
+                    return;
                 }
+                // Said while the session was working: it is what Claude
+                // should be doing now, so the turn stops for it, as Esc
+                // does, rather than have it wait at the back of the queue.
+                if stops_turn && cfg.interrupt && self.voice_working_on(i) {
+                    let _ = self.sessions[i].write_input(b"\x1b");
+                    if let Some(first) = self.voice.outbox.front_mut() {
+                        first.2 = false;
+                        // Stopped before it answered, the session puts the
+                        // message it was on back in its box: the space keeps
+                        // this one from running into it.
+                        first.1.insert(0, ' ');
+                    }
+                    self.voice.outbox_hold = Some(Instant::now() + AFTER_INTERRUPT);
+                    return;
+                }
+                let (_, text, _) = self.voice.outbox.pop_front().expect("peeked above");
+                self.sessions[i].queue_submit(&text);
+                self.voice.sent = Some((uid, Instant::now()));
             }
             // Its session is gone; so is what was meant for it.
-            _ => self.voice.outbox.retain(|(u, _)| *u != uid),
+            _ => self.voice.outbox.retain(|(u, _, _)| *u != uid),
         }
+    }
+
+    /// Whether a session is in the middle of a turn: the registry says so,
+    /// or a message went to it a moment ago.
+    fn voice_working_on(&self, idx: usize) -> bool {
+        let uid = self.sessions[idx].uid;
+        self.entry_for(idx).is_some_and(|e| e.status == "busy")
+            || self
+                .voice
+                .sent
+                .is_some_and(|(to, at)| to == uid && at.elapsed() < JUST_SENT)
     }
 
     /// The session spoken input goes to: the selected one, if it is a live
@@ -629,6 +701,9 @@ impl App {
             return;
         }
         self.voice.heard = Some((text.clone(), Instant::now()));
+        // You did say something: what would have been said over it is not
+        // what you are waiting for any more.
+        self.voice.held.clear();
 
         let p = Phrases::for_lang(&cfg.language);
         let target = self.voice_target();
@@ -641,6 +716,9 @@ impl App {
                 self.voice.silence();
                 if let Some(i) = target {
                     let _ = self.sessions[i].write_input(b"\x1b");
+                    // Stopped already: the next message has no turn to stop,
+                    // and a second Esc on the heels of this one means more.
+                    self.voice.sent = None;
                     self.voice.say(p.interrupted);
                 }
             }
@@ -654,7 +732,9 @@ impl App {
                     // The first option, "Yes", is the one a dialog opens on.
                     let _ = self.sessions[i].write_input(b"\r");
                     if let Some(r) = rest {
-                        self.voice.outbox.push_back((self.sessions[i].uid, r));
+                        // Not one to stop the turn for: it follows the yes
+                        // that set the session going again.
+                        self.voice.outbox.push_back((self.sessions[i].uid, r, false));
                     }
                 }
             }
@@ -665,7 +745,7 @@ impl App {
                     // Esc is "no, and tell Claude what to do instead"; the
                     // rest of the sentence is that.
                     if let Some(r) = rest {
-                        self.voice.outbox.push_back((self.sessions[i].uid, r));
+                        self.voice.outbox.push_back((self.sessions[i].uid, r, false));
                     }
                 }
             }
@@ -695,7 +775,7 @@ impl App {
             }
             Intent::Message(m) => match target {
                 Some(i) if !m.is_empty() => {
-                    self.voice.outbox.push_back((self.sessions[i].uid, m));
+                    self.voice.outbox.push_back((self.sessions[i].uid, m, true));
                     self.voice.cue(tts::Cue::Sent, cfg);
                 }
                 Some(_) => {}
@@ -760,7 +840,7 @@ impl App {
         for t in texts {
             if let Some(s) = speech::speakable(&t, cfg.max_spoken_chars, &cfg.language) {
                 self.voice.last_reply = Some(s.clone());
-                self.voice.say(&s);
+                self.voice.say_unless_talked_over(&s, cfg);
             }
         }
     }
@@ -839,7 +919,7 @@ impl App {
         }
         self.voice.statuses = now.into_iter().map(|(uid, (s, _, _))| (uid, s)).collect();
         for l in lines {
-            self.voice.say(&l);
+            self.voice.say_unless_talked_over(&l, cfg);
         }
     }
 }
@@ -867,6 +947,33 @@ mod tests {
         v.so_far = None;
         v.heard = Some(("zrób testy".into(), Instant::now()));
         assert_eq!(v.line(), Some(("heard", "zrób testy", false)));
+    }
+
+    #[test]
+    fn what_there_is_to_say_waits_while_you_talk() {
+        let cfg = VoiceCfg::default();
+        let mut v = Voice::new();
+        v.hearing = true;
+        v.say_unless_talked_over("gotowe", &cfg);
+        assert_eq!(v.held, ["gotowe"]);
+        // Still being recognised: not yet known to be nothing.
+        v.hearing = false;
+        v.transcribing = 1;
+        v.release_held();
+        assert_eq!(v.held.len(), 1);
+        v.transcribing = 0;
+        v.release_held();
+        assert!(v.held.is_empty());
+
+        // Without barge-in the microphone hears the voice itself all the
+        // time, and nothing waits on it.
+        let speakers = VoiceCfg {
+            barge_in: false,
+            ..VoiceCfg::default()
+        };
+        v.hearing = true;
+        v.say_unless_talked_over("gotowe", &speakers);
+        assert!(v.held.is_empty());
     }
 
     #[test]

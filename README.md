@@ -472,7 +472,12 @@ back with its conversation, a new token, and goes on watching.
 `v` in the list, or `Alt+Shift+V` from anywhere, turns voice on. The fleet then
 listens all the time: what you say is typed into the selected session and sent,
 and what Claude writes back is read out, sentence by sentence as it arrives.
-Starting to talk cuts the voice off mid-word. Other sessions are not read out,
+Starting to talk cuts the voice off mid-word, and it stays quiet while you
+talk: what there was to say is dropped if you said something, said after all
+if it was only a cough. What you say while Claude is in the middle of a turn
+stops that turn first, as `Esc` does, so it is the next thing Claude does
+rather than something waiting behind it — which also makes a sentence sent
+too early at a pause easy to carry on. Other sessions are not read out,
 only announced — "session api finished", "session web is waiting for an
 answer". The card list shows what voice is doing (`~ voice: listening`,
 `hearing you`, `recognising…`, `speaking`), and the bottom line shows your
@@ -534,7 +539,8 @@ takes the CPU build and a smaller model. The `[voice]` section of the config
 picks the language, the Piper voice and its pace, the devices, how long a
 pause ends an utterance, whether your words show as you say them (`live_text`,
 which runs the recogniser about once a second of speech), an optional wake
-word, and whether talking cuts the
+word, whether what you say stops a turn in progress (`interrupt`), and
+whether talking cuts the
 voice off — which wants headphones: through speakers the microphone hears the
 voice and it would cut itself off.
 

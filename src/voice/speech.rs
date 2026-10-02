@@ -185,6 +185,13 @@ const HALLUCINATIONS: &[&str] = &[
     "muzyka",
     "napisy",
     "transkrypcja",
+    // A cough, written down as one.
+    "cough",
+    "coughs",
+    "coughing",
+    "kaszel",
+    "kaszle",
+    "ekhem",
 ];
 
 /// Whether a transcript is more likely Whisper's invention than speech.
@@ -597,6 +604,7 @@ mod tests {
         assert!(is_hallucination(" Napisy stworzone przez społeczność Amara.org"));
         assert!(is_hallucination("[muzyka]"));
         assert!(is_hallucination("..."));
+        assert!(is_hallucination("Cough,"));
         assert!(!is_hallucination("Dziękuję, a teraz sprawdź testy."));
     }
 
