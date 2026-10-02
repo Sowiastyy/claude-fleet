@@ -105,6 +105,7 @@ transcript instead.
 | `t` | put the selected session in a group (see BIG BROTHER) |
 | `B` | start a BIG BROTHER over a group or every session |
 | `A` | the reports the Big Brothers filed |
+| `v` | voice on or off (see below); `Alt+Shift+V` works from anywhere |
 | `?` | help |
 | `q` | quit |
 
@@ -466,6 +467,70 @@ instructions = "Report in Polish. You may clear a session that finished its task
 Groups and Big Brothers survive a restart with the rest: a Big Brother comes
 back with its conversation, a new token, and goes on watching.
 
+## Voice
+
+`v` in the list, or `Alt+Shift+V` from anywhere, turns voice on. The fleet then
+listens all the time: what you say is typed into the selected session and sent,
+and what Claude writes back is read out, sentence by sentence as it arrives.
+Starting to talk cuts the voice off mid-word. Other sessions are not read out,
+only announced — "session api finished", "session web is waiting for an
+answer". The card list shows what voice is doing (`~ voice: listening`,
+`hearing you`, `recognising…`, `speaking`).
+
+Everything runs on the machine: nothing is sent anywhere but to the session.
+
+- **Listening** — the microphone is cut into utterances by
+  [Earshot](https://github.com/pykeio/earshot), a small voice detector, and
+  each one is turned into text by `whisper-server` from
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp), on the GPU with the
+  CUDA build. The recogniser is primed with the sessions' names, so it spells
+  them right. Whisper's habit of inventing "thanks for watching" out of
+  silence is filtered, and so is the fleet's own voice coming back in through
+  the microphone.
+- **Speaking** — [Piper](https://github.com/rhasspy/piper), a neural voice
+  that runs on the CPU faster than real time. Replies are cleaned up for the
+  ear first: code blocks and tables become "the code is on screen", paths
+  shrink to file names, markdown goes, and a long reply stops at a sentence
+  with "the rest is on screen".
+- **Sessions started while voice is on** get a line appended to their system
+  prompt telling them they are heard: they lead with a short plain answer.
+
+A few short phrases steer the fleet rather than go to Claude (Polish shown;
+English works with `language = "en"`):
+
+| say | does |
+|---|---|
+| "stop", "cisza" | stop talking |
+| "przerwij" | stop Claude's turn, as `Esc` does |
+| "powtórz" | say the last reply again |
+| "tak" | allow, when the session is on a permission prompt |
+| "nie, zrób to inaczej…" | deny, and send the rest as what to do instead |
+| "przełącz na api" | go to that session |
+| "nowa sesja" | start a session |
+| "wyłącz głos" | stop listening |
+
+Anything longer than four words is a message, even when it starts with one of
+those: "stop using unwrap in the parser" goes to Claude.
+
+**Setup.** The engines are downloaded, not built:
+
+```
+claude-fleet voice setup      # whisper-server + model, piper + voice (~1.3 GB to download with CUDA)
+claude-fleet voice devices    # microphones and outputs, by name
+claude-fleet voice test       # every engine in turn, with timings
+claude-fleet voice test --mic # and 20 s of listening
+```
+
+They go to `%LOCALAPPDATA%\claude-fleet\voice`. Without an NVIDIA GPU the setup
+takes the CPU build and a smaller model. The `[voice]` section of the config
+picks the language, the Piper voice and its pace, the devices, how long a
+pause ends an utterance, an optional wake word, and whether talking cuts the
+voice off — which wants headphones: through speakers the microphone hears the
+voice and it would cut itself off.
+
+Both engine processes are in a job object that closes with the fleet, so a
+crash does not leave the model sitting in GPU memory.
+
 ## Resuming conversations
 
 `R` in the list opens the transcripts from `~/.claude/projects` — the twenty
@@ -784,6 +849,18 @@ build.cmd build --release
 
 Permanent fixes: move the old MinGW behind the 64-bit one in the system `PATH`,
 or switch to the msvc toolchain.
+
+Pointing `-C dlltool=` at `llvm-dlltool` instead gets past that error, but the
+audio crates reach Windows through `windows` 0.62, which links with
+`raw-dylib`, and the import libraries llvm-dlltool makes for it link into a
+binary that crashes before `main` with `STATUS_ACCESS_VIOLATION`. The mingw64
+`dlltool` makes working ones:
+
+```toml
+# ~/.cargo/config.toml
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "dlltool=C:/path/to/mingw64/bin/dlltool.exe"]
+```
 
 ## What is not here
 

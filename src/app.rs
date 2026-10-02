@@ -597,6 +597,8 @@ pub struct App {
     /// When quitting was refused over unsaved files; a second try soon
     /// after goes ahead.
     unsaved_warned: Option<Instant>,
+    /// Listening to the user and reading replies out, while it is on.
+    pub voice: crate::voice::Voice,
 }
 
 /// How many session events the fleet keeps for Big Brothers to collect.
@@ -734,6 +736,7 @@ impl App {
             push_failed: None,
             ide,
             unsaved_warned: None,
+            voice: crate::voice::Voice::new(),
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -850,7 +853,10 @@ impl App {
             self.notify(format!("no such directory: {}", cwd.display()));
             return Ok(());
         }
-        let idx = self.spawn_raw(cwd, args, &[], None)?;
+        // With voice on, the session is told its replies are heard.
+        let mut args = args.to_vec();
+        args.extend(crate::voice::session_args(&self.voice));
+        let idx = self.spawn_raw(cwd, &args, &[], None)?;
         let label = self.sessions[idx].label.clone();
         self.selected = idx;
         self.mode = Mode::Focus;
@@ -2509,6 +2515,7 @@ impl App {
         }
 
         self.poll_big_brother();
+        self.poll_voice();
         self.poll_update();
         self.poll_git();
         self.poll_git_jobs();
