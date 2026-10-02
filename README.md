@@ -475,7 +475,9 @@ and what Claude writes back is read out, sentence by sentence as it arrives.
 Starting to talk cuts the voice off mid-word. Other sessions are not read out,
 only announced — "session api finished", "session web is waiting for an
 answer". The card list shows what voice is doing (`~ voice: listening`,
-`hearing you`, `recognising…`, `speaking`).
+`hearing you`, `recognising…`, `speaking`), and the bottom line shows your
+words: as far as they have been recognised while you are still talking, then
+the whole utterance for a few seconds after it is sent.
 
 Everything runs on the machine: nothing is sent anywhere but to the session.
 
@@ -524,7 +526,9 @@ claude-fleet voice test --mic # and 20 s of listening
 They go to `%LOCALAPPDATA%\claude-fleet\voice`. Without an NVIDIA GPU the setup
 takes the CPU build and a smaller model. The `[voice]` section of the config
 picks the language, the Piper voice and its pace, the devices, how long a
-pause ends an utterance, an optional wake word, and whether talking cuts the
+pause ends an utterance, whether your words show as you say them (`live_text`,
+which runs the recogniser about once a second of speech), an optional wake
+word, and whether talking cuts the
 voice off — which wants headphones: through speakers the microphone hears the
 voice and it would cut itself off.
 

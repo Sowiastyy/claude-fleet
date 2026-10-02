@@ -47,6 +47,8 @@ const ECHO_WINDOW: Duration = Duration::from_secs(3);
 const SAID_KEPT: Duration = Duration::from_secs(90);
 /// A share of heard words also in what was just said, past which it is echo.
 const ECHO_SCORE: f32 = 0.7;
+/// How long what was heard stays on the bottom line.
+const HEARD_SHOWN: Duration = Duration::from_secs(8);
 
 /// What the list shows about voice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,8 +111,15 @@ pub struct Voice {
     /// the order they were said. One goes in at a time: a second typed while
     /// the first one's Enter is still pending would join it.
     outbox: VecDeque<(u64, String)>,
+    /// Counts utterances as they start.
+    utterance: u64,
+    /// Whether an unfinished utterance is with the recogniser. One at a time:
+    /// the whole one must not wait behind a queue of its own beginnings.
+    so_far_pending: bool,
+    /// The utterance being said, as far as it has been recognised.
+    so_far: Option<String>,
     /// What was heard last, and when.
-    pub heard: Option<(String, Instant)>,
+    heard: Option<(String, Instant)>,
 }
 
 impl Voice {
@@ -131,6 +140,27 @@ impl Voice {
             Some(_) if self.transcribing > 0 => Status::Transcribing,
             Some(_) => Status::Listening,
         }
+    }
+
+    /// What the bottom line shows of speech: the state's word, the text that
+    /// goes with it, and whether that text is still on its way in. The words
+    /// so far while they are being said, all of them for a while after.
+    pub fn line(&self) -> Option<(&'static str, &str, bool)> {
+        let so_far = self.so_far.as_deref().unwrap_or_default();
+        if self.hearing {
+            Some((Status::Hearing.word(), so_far, true))
+        } else if self.transcribing > 0 {
+            Some((Status::Transcribing.word(), so_far, true))
+        } else {
+            self.heard.as_ref().map(|(t, _)| ("heard", t.as_str(), false))
+        }
+    }
+
+    /// As if this much of an utterance had been recognised so far.
+    #[cfg(test)]
+    pub fn hear(&mut self, so_far: &str) {
+        self.hearing = true;
+        self.so_far = Some(so_far.to_string());
     }
 
     fn start(&mut self) {
@@ -293,6 +323,15 @@ impl App {
             self.voice.last_status = Some(status);
             self.dirty.store(true, Ordering::Relaxed);
         }
+        if self
+            .voice
+            .heard
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > HEARD_SHOWN)
+        {
+            self.voice.heard = None;
+            self.dirty.store(true, Ordering::Relaxed);
+        }
     }
 
     fn voice_started(&mut self) {
@@ -346,8 +385,23 @@ impl App {
             match ev {
                 mic::MicEvent::SpeechStart => {
                     self.voice.hearing = true;
+                    self.voice.utterance += 1;
+                    self.voice.so_far = None;
                     if cfg.barge_in && self.voice.speaking() {
                         self.voice.silence();
+                    }
+                }
+                mic::MicEvent::SoFar(pcm) => {
+                    // Only into an idle recogniser: it is there for whole
+                    // utterances first, and this one's next second is coming.
+                    if cfg.live_text && !self.voice.so_far_pending && self.voice.transcribing == 0
+                    {
+                        self.voice.so_far_pending = true;
+                        let prompt = vocabulary(&self.voice_names(), &cfg);
+                        if let Some(e) = &self.voice.engines {
+                            e.stt
+                                .submit(pcm, prompt, stt::Take::SoFar(self.voice.utterance));
+                        }
                     }
                 }
                 mic::MicEvent::Utterance(pcm) => {
@@ -355,10 +409,13 @@ impl App {
                     self.voice.transcribing += 1;
                     let prompt = vocabulary(&self.voice_names(), &cfg);
                     if let Some(e) = &self.voice.engines {
-                        e.stt.submit(pcm, prompt);
+                        e.stt.submit(pcm, prompt, stt::Take::Whole);
                     }
                 }
-                mic::MicEvent::Discarded => self.voice.hearing = false,
+                mic::MicEvent::Discarded => {
+                    self.voice.hearing = false;
+                    self.voice.so_far = None;
+                }
                 mic::MicEvent::Failed(err) => {
                     self.voice.stop();
                     self.notify(format!("voice off: {err}"));
@@ -367,12 +424,29 @@ impl App {
             }
         }
 
-        let results: Vec<Result<String, String>> = match &self.voice.engines {
+        let results: Vec<(stt::Take, Result<String, String>)> = match &self.voice.engines {
             Some(e) => e.stt.rx.try_iter().collect(),
             None => return,
         };
-        for r in results {
+        for (take, r) in results {
+            if let stt::Take::SoFar(n) = take {
+                self.voice.so_far_pending = false;
+                // Shown only while its utterance is the one on the line; a
+                // failure here is the whole utterance's to report.
+                let current = n == self.voice.utterance
+                    && (self.voice.hearing || self.voice.transcribing > 0);
+                if let Ok(text) = r
+                    && current
+                    && !text.trim().is_empty()
+                    && !speech::is_hallucination(text.trim())
+                {
+                    self.voice.so_far = Some(text.trim().to_string());
+                    self.dirty.store(true, Ordering::Relaxed);
+                }
+                continue;
+            }
             self.voice.transcribing = self.voice.transcribing.saturating_sub(1);
+            self.voice.so_far = None;
             match r {
                 Ok(text) => self.voice_heard(&text, &cfg),
                 Err(err) => self.notify(format!("voice: {err}")),
@@ -512,7 +586,6 @@ impl App {
             return;
         }
         self.voice.heard = Some((text.clone(), Instant::now()));
-        self.notify(format!("heard: {text}"));
 
         let p = Phrases::for_lang(&cfg.language);
         let target = self.voice_target();
@@ -732,6 +805,23 @@ fn phrases() -> &'static Phrases {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_line_has_the_words_on_their_way_then_what_was_heard() {
+        let mut v = Voice::new();
+        assert_eq!(v.line(), None);
+        v.hearing = true;
+        assert_eq!(v.line(), Some(("hearing you", "", true)));
+        v.so_far = Some("zrób".into());
+        assert_eq!(v.line(), Some(("hearing you", "zrób", true)));
+        v.hearing = false;
+        v.transcribing = 1;
+        assert_eq!(v.line(), Some(("recognising…", "zrób", true)));
+        v.transcribing = 0;
+        v.so_far = None;
+        v.heard = Some(("zrób testy".into(), Instant::now()));
+        assert_eq!(v.line(), Some(("heard", "zrób testy", false)));
+    }
 
     #[test]
     fn a_wake_word_gates_and_is_cut_off() {

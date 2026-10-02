@@ -387,6 +387,7 @@ pub fn test(args: &[String]) -> Result<()> {
         while Instant::now() < until {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(mic::MicEvent::SpeechStart) => println!("   (speech)"),
+                Ok(mic::MicEvent::SoFar(_)) => {}
                 Ok(mic::MicEvent::Discarded) => println!("   (too short, dropped)"),
                 Ok(mic::MicEvent::Failed(e)) => bail!("{e}"),
                 Ok(mic::MicEvent::Utterance(pcm)) => {

@@ -36,10 +36,16 @@ const START_WINDOW: usize = 16;
 /// An utterance longer than this is cut and sent as it stands. Whisper hears
 /// thirty seconds at a time; a monologue continues in the next piece.
 const MAX_UTTERANCE_MS: u64 = 28_000;
+/// How often an utterance still being said is handed over as far as it has
+/// got: about a second, in frames.
+const SO_FAR_FRAMES: u64 = 60;
 
 pub enum MicEvent {
     /// Someone started talking.
     SpeechStart,
+    /// They are still talking: what they have said up to now, to be shown
+    /// while the rest is on its way.
+    SoFar(Vec<i16>),
     /// They stopped: 16 kHz mono samples of what they said.
     Utterance(Vec<i16>),
     /// Speech that ended too short to be worth recognising.
@@ -354,6 +360,8 @@ struct Segmenter {
     utterance: Vec<i16>,
     voiced_frames: u64,
     silent_run: u64,
+    /// Frames since the utterance was last handed over unfinished.
+    since_so_far: u64,
 }
 
 impl Segmenter {
@@ -366,6 +374,7 @@ impl Segmenter {
             utterance: Vec::new(),
             voiced_frames: 0,
             silent_run: 0,
+            since_so_far: 0,
         }
     }
 
@@ -388,6 +397,7 @@ impl Segmenter {
                 self.utterance = self.pre_roll.drain(..).flatten().collect();
                 self.voiced_frames = voiced_in_window as u64;
                 self.silent_run = 0;
+                self.since_so_far = 0;
                 self.window.clear();
                 out.push(MicEvent::SpeechStart);
             }
@@ -419,6 +429,13 @@ impl Segmenter {
             self.speaking = false;
             self.voiced_frames = 0;
             self.silent_run = 0;
+            return out;
+        }
+        self.since_so_far += 1;
+        // Only on a voiced frame: in a pause there is nothing new to show.
+        if voiced && self.since_so_far >= SO_FAR_FRAMES {
+            self.since_so_far = 0;
+            out.push(MicEvent::SoFar(self.utterance.clone()));
         }
         out
     }
@@ -443,6 +460,7 @@ mod tests {
             for ev in seg.feed(&frame, if voiced { 0.9 } else { 0.1 }) {
                 seen.push(match ev {
                     MicEvent::SpeechStart => "start",
+                    MicEvent::SoFar(_) => "so far",
                     MicEvent::Utterance(_) => "utterance",
                     MicEvent::Discarded => "discarded",
                     MicEvent::Failed(_) => "failed",
@@ -460,6 +478,19 @@ mod tests {
         // 480 ms of silence is 30 frames.
         assert!(run(&mut seg, false, 29).is_empty());
         assert_eq!(run(&mut seg, false, 1), vec!["utterance"]);
+    }
+
+    #[test]
+    fn a_long_utterance_is_handed_over_as_it_goes() {
+        let mut seg = Segmenter::new(tuning());
+        assert_eq!(run(&mut seg, true, 10), vec!["start"]);
+        assert!(run(&mut seg, true, 59).is_empty());
+        assert_eq!(run(&mut seg, true, 1), vec!["so far"]);
+        // A pause adds nothing worth showing; the next word does.
+        assert!(run(&mut seg, false, 20).is_empty());
+        assert!(run(&mut seg, true, 39).is_empty());
+        assert_eq!(run(&mut seg, true, 1), vec!["so far"]);
+        assert_eq!(run(&mut seg, false, 30), vec!["utterance"]);
     }
 
     #[test]

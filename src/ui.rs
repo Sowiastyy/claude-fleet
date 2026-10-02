@@ -2346,6 +2346,25 @@ fn diff_lines(lines: &[String], width: usize) -> Vec<Line<'static>> {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Words on their way in come before a notice, since they are what the
+    // eye is looking for; an utterance already heard gives way to one.
+    if let Some((word, text, live)) = app.voice.line()
+        && (live || app.status.is_none())
+    {
+        let color = if live { theme::busy() } else { theme::idle() };
+        let room = usize::from(area.width).saturating_sub(word.chars().count() + 6);
+        let p = Paragraph::new(Line::from(vec![
+            Span::styled(" ~ ", Style::default().fg(color)),
+            Span::styled(word, Style::default().fg(color).bold()),
+            Span::raw("  "),
+            // The end is kept: it is the newest, and where a sentence cut
+            // short shows.
+            Span::styled(truncate_left(text, room), Style::default().fg(theme::text())),
+        ]));
+        f.render_widget(p, area);
+        return;
+    }
+
     if let Some((msg, _)) = &app.status {
         let p = Paragraph::new(Line::from(vec![
             Span::styled(" > ", Style::default().fg(theme::accent())),
@@ -3070,6 +3089,7 @@ fn draw_help(f: &mut Frame) {
         ("", "listens all the time; what you say goes to the"),
         ("", "selected session, and its replies are read out"),
         ("", "talking cuts the voice off (headphones advised)"),
+        ("", "the bottom line shows what it hears, as you talk"),
         ("\"stop\" / \"cisza\"", "stop talking"),
         ("\"przerwij\"", "stop Claude's turn, like Esc"),
         ("\"powtórz\"", "say the last reply again"),
@@ -3607,6 +3627,32 @@ mod tests {
             .map(|(x, y)| buf[(x, y)].symbol().to_string())
             .collect();
         assert!(screen.contains("new session in a directory you pick"));
+    }
+
+    #[test]
+    fn what_is_being_said_takes_the_bottom_line_from_the_keys() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(std::env::temp_dir());
+        let bottom = |app: &mut App| {
+            let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            term.draw(|f| draw(f, app)).unwrap();
+            let buf = term.backend().buffer();
+            (0..buf.area.width)
+                .map(|x| buf[(x, buf.area.height - 1)].symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(bottom(&mut app).contains("select"));
+
+        app.voice.hear("zrób testy");
+        let line = bottom(&mut app);
+        assert!(line.contains("hearing you  zrób testy"), "{line}");
+        assert!(!line.contains("select"), "{line}");
+
+        // Too long for the line: its end stays, being the newest.
+        app.voice.hear(&format!("{} a na końcu to", "bardzo długie zdanie ".repeat(5)));
+        let line = bottom(&mut app);
+        assert!(line.trim_end().ends_with("a na końcu to"), "{line}");
     }
 
     #[test]

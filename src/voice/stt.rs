@@ -137,23 +137,32 @@ impl Drop for Whisper {
     }
 }
 
+/// What a piece of audio is: an utterance whole, or one still being said, as
+/// far as it has got. Those carry the utterance's number, so text for one
+/// that is over is not taken for the next one's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Take {
+    Whole,
+    SoFar(u64),
+}
+
 /// A recogniser on a thread of its own: utterances go in, text comes out, and
 /// the UI thread never waits on the GPU.
 pub struct Worker {
-    tx: Sender<(Vec<i16>, String)>,
-    pub rx: Receiver<Result<String, String>>,
+    tx: Sender<(Vec<i16>, String, Take)>,
+    pub rx: Receiver<(Take, Result<String, String>)>,
 }
 
 impl Worker {
     pub fn spawn(whisper: Whisper) -> Self {
-        let (tx, jobs) = mpsc::channel::<(Vec<i16>, String)>();
+        let (tx, jobs) = mpsc::channel::<(Vec<i16>, String, Take)>();
         let (done, rx) = mpsc::channel();
         thread::spawn(move || {
             // The server lives as long as this loop: dropping the worker
             // closes the channel, ends the loop and kills the process.
-            for (pcm, prompt) in jobs {
+            for (pcm, prompt, take) in jobs {
                 let r = whisper.transcribe(&pcm, &prompt).map_err(|e| format!("{e:#}"));
-                if done.send(r).is_err() {
+                if done.send((take, r)).is_err() {
                     break;
                 }
             }
@@ -161,8 +170,8 @@ impl Worker {
         Self { tx, rx }
     }
 
-    pub fn submit(&self, pcm: Vec<i16>, prompt: String) {
-        let _ = self.tx.send((pcm, prompt));
+    pub fn submit(&self, pcm: Vec<i16>, prompt: String, take: Take) {
+        let _ = self.tx.send((pcm, prompt, take));
     }
 }
 

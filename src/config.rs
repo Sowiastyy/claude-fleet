@@ -253,6 +253,9 @@ pub struct VoiceCfg {
     pub end_silence_ms: u64,
     /// Speech shorter than this in total is taken for noise.
     pub min_speech_ms: u64,
+    /// Show the words on the bottom line while they are still being said,
+    /// which has the recogniser run about once a second of speech.
+    pub live_text: bool,
     /// Starting to talk cuts the fleet's voice off. Needs headphones: through
     /// speakers the microphone hears the voice and it would cut itself off.
     pub barge_in: bool,
@@ -283,6 +286,7 @@ impl Default for VoiceCfg {
             vad_threshold: 0.5,
             end_silence_ms: 800,
             min_speech_ms: 300,
+            live_text: true,
             barge_in: true,
             announce: true,
             max_spoken_chars: 700,
@@ -595,7 +599,8 @@ output_device    = ""
 vad_threshold    = 0.5       # 0-1: higher ignores more noise, and quiet speech
 end_silence_ms   = 800       # this much silence sends what you said
 min_speech_ms    = 300
-barge_in         = true      # talking cuts the voice off; with speakers, false
+live_text        = true      # your words on the bottom line as you say them
+barge_in        = true      # talking cuts the voice off; with speakers, false
 announce         = true      # say when other sessions finish or ask something
 max_spoken_chars = 700
 wake_word        = ""        # e.g. "Claude": only what starts with it is taken
