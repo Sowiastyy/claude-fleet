@@ -2421,21 +2421,58 @@ impl App {
                     "cwd": self.sessions[i].cwd.display().to_string(),
                 }))
             }
-            "send" | "clear" | "key" | "kill" => {
+            "send" | "clear" | "key" | "kill" | "trust" => {
                 let i = self.target(scope, args.first())?;
+                let question = self
+                    .entry_for(i)
+                    .filter(|e| e.is_waiting())
+                    .map(|e| e.waiting_for.clone());
                 let s = &mut self.sessions[i];
                 if !s.is_alive() {
                     return Err(format!("{} has finished", s.label));
                 }
                 let label = s.label.clone();
+                let asks_for_trust = s.asks_for_trust();
                 let done = match cmd {
                     "send" => {
                         let text = args[1..].join(" ");
                         if text.trim().is_empty() {
                             return Err("usage: fleet send <name> <text>".into());
                         }
+                        // Typed into a question, the letters and digits of a
+                        // message pick its options.
+                        if let Some(what) = question {
+                            let what = if what.is_empty() {
+                                "a question".to_string()
+                            } else {
+                                what
+                            };
+                            return Err(format!(
+                                "{label} is stopped on {what}, and text typed into that would \
+                                 pick an answer. Allow it with `fleet key {label} enter`, or \
+                                 decline with `fleet key {label} esc` and then send what it \
+                                 should do instead"
+                            ));
+                        }
                         s.queue_submit(&text);
-                        format!("sent to {label}")
+                        if asks_for_trust {
+                            format!(
+                                "queued for {label}: it is asking whether its folder is trusted \
+                                 and gets the message once that is answered (`fleet trust \
+                                 {label}` says yes)"
+                            )
+                        } else {
+                            format!("sent to {label}")
+                        }
+                    }
+                    "trust" => {
+                        if !asks_for_trust {
+                            return Err(format!(
+                                "{label} is not asking whether its folder is trusted"
+                            ));
+                        }
+                        s.accept_trust();
+                        format!("{label}: yes to trusting its folder")
                     }
                     "clear" => {
                         s.queue_submit("/clear");
@@ -2444,6 +2481,17 @@ impl App {
                     "key" => {
                         if args.len() < 2 {
                             return Err("usage: fleet key <name> <key>...".into());
+                        }
+                        let enter = args[1..]
+                            .iter()
+                            .any(|k| matches!(k.to_ascii_lowercase().as_str(), "enter" | "return"));
+                        if asks_for_trust && enter {
+                            return Err(format!(
+                                "{label} is asking whether its folder is trusted, and Enter \
+                                 there takes whichever answer the caret is on - it opens on \
+                                 \"No, exit\". For yes: `fleet trust {label}`. For no: `fleet \
+                                 key {label} esc`"
+                            ));
                         }
                         let mut bytes = Vec::new();
                         for k in &args[1..] {
@@ -2463,7 +2511,13 @@ impl App {
                 ok(done)
             }
             "spawn" => {
-                let dir = args.first().ok_or("usage: fleet spawn <dir> [prompt]")?;
+                // `--trust`, wherever it stands: the user vouched for the
+                // folder, so its trust question is answered yes as it comes.
+                let trust = args.iter().any(|a| a == "--trust");
+                let args: Vec<&String> = args.iter().filter(|a| *a != "--trust").collect();
+                let dir = args
+                    .first()
+                    .ok_or("usage: fleet spawn [--trust] <dir> [prompt]")?;
                 let path = PathBuf::from(dir);
                 let path = if path.is_absolute() {
                     path
@@ -2480,13 +2534,29 @@ impl App {
                 if let Scope::Group(g) = scope {
                     s.group = Some(g);
                 }
-                let prompt = args[1..].join(" ");
+                let prompt = args[1..]
+                    .iter()
+                    .map(|a| a.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if !prompt.trim().is_empty() {
                     s.queue_submit(&prompt);
                 }
+                if trust {
+                    s.accept_trust_ahead();
+                }
                 let label = s.label.clone();
                 self.notify(format!("{my_label} started {label}"));
-                ok(format!("started {label} (F{})", idx + 1))
+                ok(format!(
+                    "started {label} (F{}){}",
+                    idx + 1,
+                    if trust {
+                        ""
+                    } else {
+                        " - if Claude Code has not worked in that folder before, it will ask \
+                         whether the folder is trusted, and wait"
+                    }
+                ))
             }
             "alert" => {
                 let (level, text) = match args.first().and_then(|a| Level::parse(a)) {

@@ -69,9 +69,8 @@ const BOX_BOTTOM_RIGHT: char = '╯';
 
 /// How Claude Code's question about a folder it has not worked in before
 /// reads, in the wordings it has had. Its options carry the caret the input
-/// box does, so it has to be told apart from one: text typed into it moves
-/// the choice, and the Enter after the text takes whatever that landed on —
-/// which, with a `j` in the text, is "No, exit".
+/// box does, so it has to be told apart from one: it opens on "No, exit",
+/// and the Enter that was to submit a prompt typed into it takes that.
 const TRUST_QUESTION: &[&str] = &[
     "Yes, I trust this folder",
     "Is this a project you created or one you trust",
@@ -80,6 +79,49 @@ const TRUST_QUESTION: &[&str] = &[
 
 fn asks_for_trust(screen: &str) -> bool {
     TRUST_QUESTION.iter().any(|q| screen.contains(q))
+}
+
+/// How long a key pressed on the trust question is given to show on screen
+/// before the next one is decided.
+const TRUST_KEY_GAP: Duration = Duration::from_millis(500);
+/// How long a yes given ahead waits for the question to come up.
+const TRUST_AHEAD: Duration = Duration::from_secs(20);
+
+/// The next key towards a yes on the trust question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrustKey {
+    Up,
+    Down,
+    /// The caret stands on yes: Enter takes it.
+    Confirm,
+}
+
+/// Where the caret stands among the question's options against where yes
+/// is. Read off the screen rather than assumed: the order of the options and
+/// the one it opens on have both changed between versions, and an Enter on
+/// the wrong one ends the session.
+fn trust_key(screen: &str) -> Option<TrustKey> {
+    let options: Vec<(bool, bool)> = screen
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            let caret = t.starts_with(PROMPT_CARET);
+            let t = t.trim_start_matches(PROMPT_CARET).trim_start();
+            // Older versions number them: "1. Yes, proceed".
+            let t = t
+                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
+                .trim_start();
+            let yes = t.starts_with("Yes, ");
+            (yes || t.starts_with("No, ")).then_some((caret, yes))
+        })
+        .collect();
+    let at = options.iter().position(|(caret, _)| *caret)?;
+    let yes = options.iter().position(|(_, yes)| *yes)?;
+    Some(match yes.cmp(&at) {
+        std::cmp::Ordering::Equal => TrustKey::Confirm,
+        std::cmp::Ordering::Greater => TrustKey::Down,
+        std::cmp::Ordering::Less => TrustKey::Up,
+    })
 }
 
 /// Whether a screen shows a prompt box to type into.
@@ -135,6 +177,14 @@ pub struct PtySession {
     enter_at: Option<Instant>,
     /// When something was last typed into it, by hand or by the fleet.
     pub typed_at: Option<Instant>,
+    /// The user said yes to trusting its folder, and the question is still
+    /// being answered, a key at a time.
+    trust_wanted: bool,
+    trust_key_at: Option<Instant>,
+    /// Whether the question has been on screen since that yes, and until
+    /// when a yes given ahead of it waits for it to come up.
+    trust_seen: bool,
+    trust_deadline: Option<Instant>,
     /// Set while a resize settles; see `settle_resize`.
     resized: Option<Resized>,
     master: Box<dyn MasterPty + Send>,
@@ -285,6 +335,10 @@ impl PtySession {
             prompt_submit: false,
             enter_at: None,
             typed_at: None,
+            trust_wanted: false,
+            trust_key_at: None,
+            trust_seen: false,
+            trust_deadline: None,
             resized: None,
             master: pair.master,
             child,
@@ -348,8 +402,63 @@ impl PtySession {
         self.is_alive() && !self.shell && asks_for_trust(&self.screen_text())
     }
 
+    /// Answer the trust question with yes, on the user's word. The keys go
+    /// in from `flush_prompt`, one at a time, each decided by where the
+    /// caret is seen to stand — Enter only once it stands on yes.
+    pub fn accept_trust(&mut self) {
+        self.trust_wanted = true;
+        self.trust_key_at = None;
+        self.trust_seen = false;
+        self.trust_deadline = None;
+    }
+
+    /// The same yes, given before the question is on screen: for a session
+    /// just started in a folder the user already vouched for. It waits a
+    /// while for the question, since a folder trusted before never asks.
+    pub fn accept_trust_ahead(&mut self) {
+        self.accept_trust();
+        self.trust_deadline = Some(Instant::now() + TRUST_AHEAD);
+    }
+
+    fn answer_trust(&mut self) {
+        let screen = self.screen_text();
+        if !self.is_alive() {
+            self.trust_wanted = false;
+            return;
+        }
+        if !asks_for_trust(&screen) {
+            // Answered — or not asked yet, which is waited for only so long.
+            if self.trust_seen || self.trust_deadline.is_none_or(|d| Instant::now() >= d) {
+                self.trust_wanted = false;
+            }
+            return;
+        }
+        self.trust_seen = true;
+        if self.trust_key_at.is_some_and(|t| t.elapsed() < TRUST_KEY_GAP) {
+            return;
+        }
+        let app = self.application_cursor();
+        let key: &[u8] = match trust_key(&screen) {
+            Some(TrustKey::Confirm) => b"\r",
+            Some(TrustKey::Down) if app => b"\x1bOB",
+            Some(TrustKey::Down) => b"\x1b[B",
+            Some(TrustKey::Up) if app => b"\x1bOA",
+            Some(TrustKey::Up) => b"\x1b[A",
+            // Not a layout this knows how to read: better left to a hand.
+            None => {
+                self.trust_wanted = false;
+                return;
+            }
+        };
+        let _ = self.write_passthrough(key);
+        self.trust_key_at = Some(Instant::now());
+    }
+
     /// Hand queued prompt text to the child once it can take it.
     pub fn flush_prompt(&mut self) {
+        if self.trust_wanted {
+            self.answer_trust();
+        }
         if let Some(at) = self.enter_at
             && Instant::now() >= at
         {
@@ -910,8 +1019,8 @@ mod tests {
     #[test]
     fn the_question_about_trusting_a_folder_is_not_a_prompt_box() {
         let dialog = " Accessing workspace:\n\n C:\\Users\\piotr\\Wanderers\n\n Quick safety check: \
-Is this a project you created or one you trust? (Like your own code)\n\n ❯ 1. Yes, I trust this \
-folder\n   2. No, exit\n\n Enter to confirm · Esc to cancel";
+Is this a project you created or one you trust? (Like your own code)\n\n ❯ No, exit\n   Yes, I \
+trust this folder\n\n Enter to confirm · Esc to cancel";
         assert!(asks_for_trust(dialog));
         // For all that it carries the caret the box does.
         assert!(dialog.contains(PROMPT_CARET));
@@ -921,6 +1030,22 @@ folder\n   2. No, exit\n\n Enter to confirm · Esc to cancel";
         assert!(!asks_for_trust(prompt));
         assert!(prompt_box_on(prompt));
         assert!(!prompt_box_on("Loading…"));
+    }
+
+    #[test]
+    fn yes_to_trust_is_reached_from_wherever_the_caret_stands() {
+        // As it opens today: on no, with yes below it.
+        let opens = " Security guide\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm";
+        assert_eq!(trust_key(opens), Some(TrustKey::Down));
+        let moved = " Security guide\n\n   No, exit\n ❯ Yes, I trust this folder\n\n Enter to confirm";
+        assert_eq!(trust_key(moved), Some(TrustKey::Confirm));
+        // As older versions had it: numbered, yes first.
+        let older = " ❯ 1. Yes, proceed\n   2. No, exit";
+        assert_eq!(trust_key(older), Some(TrustKey::Confirm));
+        let older_on_no = "   1. Yes, proceed\n ❯ 2. No, exit";
+        assert_eq!(trust_key(older_on_no), Some(TrustKey::Up));
+        // Nothing to go by: no key rather than a guess.
+        assert_eq!(trust_key(" Note: nothing here\n ❯ "), None);
     }
 
     #[test]

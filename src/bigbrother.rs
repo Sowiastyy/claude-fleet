@@ -401,8 +401,11 @@ in the fleet's report list
 ctrl-c shift-tab, or any single character (this is how a permission prompt is answered)
   fleet clear <name>             run /clear in the session, wiping its context
   fleet kill <name>              stop the session's process
-  fleet spawn <dir> [prompt]     start a new session in <dir>, in your scope, optionally with a \
-first prompt
+  fleet spawn [--trust] <dir> [prompt]   start a new session in <dir>, in your scope, \
+optionally with a first prompt. A folder Claude Code has not worked in before makes it stop on \
+a safety check, which --trust answers yes to - only when the user vouched for the folder
+  fleet trust <name>             answer yes to that check in a session stopped on it, on the \
+user's word; never press enter there, it opens on \"No, exit\"
   fleet whoami                   your name and scope
 
 How to work:
@@ -473,8 +476,10 @@ quote the text
   fleet key <name> <key>...      press keys: enter esc tab up down left right space backspace \
 ctrl-c shift-tab, or any single character (enter allows a permission prompt, esc declines it \
 and stops a turn)
-  fleet spawn \"<dir>\" [\"<prompt>\"]  start a new session in <dir>, optionally with a first \
-prompt; quote both, and write the directory with forward slashes (C:/Users/me/project)
+  fleet spawn [--trust] \"<dir>\" [\"<prompt>\"]  start a new session in <dir>, optionally \
+with a first prompt; quote both, and write the directory with forward slashes \
+(C:/Users/me/project). --trust answers yes to the folder's safety check - see 4
+  fleet trust <name>             answer yes to that check in a session stopped on it
   fleet clear <name>             run /clear in the session, wiping its context
   fleet kill <name>              stop the session's process
 
@@ -494,9 +499,15 @@ or two sentences what came of it - the outcome, not the steps. If it stopped on 
 a permission prompt, say what it asks; when the user answers, pass that on with `fleet send`, \
 or `fleet key <name> enter` to allow and `fleet key <name> esc` to decline.
    A session started in a folder Claude Code has not worked in before stops at once on a \
-safety check: whether that folder is trusted. That is the user's to decide, never yours: ask \
-them, and on a yes press `fleet key <name> enter` (the check opens on yes), on a no `fleet key \
-<name> esc`. A first prompt given to `fleet spawn` waits until the check is answered.
+safety check: whether that folder is trusted. That is the user's to decide, never yours. If \
+they already said the folder is theirs or that they trust it, start it with `fleet spawn \
+--trust`. Otherwise ask them, and on a yes run `fleet trust <name>`, on a no `fleet key <name> \
+esc`. Never press enter on that check: it opens on \"No, exit\", and enter ends the session - \
+the fleet refuses it. A message sent meanwhile is not typed into the check: it waits and goes \
+in once the check is answered.
+   `fleet send` to a session stopped on any other question is refused, since typed text would \
+pick an answer: allow with `fleet key <name> enter`, or decline with `fleet key <name> esc` \
+and then send what it should do instead.
 5. To stop what a session is doing because the user changed their mind: `fleet key <name> esc`, \
 then `fleet send` the new request.
 6. Never clear or kill a session unless the user says so in as many words.
@@ -547,7 +558,8 @@ const HELP: &str = "fleet — BIG BROTHER's remote control for claude-fleet
   fleet key <name> <key>...
   fleet clear <name>
   fleet kill <name>
-  fleet spawn <dir> [prompt]
+  fleet spawn [--trust] <dir> [prompt]
+  fleet trust <name>
   fleet whoami";
 
 /// `claude-fleet bb <command> …`.

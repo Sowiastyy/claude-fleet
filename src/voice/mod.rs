@@ -794,8 +794,14 @@ impl App {
             Intent::Allow(rest) => {
                 if let Some(i) = target {
                     self.voice.cue(tts::Cue::Sent, cfg);
-                    // The first option, "Yes", is the one a dialog opens on.
-                    let _ = self.sessions[i].write_input(b"\r");
+                    if self.sessions[i].asks_for_trust() {
+                        // That one opens on "No, exit": yes is found, not
+                        // assumed.
+                        self.sessions[i].accept_trust();
+                    } else {
+                        // The first option, "Yes", is the one a dialog opens on.
+                        let _ = self.sessions[i].write_input(b"\r");
+                    }
                     if let Some(r) = rest {
                         // Not one to stop the turn for: it follows the yes
                         // that set the session going again.

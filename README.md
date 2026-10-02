@@ -452,7 +452,17 @@ sees sessions outside its scope, or any other Big Brother.
 | `fleet key <name> <key>…` | presses keys (`enter`, `esc`, `1`, …) — answers a permission prompt |
 | `fleet clear <name>` | runs `/clear` in it |
 | `fleet kill <name>` | kills it |
-| `fleet spawn <dir> [prompt]` | starts a session in its scope |
+| `fleet spawn [--trust] <dir> [prompt]` | starts a session in its scope; `--trust` answers yes to the folder's trust question as it comes up |
+| `fleet trust <name>` | answers yes to the trust question a session is stopped on |
+
+A session started in a folder Claude Code has not worked in before stops on a
+question: whether the folder is trusted. It opens on "No, exit", so nothing is
+typed into it — a message sent meanwhile waits until it is answered — and
+`fleet key <name> enter` is refused there. `fleet trust` finds yes by reading
+the screen and presses Enter only once the caret stands on it. The session
+shows as waiting for the user, and with voice on a plain "tak" answers it.
+`fleet send` to a session stopped on any other question is refused too, since
+typed text would pick an answer.
 
 It is told to act on sessions only when you say so, and to report instead when
 in doubt. `fleet` is pre-approved (`--allowedTools "Bash(fleet:*)"`), so the
