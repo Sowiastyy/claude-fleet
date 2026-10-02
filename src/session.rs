@@ -109,6 +109,8 @@ pub struct PtySession {
     prompt_submit: bool,
     /// When the Enter submitting typed text is due.
     enter_at: Option<Instant>,
+    /// When something was last typed into it, by hand or by the fleet.
+    pub typed_at: Option<Instant>,
     /// Set while a resize settles; see `settle_resize`.
     resized: Option<Resized>,
     master: Box<dyn MasterPty + Send>,
@@ -258,6 +260,7 @@ impl PtySession {
             prompt_since: None,
             prompt_submit: false,
             enter_at: None,
+            typed_at: None,
             resized: None,
             master: pair.master,
             child,
@@ -275,6 +278,7 @@ impl PtySession {
         if self.scrollback != 0 {
             self.set_scrollback(0);
         }
+        self.typed_at = Some(Instant::now());
         self.queued.fetch_add(bytes.len(), Ordering::Relaxed);
         self.input_tx
             .send(bytes.to_vec())
@@ -475,6 +479,11 @@ impl PtySession {
 
     pub fn is_alive(&self) -> bool {
         self.exited.is_none()
+    }
+
+    /// Whether this is the session the voice talks to on the user's behalf.
+    pub fn is_companion(&self) -> bool {
+        self.watch.as_ref().is_some_and(|w| w.companion)
     }
 
     /// How long this pane has been dead, for the expiry countdown.

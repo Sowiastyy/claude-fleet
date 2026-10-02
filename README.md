@@ -444,7 +444,7 @@ sees sessions outside its scope, or any other Big Brother.
 | command | does |
 |---|---|
 | `fleet list` | the sessions it watches: name, group, state, directory |
-| `fleet wait [secs]` | blocks until a session changes state (finishes a turn, stops on a question, starts, dies) and prints the changes |
+| `fleet wait [secs]` | blocks until a session changes state (finishes a turn, stops on a question, starts, dies) and prints the changes; also returns the moment you start typing to the Big Brother, so it hears you instead of sitting out the wait |
 | `fleet peek <name> [lines]` | the session's screen |
 | `fleet log <name> [n]` | the last entries of its transcript: prompts, replies, tool calls, errors |
 | `fleet alert <info\|warn\|alarm> <text>` | a report to you |
@@ -456,7 +456,9 @@ sees sessions outside its scope, or any other Big Brother.
 
 It is told to act on sessions only when you say so, and to report instead when
 in doubt. `fleet` is pre-approved (`--allowedTools "Bash(fleet:*)"`), so the
-watching loop runs without permission prompts.
+watching loop runs without permission prompts, and anything else it tries is
+refused on the spot rather than asked about (`--permission-mode dontAsk`): a
+prompt in a pane nobody is looking at would stop it for good.
 
 ```toml
 [bigbrother]
@@ -508,6 +510,35 @@ Everything runs on the machine: nothing is sent anywhere but to the session.
 - **Sessions started while voice is on** get a line appended to their system
   prompt telling them they are heard: they lead with a short plain answer.
 
+### The companion
+
+Talking straight to the session that does the work means waiting for it: a
+long turn is a long silence. The companion is a second, fast session — Sonnet
+at low effort unless the config says otherwise — that is the one you talk to
+instead. Say "włącz rozmówcę", or set `companion = true` to have it start
+with voice. It shows up in the list as `VOICE`.
+
+It answers at once and does no work itself. A request for work it passes to
+the session on screen (or the one you name) with the context that session
+needs; a question about what a session is doing it answers from that
+session's screen and transcript; plain talk it just answers. When a session
+finishes its turn or stops on a question the fleet tells it, and it tells you
+in a sentence or two what came of it — so the sessions' own replies are not
+read out, only its account of them. "Nie, zostaw to, zrób zamiast tego…"
+stops the session and sends the new request.
+
+It is a Big Brother underneath: the same `fleet` command, the same socket and
+token, and the same rule that anything but `fleet` and reading is refused.
+"wyłącz rozmówcę" ends it and your words go straight to the session again;
+turning voice off ends it too.
+
+```toml
+[voice]
+companion        = false                 # true starts it together with voice
+companion_model  = "claude-sonnet-5-5"
+companion_effort = "low"
+```
+
 A few short phrases steer the fleet rather than go to Claude (Polish shown;
 English works with `language = "en"`):
 
@@ -521,6 +552,7 @@ English works with `language = "en"`):
 | "przełącz na api" | go to that session |
 | "nowa sesja" | start a session |
 | "wyłącz głos" | stop listening |
+| "włącz rozmówcę", "wyłącz rozmówcę" | start or stop the companion |
 
 Anything longer than four words is a message, even when it starts with one of
 those: "stop using unwrap in the parser" goes to Claude.

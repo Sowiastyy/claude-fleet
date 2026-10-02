@@ -30,6 +30,9 @@ pub enum Intent {
     NewSession,
     /// Stop listening.
     VoiceOff,
+    /// Start, or stop, the companion: a fast session that is the one talked
+    /// to and hands the work to the others.
+    Companion(bool),
     /// Anything else goes to Claude as it was said.
     Message(String),
 }
@@ -95,6 +98,22 @@ pub fn intent(heard: &str, waiting: bool) -> Intent {
             "voice off",
         ]) {
             return Intent::VoiceOff;
+        }
+        // The recogniser hears "rozmówcę" several ways; all of them are it.
+        const COMPANION: &[&str] = &[
+            "rozmowce", "rozmowca", "rozmowcy", "rozmowce glosowego", "pomocnika", "asystenta",
+            "companion", "the companion",
+        ];
+        for (leads, on) in [
+            (&["wlacz", "uruchom", "daj", "turn on", "start"][..], true),
+            (&["wylacz", "zamknij", "turn off", "stop"][..], false),
+        ] {
+            if leads
+                .iter()
+                .any(|l| COMPANION.iter().any(|c| norm == format!("{l} {c}")))
+            {
+                return Intent::Companion(on);
+            }
         }
         for lead in [
             "przelacz na sesje",
@@ -457,6 +476,9 @@ pub struct Phrases {
     pub no_such_session: &'static str,
     pub switched: &'static str,
     pub interrupted: &'static str,
+    pub companion_on: &'static str,
+    pub companion_off: &'static str,
+    pub companion_failed: &'static str,
 }
 
 impl Phrases {
@@ -483,6 +505,9 @@ static PL: Phrases = Phrases {
     no_such_session: "Nie znam takiej sesji.",
     switched: "Jesteś w sesji",
     interrupted: "Przerwane.",
+    companion_on: "Rozmówca włączony. Mów do mnie, a pracę przekażę sesjom.",
+    companion_off: "Rozmówca wyłączony. Mówisz teraz prosto do sesji.",
+    companion_failed: "Nie udało się uruchomić rozmówcy.",
 };
 
 static EN: Phrases = Phrases {
@@ -503,6 +528,9 @@ static EN: Phrases = Phrases {
     no_such_session: "No session by that name.",
     switched: "Now in session",
     interrupted: "Interrupted.",
+    companion_on: "The companion is on. Talk to me, and I will hand the work to the sessions.",
+    companion_off: "The companion is off. You are talking straight to the session now.",
+    companion_failed: "The companion did not start.",
 };
 
 #[cfg(test)]
@@ -596,6 +624,18 @@ mod tests {
         // The fleet's own commands still work over a dialog.
         assert_eq!(intent("Stop.", true), Intent::Silence);
         assert_eq!(intent("Powtórz", true), Intent::Repeat);
+    }
+
+    #[test]
+    fn the_companion_is_turned_on_and_off_by_name() {
+        assert_eq!(intent("Włącz rozmówcę.", false), Intent::Companion(true));
+        assert_eq!(intent("wyłącz rozmówcę", false), Intent::Companion(false));
+        assert_eq!(intent("Turn on the companion", false), Intent::Companion(true));
+        // A sentence about it is a message, not the switch.
+        assert!(matches!(
+            intent("włącz rozmówcę kiedy skończysz te testy", false),
+            Intent::Message(_)
+        ));
     }
 
     #[test]

@@ -51,6 +51,9 @@ pub const EXE_VAR: &str = "FLEET_BB_EXE";
 const WAIT_DEFAULT: u64 = 540;
 /// How often `fleet wait` asks whether anything happened.
 const WAIT_POLL: Duration = Duration::from_secs(2);
+/// What the first of those asks carries, to tell a wait beginning from one
+/// going round.
+pub const WAIT_START: &str = "start";
 /// How many transcript entries `fleet log` prints by default.
 const LOG_DEFAULT: usize = 40;
 /// How much of the end of a transcript `fleet log` reads. Transcripts run to
@@ -113,7 +116,13 @@ impl Scope {
 pub struct Watch {
     pub scope: Scope,
     pub token: String,
+    /// The voice's companion rather than an overseer: the one the user talks
+    /// to out loud, which hands the work to the other sessions.
+    pub companion: bool,
 }
+
+/// The label the voice's companion goes by.
+pub const COMPANION_LABEL: &str = "VOICE";
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Level {
@@ -319,6 +328,38 @@ pub fn claude_args(scope: Scope) -> Vec<String> {
     }
     args.push("--name".to_string());
     args.push(scope.label());
+    args.extend(tool_args());
+    args
+}
+
+/// The `claude` arguments that make a session the voice's companion: a fast
+/// model at low effort, since what it is for is answering at once.
+pub fn companion_args(cfg: &config::VoiceCfg) -> Vec<String> {
+    let mut args = vec![
+        "--append-system-prompt".to_string(),
+        companion_prompt(&cfg.language),
+    ];
+    for (flag, value) in [
+        ("--model", &cfg.companion_model),
+        ("--effort", &cfg.companion_effort),
+    ] {
+        if !value.trim().is_empty() {
+            args.push(flag.to_string());
+            args.push(value.trim().to_string());
+        }
+    }
+    args.push("--name".to_string());
+    args.push(COMPANION_LABEL.to_string());
+    args.extend(tool_args());
+    args
+}
+
+/// What a session reaching the fleet may run: the `fleet` command and
+/// reading, nothing else. Whatever else it tries is refused on the spot
+/// rather than asked about — a permission prompt in a pane nobody is looking
+/// at stops it for good.
+fn tool_args() -> Vec<String> {
+    let mut args = vec!["--permission-mode".to_string(), "dontAsk".to_string()];
     // Last: the flag takes every argument after it.
     args.push("--allowedTools".to_string());
     for tool in [
@@ -344,12 +385,13 @@ pub fn system_prompt(scope: Scope, extra: &str) -> String {
 You watch {scope}. You do not write code yourself: you watch, judge, report to the user and, \
 when the user tells you to, act on the sessions.
 
-Your interface to the fleet is the `fleet` command, run through Bash (or PowerShell). If the \
-shell does not find it, use \"$FLEET_BB_EXE\" bb <command> instead.
+Your interface to the fleet is the `fleet` command, run through Bash (or PowerShell), one \
+command per call and nothing piped into or out of it: it is the only command you are allowed.
   fleet list                     the sessions you watch: name, group, state, directory
   fleet wait [secs]              block until something changes (a session finishes a turn, stops \
 on a question, starts or dies) and print the events; default {wait} s, so give the Bash call a \
-timeout of 600000 ms
+timeout of 600000 ms. It also returns when the user starts writing to you: end your turn there \
+without another command, so their message reaches you
   fleet peek <name> [lines]      what is on that session's screen right now
   fleet log <name> [n]           its last n transcript entries: prompts, replies, tool calls, errors
   fleet alert <info|warn|alarm> <text>   report to the user; warn and alarm ring a bell and stay \
@@ -393,6 +435,70 @@ carry out their orders with the commands above. Then go back to watching.
         p.push_str(extra.trim());
     }
     p
+}
+
+/// What an event sent to the companion starts with, to tell it from speech.
+pub const FROM_FLEET: &str = "[fleet]";
+
+/// The note that ends a spoken message sent to the companion: which session
+/// the user has on screen and how it stands, which saves it a `fleet list`
+/// before nearly everything it does.
+pub fn on_screen_note(session: Option<(&str, &str)>) -> String {
+    match session {
+        Some((label, state)) => format!("[on screen: {label}, {state}]"),
+        None => "[on screen: no session]".to_string(),
+    }
+}
+
+pub fn companion_prompt(language: &str) -> String {
+    format!(
+        "You are VOICE, the one the user talks to out loud in claude-fleet while other Claude \
+Code sessions do the work. The user's messages are transcribed speech - names and code words \
+can be misheard, so go by what makes sense rather than asking. Everything you write is read \
+aloud by a speech synthesizer.
+
+So: answer at once, in one to three short plain sentences. No markdown, no lists, no code, no \
+file paths, nothing that only makes sense on a screen. You are the fast one: never go quiet to \
+think or investigate. If something needs real work or real thought, that is a session's job.
+
+You do no work yourself - no editing, no builds, no digging through a codebase. Your interface \
+to the sessions is the `fleet` command, run through Bash (or PowerShell), one command per call \
+and nothing piped into or out of it: it is the only command you are allowed.
+  fleet list                     the sessions: name, state, directory; the one the user has on \
+screen is marked
+  fleet peek <name> [lines]      what is on that session's screen right now
+  fleet log <name> [n]           its last n transcript entries: prompts, replies, tool calls, errors
+  fleet send <name> \"<text>\"     type a message into the session and press Enter; always \
+quote the text
+  fleet key <name> <key>...      press keys: enter esc tab up down left right space backspace \
+ctrl-c shift-tab, or any single character (enter allows a permission prompt, esc declines it \
+and stops a turn)
+  fleet spawn <dir> [prompt]     start a new session in <dir>, optionally with a first prompt
+  fleet clear <name>             run /clear in the session, wiping its context
+  fleet kill <name>              stop the session's process
+
+How to work:
+1. Work to be done - write, fix, check, run, change, find out - goes to a session: `fleet send \
+<name> <the request>`, worded in full, with whatever from this conversation the session needs \
+to understand it, since it has not heard any of it. The session meant is the one on screen \
+unless the user names another - every message of the user's ends with a note from the fleet, \
+`[on screen: <name>, <state>]`, so `fleet list` is only for the others; with no session at \
+all, `fleet spawn`. Then tell the user in one sentence that it is on its way. Do not wait for \
+the result: you will be told.
+2. What a session is doing, or did: `fleet peek` or `fleet log`, then one or two sentences.
+3. A question you can answer from what you already know, or plain talk: just answer.
+4. A message starting with {from_fleet} is from the fleet, not the user: a session finished its \
+turn, stopped on a question, or ended. Look with `fleet log <name> 8` and tell the user in one \
+or two sentences what came of it - the outcome, not the steps. If it stopped on a question or \
+a permission prompt, say what it asks; when the user answers, pass that on with `fleet send`, \
+or `fleet key <name> enter` to allow and `fleet key <name> esc` to decline.
+5. To stop what a session is doing because the user changed their mind: `fleet key <name> esc`, \
+then `fleet send` the new request.
+6. Never clear or kill a session unless the user says so in as many words.
+7. The user's speech is recognised as language \"{language}\": always answer in that language, \
+also to a {from_fleet} message, which is in English only because the fleet wrote it.",
+        from_fleet = FROM_FLEET,
+    )
 }
 
 /// The bytes a named key sends, for `fleet key`.
@@ -489,8 +595,14 @@ pub fn cli(args: &[String]) -> Result<()> {
 
 fn wait(limit: Duration) -> Result<()> {
     let start = Instant::now();
+    let mut first = true;
     loop {
-        let v = expect_ok(call("events", &[])?)?;
+        let args = if std::mem::take(&mut first) {
+            vec![WAIT_START.to_string()]
+        } else {
+            Vec::new()
+        };
+        let v = expect_ok(call("events", &args)?)?;
         let text = v["text"].as_str().unwrap_or_default();
         if !text.is_empty() {
             println!("{text}");
@@ -678,6 +790,43 @@ mod tests {
         }
         assert_eq!(Scope::parse("ab"), None);
         assert_eq!(Scope::parse("A"), None);
+    }
+
+    #[test]
+    fn the_companion_is_told_what_is_on_screen() {
+        assert_eq!(
+            on_screen_note(Some(("api", "working"))),
+            "[on screen: api, working]"
+        );
+        assert_eq!(on_screen_note(None), "[on screen: no session]");
+        // And its prompt says what that note and the fleet's own messages are.
+        let prompt = companion_prompt("pl");
+        assert!(prompt.contains("[on screen: <name>, <state>]"));
+        assert!(prompt.contains(FROM_FLEET));
+        assert!(prompt.contains("language \"pl\""));
+    }
+
+    #[test]
+    fn the_companion_runs_fast_and_never_stops_to_ask() {
+        let args = companion_args(&config::VoiceCfg::default());
+        let at = |flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].as_str());
+        assert_eq!(at("--model"), Some("claude-sonnet-5-5"));
+        assert_eq!(at("--effort"), Some("low"));
+        assert_eq!(at("--permission-mode"), Some("dontAsk"));
+        assert_eq!(at("--name"), Some(COMPANION_LABEL));
+        // The tool list takes every argument after its flag, so it is last.
+        let tools = args.iter().position(|a| a == "--allowedTools").unwrap();
+        assert!(args[tools + 1..].iter().all(|a| !a.starts_with("--")));
+        assert!(args[tools + 1..].contains(&"Bash(fleet:*)".to_string()));
+
+        // Left to Claude Code when the config says nothing.
+        let bare = companion_args(&config::VoiceCfg {
+            companion_model: String::new(),
+            companion_effort: " ".into(),
+            ..config::VoiceCfg::default()
+        });
+        assert!(!bare.contains(&"--model".to_string()));
+        assert!(!bare.contains(&"--effort".to_string()));
     }
 
     #[test]

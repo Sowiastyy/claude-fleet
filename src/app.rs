@@ -579,6 +579,8 @@ pub struct App {
     bb_seq: u64,
     /// The last event each Big Brother (by uid) has collected.
     bb_cursor: HashMap<u64, u64>,
+    /// When each Big Brother (by uid) last asked for its events.
+    bb_asked: HashMap<u64, Instant>,
     /// Each session's state as of the last look, by uid, to spot changes.
     last_state: HashMap<u64, String>,
     /// What the Big Brothers reported, oldest first.
@@ -603,6 +605,8 @@ pub struct App {
 
 /// How many session events the fleet keeps for Big Brothers to collect.
 const EVENT_LOG: usize = 500;
+/// Two asks for events closer than this are one `fleet wait` going round.
+const WAIT_GAP: Duration = Duration::from_secs(6);
 /// How many reports the list keeps.
 const REPORT_LOG: usize = 200;
 
@@ -728,6 +732,7 @@ impl App {
             bb_events: Vec::new(),
             bb_seq: 0,
             bb_cursor: HashMap::new(),
+            bb_asked: HashMap::new(),
             last_state: HashMap::new(),
             reports: Vec::new(),
             unread_reports: 0,
@@ -855,7 +860,10 @@ impl App {
         }
         // With voice on, the session is told its replies are heard.
         let mut args = args.to_vec();
-        args.extend(crate::voice::session_args(&self.voice));
+        args.extend(crate::voice::session_args(
+            &self.voice,
+            self.companion().is_some(),
+        ));
         let idx = self.spawn_raw(cwd, &args, &[], None)?;
         let label = self.sessions[idx].label.clone();
         self.selected = idx;
@@ -982,8 +990,9 @@ impl App {
             .iter()
             .enumerate()
             // A shell has no conversation, and restoring it as `claude`
-            // would start a session nobody asked for.
-            .filter(|(_, s)| s.is_alive() && !s.shell)
+            // would start a session nobody asked for. The voice's companion
+            // comes and goes with voice, which a restart leaves off.
+            .filter(|(_, s)| s.is_alive() && !s.shell && !s.is_companion())
             .map(|(i, _)| i)
             .collect();
 
@@ -1667,7 +1676,7 @@ impl App {
         for item in items {
             if let Some(scope) = item.watch.as_deref().and_then(Scope::parse) {
                 resumed += usize::from(item.session.is_some());
-                self.start_big_brother(scope, item.cwd, item.session)?;
+                self.start_big_brother(scope, item.cwd, item.session, false)?;
                 continue;
             }
             let before = self.sessions.len();
@@ -2083,7 +2092,12 @@ impl App {
         if let Some(i) = self
             .sessions
             .iter()
-            .position(|s| s.is_alive() && s.watch.as_ref().is_some_and(|w| w.scope == scope))
+            .position(|s| {
+                s.is_alive()
+                    && s.watch
+                        .as_ref()
+                        .is_some_and(|w| w.scope == scope && !w.companion)
+            })
         {
             self.selected = i;
             self.mode = Mode::Focus;
@@ -2091,7 +2105,7 @@ impl App {
             return Ok(());
         }
         let cwd = self.launch_cwd.clone();
-        if let Some(i) = self.start_big_brother(scope, cwd, None)? {
+        if let Some(i) = self.start_big_brother(scope, cwd, None, false)? {
             self.selected = i;
             self.mode = Mode::Focus;
             self.notify(format!(
@@ -2103,12 +2117,28 @@ impl App {
         Ok(())
     }
 
-    /// Start a Big Brother, carrying on `resume` when given. Returns its index.
+    /// The voice's companion, if one is running.
+    pub fn companion(&self) -> Option<usize> {
+        self.sessions
+            .iter()
+            .position(|s| s.is_alive() && s.is_companion())
+    }
+
+    /// Start the voice's companion, leaving the pane where it is. Returns
+    /// its index.
+    pub fn start_companion(&mut self) -> Result<Option<usize>> {
+        let cwd = self.launch_cwd.clone();
+        self.start_big_brother(Scope::All, cwd, None, true)
+    }
+
+    /// Start a Big Brother, carrying on `resume` when given, or the voice's
+    /// companion, which reaches the fleet the same way. Returns its index.
     fn start_big_brother(
         &mut self,
         scope: Scope,
         cwd: PathBuf,
         resume: Option<String>,
+        companion: bool,
     ) -> Result<Option<usize>> {
         if self.bb_server.is_none() {
             self.bb_server = Some(bigbrother::Server::start(Arc::clone(&self.dirty))?);
@@ -2132,15 +2162,28 @@ impl App {
             args.push("--resume".to_string());
             args.push(id.clone());
         }
-        args.extend(bigbrother::claude_args(scope));
-        let idx = self.spawn_raw(cwd, &args, &env, Some(scope.label()))?;
-        let s = &mut self.sessions[idx];
-        s.watch = Some(bigbrother::Watch { scope, token });
-        s.queue_submit(if resume.is_some() {
-            "The fleet restarted and you are back. Carry on watching: `fleet list`, then `fleet wait`."
+        let label = if companion {
+            args.extend(bigbrother::companion_args(&config::voice()));
+            bigbrother::COMPANION_LABEL.to_string()
         } else {
-            bigbrother::KICKOFF
+            args.extend(bigbrother::claude_args(scope));
+            scope.label()
+        };
+        let idx = self.spawn_raw(cwd, &args, &env, Some(label))?;
+        let s = &mut self.sessions[idx];
+        s.watch = Some(bigbrother::Watch {
+            scope,
+            token,
+            companion,
         });
+        // The companion has nothing to do until it is spoken to.
+        if !companion {
+            s.queue_submit(if resume.is_some() {
+                "The fleet restarted and you are back. Carry on watching: `fleet list`, then `fleet wait`."
+            } else {
+                bigbrother::KICKOFF
+            });
+        }
         // It hears about what happens from now on; `fleet list` tells it the rest.
         let uid = s.uid;
         self.bb_cursor.insert(uid, self.bb_seq);
@@ -2291,13 +2334,19 @@ impl App {
                     .map(|i| {
                         let s = &self.sessions[i];
                         format!(
-                            "{:<18} group {:<2} F{:<2} {:<28} up {:<6} {}",
+                            "{:<18} group {:<2} F{:<2} {:<28} up {:<6} {}{}",
                             s.label,
                             s.group.map(String::from).unwrap_or_else(|| "-".into()),
                             i + 1,
                             self.state_of(i),
                             crate::ui::fmt_uptime(s.started.elapsed()),
-                            s.cwd.display()
+                            s.cwd.display(),
+                            // The one "this" and "it" mean when the user talks.
+                            if i == self.selected {
+                                "   <- on screen"
+                            } else {
+                                ""
+                            }
                         )
                     })
                     .collect();
@@ -2309,13 +2358,32 @@ impl App {
             }
             "events" => {
                 let from = self.bb_cursor.get(&my_uid).copied().unwrap_or(0);
-                let lines: Vec<String> = self
+                let mut lines: Vec<String> = self
                     .bb_events
                     .iter()
                     .filter(|e| e.seq > from && scope.covers(e.group))
                     .map(|e| format!("[{}s ago] {}", e.at.elapsed().as_secs(), e.text))
                     .collect();
                 self.bb_cursor.insert(my_uid, self.bb_seq);
+                // A `fleet wait` asks every couple of seconds. Something
+                // typed to this Big Brother between two of those is the user
+                // wanting it, and the wait is what keeps it from hearing them.
+                let now = Instant::now();
+                let asked = self.bb_asked.insert(my_uid, now);
+                // Not on a wait's first ask: what was typed before it began
+                // has been read already.
+                let waiting = args.first().is_none_or(|a| a != bigbrother::WAIT_START);
+                if let (Some(asked), Some(typed)) = (asked, self.sessions[me].typed_at)
+                    && waiting
+                    && typed > asked
+                    && now.duration_since(asked) < WAIT_GAP
+                {
+                    lines.push(
+                        "the user is writing to you: stop waiting and end your turn, so \
+                         their message reaches you"
+                            .to_string(),
+                    );
+                }
                 ok(lines.join("\n"))
             }
             "peek" => {

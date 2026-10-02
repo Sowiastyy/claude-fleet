@@ -329,9 +329,10 @@ plain sentences, with no markdown, code, tables, lists or file paths in that ope
 that has to be read goes after it, and say that it is on screen. Keep narration between tool \
 calls to a few words. Answer in the language the user speaks.";
 
-/// Extra `claude` arguments for a session started now.
-pub fn session_args(voice: &Voice) -> Vec<String> {
-    if voice.is_on() && config::voice().spoken_style {
+/// Extra `claude` arguments for a session started now. With a companion it
+/// is the one heard, and the sessions write for the screen as ever.
+pub fn session_args(voice: &Voice, companion: bool) -> Vec<String> {
+    if voice.is_on() && !companion && config::voice().spoken_style {
         vec!["--append-system-prompt".into(), SPOKEN_STYLE.into()]
     } else {
         Vec::new()
@@ -362,11 +363,46 @@ impl App {
     /// `v` in the list, Alt+Shift+V anywhere.
     pub fn toggle_voice(&mut self) {
         if self.voice.is_on() {
-            self.voice.stop();
+            self.voice_off();
             self.notify("voice off");
         } else {
             self.voice.start();
             self.notify("voice: starting the engines…");
+        }
+    }
+
+    /// Stop listening and talking, and the companion with them: without a
+    /// voice it has nobody to talk to.
+    fn voice_off(&mut self) {
+        self.stop_companion();
+        self.voice.stop();
+    }
+
+    fn stop_companion(&mut self) {
+        if let Some(i) = self.companion() {
+            self.sessions[i].kill();
+        }
+    }
+
+    /// Start the companion and say so. From then on it is the one talked to.
+    fn voice_companion_on(&mut self) {
+        let p = phrases();
+        // Following moves to it without silencing what is said about that.
+        self.voice.follow = None;
+        if self.companion().is_some() {
+            self.voice.say(p.companion_on);
+            return;
+        }
+        match self.start_companion() {
+            Ok(Some(_)) => {
+                self.voice.say(p.companion_on);
+                self.notify("voice: the companion is on — what you say goes to VOICE");
+            }
+            Ok(None) => self.voice.say(p.companion_failed),
+            Err(e) => {
+                self.voice.say(p.companion_failed);
+                self.notify(format!("voice: the companion did not start: {e:#}"));
+            }
         }
     }
 
@@ -408,6 +444,12 @@ impl App {
                 let p = phrases();
                 self.voice.say(p.listening);
                 self.notify(format!("voice on — listening on {mic}"));
+                if config::voice().companion
+                    && self.companion().is_none()
+                    && let Err(e) = self.start_companion()
+                {
+                    self.notify(format!("voice: the companion did not start: {e:#}"));
+                }
             }
             Ok(Err(e)) => {
                 self.voice.starting = None;
@@ -605,8 +647,23 @@ impl App {
     /// The session spoken input goes to: the selected one, if it is a live
     /// Claude session.
     fn voice_target(&self) -> Option<usize> {
+        // With a companion, it is the one talked to, whatever the pane shows.
+        if let Some(i) = self.companion() {
+            return Some(i);
+        }
         let s = self.sessions.get(self.selected)?;
         (s.is_alive() && !s.shell).then_some(self.selected)
+    }
+
+    /// What the companion is told with each thing said: the session the pane
+    /// shows, by the name `fleet` knows it by, and how it stands.
+    fn on_screen_note(&self) -> String {
+        let shown = self
+            .sessions
+            .get(self.selected)
+            .filter(|s| s.is_alive() && !s.shell && s.watch.is_none())
+            .map(|s| (s.label.clone(), self.state_of(self.selected)));
+        crate::bigbrother::on_screen_note(shown.as_ref().map(|(l, s)| (l.as_str(), s.as_str())))
     }
 
     /// What a session is called out loud: the name Claude Code gave it, or
@@ -710,7 +767,13 @@ impl App {
         let waiting = target
             .and_then(|i| self.entry_for(i))
             .is_some_and(|e| e.is_waiting());
-        match speech::intent(&text, waiting) {
+        let intent = match speech::intent(&text, waiting) {
+            // With a companion "przerwij" is a request like any other: it
+            // knows which session is meant, and stopping it is no use.
+            Intent::Interrupt if self.companion().is_some() => Intent::Message(text.clone()),
+            other => other,
+        };
+        match intent {
             Intent::Silence => self.voice.silence(),
             Intent::Interrupt => {
                 self.voice.silence();
@@ -770,11 +833,23 @@ impl App {
                 }
             }
             Intent::VoiceOff => {
-                self.voice.stop();
+                self.voice_off();
                 self.notify("voice off");
+            }
+            Intent::Companion(true) => self.voice_companion_on(),
+            Intent::Companion(false) => {
+                self.voice.follow = None;
+                self.stop_companion();
+                self.voice.say(p.companion_off);
+                self.notify("voice: the companion is off — what you say goes to the session");
             }
             Intent::Message(m) => match target {
                 Some(i) if !m.is_empty() => {
+                    let m = if self.sessions[i].is_companion() {
+                        format!("{m}  {}", self.on_screen_note())
+                    } else {
+                        m
+                    };
                     self.voice.outbox.push_back((self.sessions[i].uid, m, true));
                     self.voice.cue(tts::Cue::Sent, cfg);
                 }
@@ -872,14 +947,22 @@ impl App {
     fn voice_announce(&mut self, cfg: &VoiceCfg) {
         let p = Phrases::for_lang(&cfg.language);
         let target = self.voice_target();
+        // With a companion the news goes to it instead of being said in the
+        // fleet's own stock phrases: it looks at what happened and tells it.
+        let companion = self.companion().map(|i| self.sessions[i].uid);
         let now = self.voice_states();
         let mut lines = Vec::new();
+        let mut news = Vec::new();
         for (uid, (state, label, idx)) in &now {
             let before = self.voice.statuses.get(uid).map(String::as_str);
             if before == Some(state.as_str()) {
                 continue;
             }
             let is_target = target == Some(*idx);
+            // The name the `fleet` command knows it by; overseers are not
+            // the companion's to report on.
+            let session = &self.sessions[*idx];
+            let told = companion.filter(|_| !is_target && session.watch.is_none());
             if let Some(what) = state.strip_prefix("waiting:") {
                 // Waiting again on a different wording of the same stop is
                 // not a new question.
@@ -906,20 +989,44 @@ impl App {
                     } else {
                         p.claude_waits.to_string()
                     });
+                } else if told.is_some() {
+                    let what = if what.is_empty() { "a question" } else { what };
+                    news.push(format!("{}: stopped and is waiting for the user ({what})", session.label));
                 } else if cfg.announce {
                     lines.push(format!("{} {label} {}", p.session, p.asks));
                 }
-            } else if cfg.announce
-                && !is_target
+            } else if !is_target
                 && before == Some("busy")
                 && matches!(state.as_str(), "idle" | "finished")
             {
-                lines.push(format!("{} {label} {}", p.session, p.finished));
+                if told.is_some() {
+                    news.push(format!(
+                        "{}: {}",
+                        session.label,
+                        if state == "idle" {
+                            "finished its turn"
+                        } else {
+                            "ended"
+                        }
+                    ));
+                } else if cfg.announce {
+                    lines.push(format!("{} {label} {}", p.session, p.finished));
+                }
             }
         }
         self.voice.statuses = now.into_iter().map(|(uid, (s, _, _))| (uid, s)).collect();
         for l in lines {
             self.voice.say_unless_talked_over(&l, cfg);
+        }
+        if let Some(uid) = companion {
+            for n in news {
+                // Behind whatever it is saying: nothing is stopped for news.
+                self.voice.outbox.push_back((
+                    uid,
+                    format!("{} {n}", crate::bigbrother::FROM_FLEET),
+                    false,
+                ));
+            }
         }
     }
 }

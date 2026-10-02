@@ -279,6 +279,14 @@ pub struct VoiceCfg {
     pub spoken_style: bool,
     /// Words the recogniser is nudged towards: names, jargon, projects.
     pub vocabulary: String,
+    /// Start a companion with voice: a fast session of its own that is the
+    /// one talked to, and hands the work to the others. Without it, what
+    /// you say goes straight to the selected session.
+    pub companion: bool,
+    /// The model the companion runs on, and its effort: quick ones, since
+    /// answering at once is what it is for. Empty leaves either to Claude Code.
+    pub companion_model: String,
+    pub companion_effort: String,
 }
 
 impl Default for VoiceCfg {
@@ -304,6 +312,9 @@ impl Default for VoiceCfg {
             wake_word: String::new(),
             spoken_style: true,
             vocabulary: String::new(),
+            companion: false,
+            companion_model: "claude-sonnet-5-5".into(),
+            companion_effort: "low".into(),
         }
     }
 }
@@ -620,6 +631,12 @@ max_spoken_chars = 700
 wake_word        = ""        # e.g. "Claude": only what starts with it is taken
 spoken_style     = true      # new sessions answer for the ear
 vocabulary       = ""        # names and jargon the recogniser should expect
+# The companion: a fast session you talk to instead of the working one. It
+# answers at once, hands the work to the sessions and tells you what came of
+# it. Also by voice: "włącz rozmówcę" / "wyłącz rozmówcę".
+companion        = false     # true starts it together with voice
+companion_model  = "claude-sonnet-5-5"
+companion_effort = "low"     # low, medium, high, xhigh, max
 dir              = ""        # empty = %LOCALAPPDATA%\claude-fleet\voice
 "##;
 

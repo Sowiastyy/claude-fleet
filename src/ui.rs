@@ -294,6 +294,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 match &s.watch {
                     Some(w) => Span::styled(
                         match w.scope {
+                            _ if w.companion => "talks with you".to_string(),
                             Scope::All => "watching all".to_string(),
                             Scope::Group(g) => format!("watching [{g}]"),
                         },
@@ -3099,6 +3100,8 @@ fn draw_help(f: &mut Frame) {
         ("\"przełącz na X\"", "go to session X"),
         ("\"nowa sesja\"", "start a session"),
         ("\"wyłącz głos\"", "stop listening"),
+        ("\"włącz rozmówcę\"", "talk to a fast companion that hands"),
+        ("", "the work to the sessions (\"wyłącz rozmówcę\")"),
         ("", "engines: claude-fleet voice setup / test"),
         ("", ""),
         ("", "-- LIVE CONFIG --"),
