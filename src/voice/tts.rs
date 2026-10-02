@@ -30,9 +30,61 @@ use super::{job, mic, speech, stt::hide_window};
 
 /// Sentences rendered ahead of the one playing.
 const AHEAD: usize = 2;
+/// The rate cues are made at.
+const CUE_RATE: NonZero<u32> = NonZero::new(44_100).unwrap();
+/// Silence between the pips of one cue.
+const PIP_GAP_MS: u32 = 35;
+/// The fade at each end of a pip, without which it clicks.
+const PIP_FADE_MS: u32 = 6;
+
+/// A sound that says something happened, without words: a pip or two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cue {
+    /// You started talking, and are heard.
+    Hearing,
+    /// What you said went to the session.
+    Sent,
+    /// The session is still working.
+    Working,
+}
+
+impl Cue {
+    /// The pips it is made of, each a pitch in Hz and a length in ms, and how
+    /// loud it is against the volume set. The one that keeps coming back is
+    /// the lowest and the quietest.
+    fn pips(self) -> (&'static [(f32, u32)], f32) {
+        match self {
+            Cue::Hearing => (&[(880.0, 45)], 1.0),
+            Cue::Sent => (&[(660.0, 45), (990.0, 60)], 1.0),
+            Cue::Working => (&[(440.0, 35)], 0.6),
+        }
+    }
+
+    /// The cue as mono samples at `CUE_RATE`.
+    fn samples(self, volume: f32) -> Vec<f32> {
+        let rate = CUE_RATE.get();
+        let (pips, level) = self.pips();
+        let mut out = Vec::new();
+        for (i, &(hz, ms)) in pips.iter().enumerate() {
+            if i > 0 {
+                out.resize(out.len() + (rate * PIP_GAP_MS / 1000) as usize, 0.0);
+            }
+            let n = (rate * ms / 1000) as usize;
+            let fade = (rate * PIP_FADE_MS / 1000) as f32;
+            for k in 0..n {
+                let edge = k.min(n - 1 - k) as f32;
+                let t = k as f32 / rate as f32;
+                let wave = (std::f32::consts::TAU * hz * t).sin();
+                out.push(wave * (edge / fade).min(1.0) * level * volume);
+            }
+        }
+        out
+    }
+}
 
 enum Cmd {
     Say(String),
+    Cue(Cue, f32),
     Stop,
 }
 
@@ -77,6 +129,7 @@ impl Tts {
         let mut worker = Worker {
             sink,
             player: None,
+            cues: None,
             piper,
             stdin,
             done: done_rx,
@@ -107,6 +160,12 @@ impl Tts {
         }
     }
 
+    /// Play a cue at this volume, 0-1. It is not speech: it neither counts
+    /// as speaking nor is cut off by a stop.
+    pub fn cue(&self, cue: Cue, volume: f32) {
+        let _ = self.tx.send(Cmd::Cue(cue, volume));
+    }
+
     /// Stop now: what is playing and everything queued behind it.
     pub fn stop(&self) {
         self.speaking.store(false, Ordering::Relaxed);
@@ -122,6 +181,8 @@ struct Worker {
     sink: MixerDeviceSink,
     /// Replaced rather than reused after a stop: a stopped player stays so.
     player: Option<Player>,
+    /// Cues play beside the voice rather than in its queue.
+    cues: Option<Player>,
     piper: Child,
     stdin: ChildStdin,
     done: Receiver<PathBuf>,
@@ -142,6 +203,18 @@ impl Worker {
             match rx.recv_timeout(Duration::from_millis(15)) {
                 Ok(Cmd::Say(text)) => {
                     self.pending.extend(speech::sentences(&text));
+                }
+                Ok(Cmd::Cue(cue, volume)) => {
+                    let mixer = self.sink.mixer();
+                    let cues = self.cues.get_or_insert_with(|| Player::connect_new(mixer));
+                    // One at a time: a cue late enough to queue is old news.
+                    if cues.empty() {
+                        cues.append(SamplesBuffer::new(
+                            NonZero::<u16>::MIN,
+                            CUE_RATE,
+                            cue.samples(volume),
+                        ));
+                    }
                 }
                 Ok(Cmd::Stop) => {
                     self.pending.clear();
@@ -307,6 +380,22 @@ pub fn output_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cue_is_short_fades_at_both_ends_and_keeps_to_its_volume() {
+        for cue in [Cue::Hearing, Cue::Sent, Cue::Working] {
+            let s = cue.samples(0.3);
+            let ms = s.len() as u32 * 1000 / CUE_RATE.get();
+            assert!((30..=200).contains(&ms), "{cue:?}: {ms} ms");
+            assert!(s[0].abs() < 0.01 && s[s.len() - 1].abs() < 0.01, "{cue:?}");
+            let peak = s.iter().fold(0f32, |m, x| m.max(x.abs()));
+            assert!(peak > 0.1 && peak <= 0.3, "{cue:?}: {peak}");
+        }
+        // Two pips with silence between them.
+        let sent = Cue::Sent.samples(0.3);
+        let gap_at = (CUE_RATE.get() * (45 + PIP_GAP_MS / 2) / 1000) as usize;
+        assert_eq!(sent[gap_at], 0.0);
+    }
 
     #[test]
     fn a_wav_written_for_the_recogniser_reads_back() {

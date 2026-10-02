@@ -479,6 +479,12 @@ answer". The card list shows what voice is doing (`~ voice: listening`,
 words: as far as they have been recognised while you are still talking, then
 the whole utterance for a few seconds after it is sent.
 
+Short pips say the rest without words: one when you start to be heard, two
+rising when what you said has gone to the session, and a quiet low one every
+few seconds for as long as the session is working and nothing else is to be
+heard — so a long silence is told from nothing happening. `sounds = false`
+turns them off, `sound_volume` sets how loud they are.
+
 Everything runs on the machine: nothing is sent anywhere but to the session.
 
 - **Listening** — the microphone is cut into utterances by

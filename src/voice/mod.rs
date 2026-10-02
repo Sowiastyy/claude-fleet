@@ -49,6 +49,9 @@ const SAID_KEPT: Duration = Duration::from_secs(90);
 const ECHO_SCORE: f32 = 0.7;
 /// How long what was heard stays on the bottom line.
 const HEARD_SHOWN: Duration = Duration::from_secs(8);
+/// How long a working session may go without a sound before a pip says it
+/// is still at it.
+const WORKING_EVERY: Duration = Duration::from_secs(3);
 
 /// What the list shows about voice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +123,9 @@ pub struct Voice {
     so_far: Option<String>,
     /// What was heard last, and when.
     heard: Option<(String, Instant)>,
+    /// When there was last something to hear or to listen to: a cue, the
+    /// voice, you talking. The working pip counts its silence from here.
+    last_sound: Option<Instant>,
 }
 
 impl Voice {
@@ -202,6 +208,16 @@ impl Voice {
         if let Some(e) = &self.engines {
             e.tts.stop();
         }
+    }
+
+    fn cue(&mut self, cue: tts::Cue, cfg: &VoiceCfg) {
+        if !cfg.sounds {
+            return;
+        }
+        if let Some(e) = &self.engines {
+            e.tts.cue(cue, cfg.sound_volume.clamp(0.0, 1.0));
+        }
+        self.last_sound = Some(Instant::now());
     }
 }
 
@@ -390,6 +406,11 @@ impl App {
                     if cfg.barge_in && self.voice.speaking() {
                         self.voice.silence();
                     }
+                    // Not over the voice: what the microphone hears then is
+                    // most likely the voice itself.
+                    if !self.voice.speaking() {
+                        self.voice.cue(tts::Cue::Hearing, &cfg);
+                    }
                 }
                 mic::MicEvent::SoFar(pcm) => {
                     // Only into an idle recogniser: it is there for whole
@@ -467,6 +488,28 @@ impl App {
             self.voice.last_follow_poll = Some(Instant::now());
             self.voice_follow(&cfg);
             self.voice_announce(&cfg);
+            self.voice_working(&cfg);
+        }
+    }
+
+    /// A quiet pip every few seconds while the selected session works and
+    /// nothing else is to be heard, so a long silence is told from nothing
+    /// happening.
+    fn voice_working(&mut self, cfg: &VoiceCfg) {
+        let busy = self
+            .voice_target()
+            .and_then(|i| self.entry_for(i))
+            .is_some_and(|e| e.status == "busy");
+        let quiet =
+            !self.voice.hearing && self.voice.transcribing == 0 && !self.voice.speaking();
+        if !busy || !quiet {
+            self.voice.last_sound = Some(Instant::now());
+        } else if self
+            .voice
+            .last_sound
+            .is_none_or(|t| t.elapsed() >= WORKING_EVERY)
+        {
+            self.voice.cue(tts::Cue::Working, cfg);
         }
     }
 
@@ -607,6 +650,7 @@ impl App {
             },
             Intent::Allow(rest) => {
                 if let Some(i) = target {
+                    self.voice.cue(tts::Cue::Sent, cfg);
                     // The first option, "Yes", is the one a dialog opens on.
                     let _ = self.sessions[i].write_input(b"\r");
                     if let Some(r) = rest {
@@ -617,6 +661,7 @@ impl App {
             Intent::Deny(rest) => {
                 if let Some(i) = target {
                     let _ = self.sessions[i].write_input(b"\x1b");
+                    self.voice.cue(tts::Cue::Sent, cfg);
                     // Esc is "no, and tell Claude what to do instead"; the
                     // rest of the sentence is that.
                     if let Some(r) = rest {
@@ -651,6 +696,7 @@ impl App {
             Intent::Message(m) => match target {
                 Some(i) if !m.is_empty() => {
                     self.voice.outbox.push_back((self.sessions[i].uid, m));
+                    self.voice.cue(tts::Cue::Sent, cfg);
                 }
                 Some(_) => {}
                 None => self.voice.say(p.no_session),

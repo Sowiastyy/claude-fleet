@@ -373,7 +373,17 @@ pub fn test(args: &[String]) -> Result<()> {
         None => println!("played for {:.1}s", t.elapsed().as_secs_f32()),
     }
 
-    print!("6. the microphone opens ... ");
+    if cfg.sounds {
+        println!("6. the pips: you are heard, it is sent, Claude is working");
+        for cue in [tts::Cue::Hearing, tts::Cue::Sent, tts::Cue::Working] {
+            speaker.cue(cue, cfg.sound_volume.clamp(0.0, 1.0));
+            std::thread::sleep(Duration::from_millis(700));
+        }
+    } else {
+        println!("6. the pips are off (sounds = false)");
+    }
+
+    print!("7. the microphone opens ... ");
     match mic::probe(&cfg.input_device, 1.5) {
         Ok((name, rate, db)) => println!("{name}: {rate} samples/s, level {db:.0} dBFS"),
         Err(e) => println!("failed: {e:#}"),
@@ -382,7 +392,7 @@ pub fn test(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--mic") {
         let (tx, rx) = mpsc::channel();
         let m = mic::Mic::start(&cfg.input_device, super::tuning(&cfg), tx)?;
-        println!("7. listening on \"{}\" for 20 s — say something", m.name);
+        println!("8. listening on \"{}\" for 20 s — say something", m.name);
         let until = Instant::now() + Duration::from_secs(20);
         while Instant::now() < until {
             match rx.recv_timeout(Duration::from_millis(100)) {

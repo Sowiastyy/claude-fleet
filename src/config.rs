@@ -261,6 +261,11 @@ pub struct VoiceCfg {
     pub barge_in: bool,
     /// Say when another session finishes or stops on a question.
     pub announce: bool,
+    /// Pips: one when you start to be heard, two when what you said is sent,
+    /// and a quiet one every few seconds while the session works.
+    pub sounds: bool,
+    /// How loud the pips are, 0-1.
+    pub sound_volume: f32,
     /// The longest reply read out in full; past it, the rest is left on screen.
     pub max_spoken_chars: usize,
     /// When set, only utterances starting with it are taken, and it is cut
@@ -289,6 +294,8 @@ impl Default for VoiceCfg {
             live_text: true,
             barge_in: true,
             announce: true,
+            sounds: true,
+            sound_volume: 0.3,
             max_spoken_chars: 700,
             wake_word: String::new(),
             spoken_style: true,
@@ -602,6 +609,8 @@ min_speech_ms    = 300
 live_text        = true      # your words on the bottom line as you say them
 barge_in        = true      # talking cuts the voice off; with speakers, false
 announce         = true      # say when other sessions finish or ask something
+sounds           = true      # pips: you are heard, it is sent, Claude is working
+sound_volume     = 0.3       # 0-1
 max_spoken_chars = 700
 wake_word        = ""        # e.g. "Claude": only what starts with it is taken
 spoken_style     = true      # new sessions answer for the ear
