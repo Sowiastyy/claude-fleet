@@ -279,6 +279,7 @@ sooner.
 | `Alt+Shift+G` | show or hide the git panel |
 | `←` at the start of the input | leave focus too — the arrow has nowhere left to go in the box |
 | `→` at the end of the input | go to the git panel — the same move, the other way |
+| `Ctrl+V` / `Alt+V` with an image on the clipboard | attach it (see "Pasting") |
 | everything else | goes to Claude, including `Ctrl+anything` |
 | mouse wheel | scroll the history (see "Scrolling") |
 
@@ -324,6 +325,15 @@ A paste too large for one chunk goes out in several, but the `ESC[200~` /
 closed on the last. While a paste is open, every input is its continuation —
 including a tail shorter than 8 characters that fell just outside the silence
 window. The first real key press closes it.
+
+An image on the clipboard has no text for the terminal to paste, so fleet
+puts it in itself: the image is saved as a PNG under `%TEMP%\claude-fleet`
+and its path is pasted, which Claude Code turns into `[Image #1]` — exactly
+what dropping the file on the window does. `Alt+V` asks for that outright.
+`Ctrl+V` does too, although Windows Terminal keeps that key for its own
+paste and the press never arrives: the release still does, and a `v` let go
+without ever having been pressed, with nothing but an image on the clipboard,
+is that paste. Text wins when the clipboard holds both.
 
 **Always** (in every mode)
 

@@ -79,6 +79,33 @@ fn mac_paste(png: &std::path::Path) -> Option<String> {
     (!paths.is_empty()).then(|| paths.join(" "))
 }
 
+/// Whether the clipboard holds an image and nothing the terminal pastes by
+/// itself. Text wins when both are there — a copied spreadsheet cell is both —
+/// and so does a file copied in Explorer, whose path the terminal types.
+///
+/// This is asked after every paste the terminal takes, so it goes to the
+/// clipboard directly rather than through a PowerShell that takes half a
+/// second to start.
+#[cfg(windows)]
+pub fn image_only() -> bool {
+    const CF_BITMAP: u32 = 2;
+    const CF_UNICODETEXT: u32 = 13;
+    const CF_HDROP: u32 = 15;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        safe fn IsClipboardFormatAvailable(format: u32) -> i32;
+    }
+
+    let has = |format| IsClipboardFormatAvailable(format) != 0;
+    has(CF_BITMAP) && !has(CF_UNICODETEXT) && !has(CF_HDROP)
+}
+
+#[cfg(not(windows))]
+pub fn image_only() -> bool {
+    false
+}
+
 /// Quote a path the way a drop does: only when a space would split it.
 fn quote(path: &str) -> String {
     if path.contains(' ') {

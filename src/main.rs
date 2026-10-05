@@ -901,6 +901,7 @@ fn dispatch(app: &mut App, input: &Input, ev: Event) -> Result<()> {
                 handle_key(app, key)?;
             }
             Event::Mouse(m) => handle_mouse(app, m),
+            Event::Paste(text) if text.is_empty() => paste_clipboard_image(app),
             Event::Paste(text) => handle_paste(app, &text, false),
             Event::Resize(_, _) => app.dirty.store(true, Ordering::Relaxed),
             _ => {}
@@ -1662,9 +1663,10 @@ fn handle_focus(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    // Ctrl+V only gets here when the terminal found no text to paste, which
-    // is exactly when the clipboard may hold a screenshot. Alt+V is the same
-    // ask for terminals that keep Ctrl+V to themselves.
+    // A Ctrl+V that gets here as a key is one the terminal has no paste of
+    // its own for, so nothing else is going to put a screenshot in. Alt+V is
+    // the same ask. A terminal that keeps Ctrl+V to itself is caught on the
+    // way in instead: see `paste_clipboard_image`.
     if key.code == KeyCode::Char('v')
         && (key.modifiers == KeyModifiers::CONTROL || key.modifiers == KeyModifiers::ALT)
         && let Some(text) = clipimg::paste_text()
@@ -1988,6 +1990,22 @@ fn handle_paste(app: &mut App, text: &str, keep_open: bool) {
         app.notify(format!("pasting {kb} KB ({lines} lines) — F10 still works"));
     }
     app.dirty.store(true, Ordering::Relaxed);
+}
+
+/// A paste that brought no text: the terminal took Ctrl+V and found nothing it
+/// could type. From here that is what a screenshot on the clipboard looks
+/// like, so the image goes in the way a dropped file would.
+///
+/// The same empty paste trails every paste of text the terminal makes (see
+/// `input::TakenPaste`), which is why the clipboard is asked first, and why an
+/// open paste is left exactly as it is.
+fn paste_clipboard_image(app: &mut App) {
+    if app.mode != Mode::Focus || app.paste_open || !clipimg::image_only() {
+        return;
+    }
+    if let Some(text) = clipimg::paste_text() {
+        handle_paste(app, &text, false);
+    }
 }
 
 /// Close a paste that was handed over in pieces.
