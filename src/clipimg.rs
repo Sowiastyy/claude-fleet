@@ -6,6 +6,8 @@
 //! an image path into an attachment. So the fleet does the same by hand: the
 //! image is written to a PNG and its path is pasted, as if it had been dropped.
 
+#![cfg_attr(target_os = "macos", allow(unreachable_code))]
+
 use std::{path::PathBuf, process::Command, time::SystemTime};
 
 /// Save the clipboard's image, or the files copied in Explorer, and return
@@ -19,6 +21,8 @@ pub fn paste_text() -> Option<String> {
         .ok()?
         .as_millis();
     let png: PathBuf = dir.join(format!("clip-{stamp}.png"));
+    #[cfg(target_os = "macos")]
+    return mac_paste(&png);
 
     // One PowerShell run both asks and saves; the clipboard API needs STA.
     let script = format!(
@@ -47,6 +51,34 @@ pub fn paste_text() -> Option<String> {
     (!paths.is_empty()).then(|| paths.join(" "))
 }
 
+#[cfg(target_os = "macos")]
+fn mac_paste(png: &std::path::Path) -> Option<String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("osascript")
+        .arg("-")
+        .arg(png)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child
+        .stdin
+        .take()?
+        .write_all(include_str!("clipimg_mac.applescript").as_bytes())
+        .ok()?;
+    let out = child.wait_with_output().ok()?;
+    let paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(quote)
+        .collect();
+    (!paths.is_empty()).then(|| paths.join(" "))
+}
+
 /// Quote a path the way a drop does: only when a space would split it.
 fn quote(path: &str) -> String {
     if path.contains(' ') {
@@ -59,6 +91,12 @@ fn quote(path: &str) -> String {
 /// The clipboard's text, for the editor's Ctrl+V when the terminal did not
 /// paste it itself. `None` when there is none.
 pub fn read_text() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("pbpaste").output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        return (!text.is_empty()).then_some(text);
+    }
     let mut cmd = Command::new("powershell");
     cmd.args([
         "-NoProfile",
@@ -86,6 +124,22 @@ pub fn copy_text(text: &str) -> bool {
     use std::io::Write;
     use std::process::Stdio;
 
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(mut child) = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        return child.wait().is_ok_and(|s| s.success()) && wrote;
+    }
     let mut cmd = Command::new("clip");
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::null())

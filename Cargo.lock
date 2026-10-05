@@ -192,6 +192,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "earshot",
+ "libc",
  "portable-pty",
  "ratatui",
  "rodio",

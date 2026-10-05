@@ -25,3 +25,6 @@ toml = "0.9"
 tui-term = "0.3.4"
 unicode-width = "0.2"
 vt100 = "0.16.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

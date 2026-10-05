@@ -22,6 +22,10 @@ concurrency:
 jobs:
   release:
     runs-on: windows-latest
+    outputs:
+      new: ${{ steps.version.outputs.new }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,3 +84,28 @@ jobs:
             --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
+
+  macos:
+    needs: release
+    if: needs.release.outputs.new == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp the version into the build
+        run: |
+          v="${{ needs.release.outputs.version }}"
+          perl -0pi -e "s/^version = \"[^\"]*\"/version = \"$v\"/m" Cargo.toml
+          perl -0pi -e "s/(name = \"claude-fleet\"\nversion = )\"[^\"]*\"/\${1}\"$v\"/" Cargo.lock
+          grep -m1 '^version' Cargo.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo build --release --locked
+
+      - name: Attach the macOS build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/release/claude-fleet claude-fleet-macos-arm64
+          gh release upload "${{ needs.release.outputs.tag }}" claude-fleet-macos-arm64

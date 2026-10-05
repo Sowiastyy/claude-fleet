@@ -85,6 +85,16 @@ fn pipe_key(socket_path: &str) -> Option<String> {
     (!key.is_empty()).then(|| key.to_owned())
 }
 
+#[cfg(unix)]
+fn pid_alive(pid: u64) -> bool {
+    pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: u64) -> bool {
+    true
+}
+
 pub fn read_all() -> Vec<RegistryEntry> {
     let Some(dir) = sessions_dir() else {
         return Vec::new();
@@ -108,7 +118,7 @@ pub fn read_all() -> Vec<RegistryEntry> {
                         // ever reports the namespace without the LOCAL prefix.
                         || key.rsplit('\\').next().is_some_and(|tail| set.contains(tail))
                 }
-                // No pipe listing available, or no socket recorded: assume live.
+                (None, _) if cfg!(unix) => pid_alive(v["pid"].as_u64().unwrap_or(0)),
                 _ => true,
             };
 

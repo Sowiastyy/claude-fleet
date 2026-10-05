@@ -20,7 +20,11 @@ use serde::Deserialize;
 
 const LATEST: &str = "https://api.github.com/repos/Sowiastyy/claude-fleet/releases/latest";
 /// The asset a release carries, as `release.yml` uploads it.
-const ASSET: &str = "claude-fleet.exe";
+const ASSET: &str = if cfg!(target_os = "macos") {
+    "claude-fleet-macos-arm64"
+} else {
+    "claude-fleet.exe"
+};
 
 /// The version this binary was built as.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -104,6 +108,12 @@ pub fn dev_repo(origin: &Path) -> Option<PathBuf> {
         .then(|| origin.ancestors().nth(3))
         .flatten()
         .map(Path::to_path_buf)
+        .or_else(|| (!cfg!(windows)).then(source_repo).flatten())
+}
+
+fn source_repo() -> Option<PathBuf> {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    repo.join(".git").exists().then_some(repo)
 }
 
 fn newer(rel: ApiRelease, current: &str) -> Option<Release> {
@@ -112,10 +122,14 @@ fn newer(rel: ApiRelease, current: &str) -> Option<Release> {
     if theirs <= ours {
         return None;
     }
-    let asset = rel.assets.into_iter().find(|a| a.name == ASSET)?;
+    let url = match rel.assets.into_iter().find(|a| a.name == ASSET) {
+        Some(asset) => asset.browser_download_url,
+        None if !cfg!(windows) => String::new(),
+        None => return None,
+    };
     Some(Release {
         tag: rel.tag_name,
-        url: asset.browser_download_url,
+        url,
     })
 }
 
@@ -149,6 +163,9 @@ pub fn is_dev_build(origin: &Path) -> bool {
 /// though, so the old one steps aside as `*.old-<ms>.exe` and the new one takes its
 /// name. The old file is swept on the next start, once nothing runs it.
 pub fn install(rel: &Release, origin: &Path) -> Result<()> {
+    if rel.url.is_empty() {
+        return build_from_source(origin);
+    }
     let part = sibling(origin, "new")?;
     // Unique, because the file an earlier update moved aside may still be
     // running — the supervisor keeps going on it until the fleet is quit.
@@ -175,14 +192,20 @@ pub fn install(rel: &Release, origin: &Path) -> Result<()> {
     }
     // A redirect to an error page still ends in a file; an executable starts
     // with `MZ`, and anything else must not end up where the fleet starts from.
+    let magic: &[u8] = if cfg!(windows) { b"MZ" } else { &[0xcf, 0xfa, 0xed, 0xfe] };
     let head = fs::read(&part)
         .ok()
-        .filter(|b| b.len() > 1024 && b.starts_with(b"MZ"));
+        .filter(|b| b.len() > 1024 && b.starts_with(magic));
     if head.is_none() {
         let _ = fs::remove_file(&part);
         bail!("the download of {} is not an executable", rel.tag);
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&part, fs::Permissions::from_mode(0o755))?;
+    }
     fs::rename(origin, &old)
         .with_context(|| format!("could not move {} aside", origin.display()))?;
     if let Err(e) = fs::rename(&part, origin) {
@@ -192,6 +215,45 @@ pub fn install(rel: &Release, origin: &Path) -> Result<()> {
             .with_context(|| format!("could not put the new build at {}", origin.display()));
     }
     Ok(())
+}
+
+fn build_from_source(origin: &Path) -> Result<()> {
+    let repo = source_repo().context("the checkout this fleet was built from is gone")?;
+    run(Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["pull", "--rebase", "--autostash"]))
+    .context("git pull failed")?;
+    let cargo = dirs::home_dir()
+        .map(|h| h.join(".cargo").join("bin").join("cargo"))
+        .filter(|c| c.is_file())
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+    run(Command::new(cargo)
+        .args(["build", "--release", "--manifest-path"])
+        .arg(repo.join("Cargo.toml")))
+    .context("cargo build failed")?;
+    let built = repo.join("target").join("release").join("claude-fleet");
+    if built == origin {
+        return Ok(());
+    }
+    let part = sibling(origin, "new")?;
+    fs::copy(&built, &part).with_context(|| format!("could not copy {}", built.display()))?;
+    fs::rename(&part, origin)
+        .with_context(|| format!("could not put the new build at {}", origin.display()))
+}
+
+fn run(cmd: &mut Command) -> Result<()> {
+    let out = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    bail!("{last}")
 }
 
 /// Remove what earlier updates left beside the binary. An old file refuses to
@@ -247,6 +309,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_release_without_the_binary_or_with_an_odd_tag_is_not_offered() {
         assert!(newer(rel("v9.0.0", "source.zip"), "0.1.0").is_none());
         assert!(newer(rel("v9.0.0-rc1", ASSET), "0.1.0").is_none());
@@ -254,6 +317,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_cargo_build_output_is_left_to_cargo() {
         assert!(is_dev_build(Path::new(
             r"C:\src\claude-fleet\target\release\claude-fleet.exe"
@@ -276,6 +340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn an_install_swaps_the_binary_and_keeps_the_old_one_aside() {
         let dir = std::env::temp_dir().join(format!("fleet-update-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

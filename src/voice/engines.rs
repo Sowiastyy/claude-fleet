@@ -24,6 +24,9 @@ const WHISPER_CUDA_ZIP: &str = "whisper-cublas-12.4.0-bin-x64.zip";
 const WHISPER_CPU_ZIP: &str = "whisper-bin-x64.zip";
 const PIPER_URL: &str =
     "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip";
+const PIPER_MAC_URL: &str =
+    "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_macos_aarch64.tar.gz";
+const PHONEMIZE_MAC_URL: &str = "https://github.com/rhasspy/piper-phonemize/releases/download/2023.11.14-4/piper-phonemize_macos_aarch64.tar.gz";
 const MODELS_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 const VOICES_URL: &str = "https://huggingface.co/rhasspy/piper-voices/resolve/main";
 
@@ -57,6 +60,15 @@ pub fn root(cfg: &VoiceCfg) -> PathBuf {
         .join("voice")
 }
 
+fn on_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .chain([PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")])
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
 fn first_existing(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -68,7 +80,8 @@ pub fn locate(cfg: &VoiceCfg) -> Result<Paths, String> {
     let whisper_server = first_existing([
         root.join("whisper").join("Release").join(exe("whisper-server")),
         root.join("whisper").join(exe("whisper-server")),
-    ]);
+    ])
+    .or_else(|| on_path(&exe("whisper-server")));
     let whisper_model = if cfg.whisper_model.trim().is_empty() {
         first_existing(MODEL_PREFERENCE.iter().map(|m| root.join("models").join(m)))
     } else {
@@ -122,6 +135,10 @@ pub fn whisper_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).clamp(2, 8))
         .unwrap_or(4)
+}
+
+fn has_gpu() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64")) || has_nvidia()
 }
 
 fn has_nvidia() -> bool {
@@ -182,13 +199,23 @@ fn unzip(zip: &Path, into: &Path) -> Result<()> {
 pub fn setup(args: &[String]) -> Result<()> {
     let cfg = config::voice();
     let root = root(&cfg);
-    let cpu = args.iter().any(|a| a == "--cpu") || !has_nvidia();
+    let cpu = args.iter().any(|a| a == "--cpu") || !has_gpu();
     println!("voice engines go to {}", root.display());
     std::fs::create_dir_all(&root)?;
 
     let server = root.join("whisper").join("Release").join("whisper-server.exe");
-    if server.is_file() {
+    if server.is_file() || (cfg!(target_os = "macos") && on_path("whisper-server").is_some()) {
         println!("- whisper-server: already there");
+    } else if cfg!(target_os = "macos") {
+        println!("- whisper-server (Homebrew whisper-cpp, Metal):");
+        let ok = Command::new("brew")
+            .args(["install", "whisper-cpp"])
+            .status()
+            .context("Homebrew is needed for whisper-server: https://brew.sh")?
+            .success();
+        if !ok {
+            bail!("brew install whisper-cpp failed");
+        }
     } else {
         let zip_name = if cpu { WHISPER_CPU_ZIP } else { WHISPER_CUDA_ZIP };
         println!(
@@ -219,9 +246,38 @@ pub fn setup(args: &[String]) -> Result<()> {
         download(&format!("{MODELS_URL}/{model}"), &model_path)?;
     }
 
-    let piper = root.join("piper").join("piper").join("piper.exe");
+    let piper = root.join("piper").join("piper").join(format!("piper{}", std::env::consts::EXE_SUFFIX));
     if piper.is_file() {
         println!("- piper: already there");
+    } else if cfg!(target_os = "macos") {
+        println!("- piper:");
+        let tgz = root.join("piper.tar.gz");
+        download(PIPER_MAC_URL, &tgz)?;
+        unzip(&tgz, &root.join("piper"))?;
+        let libs = root.join("phonemize");
+        let tgz = root.join("phonemize.tar.gz");
+        download(PHONEMIZE_MAC_URL, &tgz)?;
+        unzip(&tgz, &libs)?;
+        let dir = piper.parent().context("piper has no directory")?;
+        for lib in std::fs::read_dir(libs.join("piper-phonemize").join("lib"))?.flatten() {
+            let name = lib.file_name();
+            if name.to_string_lossy().ends_with(".dylib") {
+                std::fs::copy(lib.path(), dir.join(&name))?;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&libs);
+        let _ = Command::new("install_name_tool")
+            .args(["-add_rpath", "@executable_path"])
+            .arg(&piper)
+            .status();
+        let signed = Command::new("codesign")
+            .args(["-s", "-", "-f"])
+            .arg(&piper)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !signed {
+            bail!("cannot sign {} — are the Xcode command line tools installed?", piper.display());
+        }
     } else {
         println!("- piper:");
         let zip = root.join("piper.zip");
