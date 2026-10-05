@@ -101,7 +101,14 @@ pub fn image_only() -> bool {
     has(CF_BITMAP) && !has(CF_UNICODETEXT) && !has(CF_HDROP)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn image_only() -> bool {
+    Command::new("pbpaste")
+        .output()
+        .is_ok_and(|o| o.stdout.is_empty())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn image_only() -> bool {
     false
 }

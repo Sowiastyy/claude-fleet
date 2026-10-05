@@ -86,12 +86,12 @@ fn pipe_key(socket_path: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: u64) -> bool {
+pub fn pid_alive(pid: u64) -> bool {
     pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
 }
 
 #[cfg(not(unix))]
-fn pid_alive(_pid: u64) -> bool {
+pub fn pid_alive(_pid: u64) -> bool {
     true
 }
 

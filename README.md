@@ -27,16 +27,16 @@ list, the right one is the full, interactive terminal of the selected session.
 
 ## Requirements
 
-- **Windows 10 1809 or newer** (ConPTY). Windows only — fleet is built on
-  ConPTY and named pipes; it compiles elsewhere but session liveness and the
-  restart supervisor assume Windows.
+- **Windows 10 1809 or newer** (ConPTY), or **macOS 11 or newer** on Apple
+  Silicon (see "macOS" below).
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) installed, with
   `claude` on `PATH` (or in `~/.local/bin`).
 - To build from source: Rust 1.85 or newer (edition 2024).
 
 ## Install
 
-Download `claude-fleet.exe` from the
+Download `claude-fleet.exe` (Windows) or `claude-fleet-macos-arm64` (macOS)
+from the
 [latest release](https://github.com/Sowiastyy/claude-fleet/releases/latest),
 or build it yourself:
 
@@ -47,6 +47,36 @@ cargo install --git https://github.com/Sowiastyy/claude-fleet
 Then run `claude-fleet` in any directory. With no session or shell running
 yet, the pane shows the fleet's name in block letters turning in 3D, and
 Clawd, Claude Code's mascot, dancing in the corner.
+
+## macOS
+
+Everything works on a Mac: sessions, the shell, the editor, the git panel,
+voice, updates and pasting a screenshot.
+
+- **Keys.** In `Claude Fleet.app` (below) `⌘` stands in for the F and Alt
+  keys: `⌘1`-`⌘9` = `F1`-`F9`, `⌘Esc` = `F10` (leave focus), `⌘N` = `F11`,
+  `⌘/` = `F12`, `⌘G` / `⌘⇧G` / `⌘E` / `⌘⇧V` = `Alt+G` / `Alt+Shift+G` /
+  `Alt+E` / `Alt+Shift+V`. The app's terminal profile sends exactly what those
+  keys send, so nothing changes on Windows. In any other terminal the F keys
+  need `fn`, and Alt needs Option set to send Meta/Esc+.
+- **As an app.** `claude-fleet install-app` puts `Claude Fleet.app` in
+  `/Applications` (or `~/Applications`), with the fleet's own icon, for
+  Launchpad, Spotlight and the Dock. It opens the fleet maximised in Ghostty,
+  iTerm or Terminal, whichever is installed first in that order, or the one
+  `--terminal Ghostty|iTerm|Terminal` names. For iTerm it adds a `Claude
+  Fleet` profile on top of your default one with the `⌘` keys above, and the
+  left Option as Alt while the right one still types `ą`, `ę`; Ghostty gets
+  the same through `--keybind` and `--macos-option-as-alt=left`. Terminal.app
+  cannot map `⌘`, so there the F keys and Alt are what work. The app keeps
+  its own copy of the binary, which `i` updates. The first start asks to let
+  Claude Fleet control the terminal.
+- **Downloaded binary.** A file from the browser is quarantined:
+  `chmod +x claude-fleet-macos-arm64 && xattr -d com.apple.quarantine claude-fleet-macos-arm64`.
+- **Voice.** `claude-fleet voice setup` installs `whisper-cpp` with Homebrew
+  (Metal) and a Piper build patched to run on macOS. The terminal asks for the
+  microphone the first time.
+- **Pasting.** `Ctrl+V` with a screenshot or Finder files on
+  the clipboard attaches them.
 
 ## How it works
 
@@ -751,8 +781,8 @@ check = false
 ### Releases
 
 Every push to `main` that changes the program is released by the `Release`
-workflow: tested, built, tagged and published with `claude-fleet.exe`
-attached. Pushes that only touch Markdown and repo housekeeping are skipped.
+workflow: tested, built, tagged and published with `claude-fleet.exe` and
+`claude-fleet-macos-arm64` attached. Pushes that only touch Markdown and repo housekeeping are skipped.
 
 The version is the next patch after the newest `v*` tag. For a minor or major
 step, set `version` in `Cargo.toml` above that tag and it is used instead. The

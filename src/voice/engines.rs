@@ -64,7 +64,10 @@ fn on_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .chain([PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")])
+        .chain([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ])
         .map(|d| d.join(name))
         .find(|p| p.is_file())
 }
@@ -78,7 +81,9 @@ pub fn locate(cfg: &VoiceCfg) -> Result<Paths, String> {
     let root = root(cfg);
     let exe = |name: &str| format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let whisper_server = first_existing([
-        root.join("whisper").join("Release").join(exe("whisper-server")),
+        root.join("whisper")
+            .join("Release")
+            .join(exe("whisper-server")),
         root.join("whisper").join(exe("whisper-server")),
     ])
     .or_else(|| on_path(&exe("whisper-server")));
@@ -203,7 +208,10 @@ pub fn setup(args: &[String]) -> Result<()> {
     println!("voice engines go to {}", root.display());
     std::fs::create_dir_all(&root)?;
 
-    let server = root.join("whisper").join("Release").join("whisper-server.exe");
+    let server = root
+        .join("whisper")
+        .join("Release")
+        .join("whisper-server.exe");
     if server.is_file() || (cfg!(target_os = "macos") && on_path("whisper-server").is_some()) {
         println!("- whisper-server: already there");
     } else if cfg!(target_os = "macos") {
@@ -217,14 +225,24 @@ pub fn setup(args: &[String]) -> Result<()> {
             bail!("brew install whisper-cpp failed");
         }
     } else {
-        let zip_name = if cpu { WHISPER_CPU_ZIP } else { WHISPER_CUDA_ZIP };
+        let zip_name = if cpu {
+            WHISPER_CPU_ZIP
+        } else {
+            WHISPER_CUDA_ZIP
+        };
         println!(
             "- whisper-server ({}):",
-            if cpu { "CPU build" } else { "CUDA build, for the NVIDIA GPU" }
+            if cpu {
+                "CPU build"
+            } else {
+                "CUDA build, for the NVIDIA GPU"
+            }
         );
         let zip = root.join(zip_name);
         download(
-            &format!("https://github.com/ggml-org/whisper.cpp/releases/download/{WHISPER_TAG}/{zip_name}"),
+            &format!(
+                "https://github.com/ggml-org/whisper.cpp/releases/download/{WHISPER_TAG}/{zip_name}"
+            ),
             &zip,
         )?;
         unzip(&zip, &root.join("whisper"))?;
@@ -246,7 +264,10 @@ pub fn setup(args: &[String]) -> Result<()> {
         download(&format!("{MODELS_URL}/{model}"), &model_path)?;
     }
 
-    let piper = root.join("piper").join("piper").join(format!("piper{}", std::env::consts::EXE_SUFFIX));
+    let piper = root
+        .join("piper")
+        .join("piper")
+        .join(format!("piper{}", std::env::consts::EXE_SUFFIX));
     if piper.is_file() {
         println!("- piper: already there");
     } else if cfg!(target_os = "macos") {
@@ -276,7 +297,10 @@ pub fn setup(args: &[String]) -> Result<()> {
             .status()
             .is_ok_and(|s| s.success());
         if !signed {
-            bail!("cannot sign {} — are the Xcode command line tools installed?", piper.display());
+            bail!(
+                "cannot sign {} — are the Xcode command line tools installed?",
+                piper.display()
+            );
         }
     } else {
         println!("- piper:");
@@ -306,7 +330,9 @@ pub fn setup(args: &[String]) -> Result<()> {
     }
 
     match locate(&cfg) {
-        Ok(_) => println!("\nready. In the fleet, `v` (or Alt+Shift+V anywhere) turns voice on."),
+        Ok(_) => println!(
+            "\nready. In the fleet, `v` (or Alt+Shift+V anywhere) turns voice on."
+        ),
         Err(e) => println!("\n{e}"),
     }
     Ok(())

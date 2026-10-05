@@ -192,7 +192,11 @@ pub fn install(rel: &Release, origin: &Path) -> Result<()> {
     }
     // A redirect to an error page still ends in a file; an executable starts
     // with `MZ`, and anything else must not end up where the fleet starts from.
-    let magic: &[u8] = if cfg!(windows) { b"MZ" } else { &[0xcf, 0xfa, 0xed, 0xfe] };
+    let magic: &[u8] = if cfg!(windows) {
+        b"MZ"
+    } else {
+        &[0xcf, 0xfa, 0xed, 0xfe]
+    };
     let head = fs::read(&part)
         .ok()
         .filter(|b| b.len() > 1024 && b.starts_with(magic));
@@ -252,7 +256,11 @@ fn run(cmd: &mut Command) -> Result<()> {
         return Ok(());
     }
     let err = String::from_utf8_lossy(&out.stderr);
-    let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let last = err
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
     bail!("{last}")
 }
 

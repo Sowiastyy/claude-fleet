@@ -19,6 +19,8 @@ mod history;
 mod ide;
 mod input;
 mod keys;
+#[cfg(target_os = "macos")]
+mod macapp;
 mod msgedit;
 mod registry;
 mod repos;
@@ -105,6 +107,8 @@ fn main() -> Result<()> {
         Some("--usage") => return print_usage_limits(),
         Some("--history") => return print_history(),
         Some("--repos") => return print_repos(),
+        #[cfg(target_os = "macos")]
+        Some("install-app") => return macapp::install(&args[1..]),
         Some("--help" | "-h") => {
             print_usage();
             return Ok(());
@@ -169,6 +173,8 @@ fn print_usage() {
          \x20 claude-fleet --list      print the running sessions and exit\n\
          \x20 claude-fleet bb help     commands a BIG BROTHER drives the fleet with\n\
          \x20 claude-fleet voice ...   voice engines: setup, devices, test\n\
+         \x20 claude-fleet install-app macOS: add Claude Fleet.app to Applications\n\
+         \x20                         (--terminal Ghostty|iTerm|Terminal picks the terminal)\n\
          \x20 claude-fleet --help      this help\n\
          \n\
          DIAGNOSTICS:\n\
@@ -784,6 +790,9 @@ fn setup_terminal() -> Result<Tui> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+    if cfg!(target_os = "macos") {
+        execute!(stdout, crossterm::terminal::SetTitle("Claude Fleet"))?;
+    }
 
     // Without this a panic leaves the terminal in raw mode and unusable.
     let default_hook = std::panic::take_hook();

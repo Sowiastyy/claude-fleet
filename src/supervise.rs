@@ -127,7 +127,11 @@ pub fn supervise() -> Result<()> {
 
     // Named after this process, so two fleets running at once never copy over
     // each other's binary.
-    let copy = dir.join(format!("fleet-{}.exe", std::process::id()));
+    let copy = dir.join(format!(
+        "fleet-{}{}",
+        std::process::id(),
+        env::consts::EXE_SUFFIX
+    ));
     let restore = dir.join(format!("restore-{}.txt", std::process::id()));
     let args: Vec<_> = env::args_os().skip(1).collect();
 
@@ -191,9 +195,13 @@ fn sweep(dir: &Path) {
         let name = e.file_name().to_string_lossy().into_owned();
         if let Some(pid) = name
             .strip_prefix("fleet-")
-            .and_then(|r| r.strip_suffix(".exe"))
+            .and_then(|r| r.strip_suffix(env::consts::EXE_SUFFIX))
         {
-            if fs::remove_file(e.path()).is_ok() {
+            let running = cfg!(unix)
+                && pid.parse().is_ok_and(|p: u64| {
+                    p != u64::from(std::process::id()) && crate::registry::pid_alive(p)
+                });
+            if !running && fs::remove_file(e.path()).is_ok() {
                 let _ = fs::remove_file(dir.join(format!("restore-{pid}.txt")));
             }
             continue;

@@ -637,7 +637,7 @@ vocabulary       = ""        # names and jargon the recogniser should expect
 companion        = false     # true starts it together with voice
 companion_model  = "claude-sonnet-5-5"
 companion_effort = "low"     # low, medium, high, xhigh, max
-dir              = ""        # empty = %LOCALAPPDATA%\claude-fleet\voice
+dir              = ""        # empty = %LOCALAPPDATA%\claude-fleet\voice, ~/Library/Application Support/claude-fleet/voice
 "##;
 
 #[cfg(test)]

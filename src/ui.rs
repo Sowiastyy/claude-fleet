@@ -753,7 +753,11 @@ fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
         // Naming the way out in the title means it is on screen even when the
         // status bar is showing a transient message.
         Span::styled(
-            " FOCUS — F10 leaves ",
+            if cfg!(target_os = "macos") {
+                " FOCUS — ⌘esc leaves "
+            } else {
+                " FOCUS — F10 leaves "
+            },
             Style::default()
                 .bg(theme::accent())
                 .fg(theme::surface())
@@ -2411,6 +2415,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("?", "help"),
             ("q", "quit"),
         ],
+        Mode::Focus if cfg!(target_os = "macos") => vec![
+            ("⌘esc", "LEAVE FOCUS"),
+            ("⌘g", "git"),
+            ("⌘e", "editor"),
+            ("⌘⇧v", "voice"),
+            ("⌘1-9", "session"),
+            ("⌘n", "new"),
+            ("⌘/", "help"),
+        ],
         Mode::Focus => vec![
             ("F10", "LEAVE FOCUS"),
             ("alt+g", "git"),
@@ -3034,8 +3047,20 @@ fn draw_confirm_mkdir(f: &mut Frame, app: &App) {
     f.render_widget(p, area);
 }
 
+const MAC_KEYS: &[(&str, &str)] = &[
+    ("", "-- MAC (Claude Fleet.app) --"),
+    ("⌘1 .. ⌘9", "F1 .. F9"),
+    ("⌘esc", "F10, leave focus"),
+    ("⌘n", "F11, new session"),
+    ("⌘/", "F12, this help"),
+    ("⌘g / ⌘⇧g", "alt+g / alt+shift+g"),
+    ("⌘e / ⌘⇧v", "alt+e / alt+shift+v"),
+    ("", "(other terminals: fn+F keys, option as meta)"),
+    ("", ""),
+];
+
 fn draw_help(f: &mut Frame) {
-    let rows: &[(&str, &str)] = &[
+    let base: &[(&str, &str)] = &[
         ("", "-- NAVIGATION --"),
         ("up/down, j/k", "select a session"),
         ("enter / tab", "enter the session (focus)"),
@@ -3187,6 +3212,12 @@ fn draw_help(f: &mut Frame) {
 
     // Wide enough for the longest description next to its key column, so
     // nothing wraps and the height below stays one row per entry.
+    let rows: Vec<(&str, &str)> = MAC_KEYS
+        .iter()
+        .filter(|_| cfg!(target_os = "macos"))
+        .chain(base)
+        .copied()
+        .collect();
     let area = centered(80, rows.len() as u16 + 2, f.area());
     f.render_widget(Clear, area);
 
