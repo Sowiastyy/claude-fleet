@@ -1464,13 +1464,11 @@ impl App {
 
     /// Open the list of branches of the repository the panel is about.
     pub fn open_branch_picker(&mut self) {
-        let target = self.git_target();
-        let root = match &self.git {
-            Some((cwd, git::State::Repo(snap))) if *cwd == target => snap.root.clone(),
-            _ => {
-                self.notify("not in a git repository");
-                return;
-            }
+        // Asked of git rather than taken from the panel's snapshot: the panel
+        // is hidden until `G`, and nothing reads the repository while it is.
+        let Some(root) = git::toplevel(&self.git_target()) else {
+            self.notify("not in a git repository");
+            return;
         };
         let items = git::branches(&root);
         // Start on the first branch that is not the one already checked out:
@@ -2899,5 +2897,44 @@ mod tests {
         app.arm_understand_spawn();
         app.open_new_session_form();
         assert!(!app.spawn_understand);
+    }
+
+    #[test]
+    fn branches_can_be_switched_with_the_git_panel_hidden() {
+        let dir = std::env::temp_dir().join(format!("fleet-branch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = |args: &[&str]| {
+            let done = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "git {args:?}");
+        };
+        ok(&["init", "-q", "-b", "main"]);
+        ok(&["config", "user.name", "t"]);
+        ok(&["config", "user.email", "t@t"]);
+        ok(&["commit", "-q", "--allow-empty", "-m", "one"]);
+
+        // The panel is hidden until `G`, so nothing has read the repository.
+        let mut app = App::new(dir.clone());
+        assert!(!app.show_git && app.git.is_none());
+        app.open_branch_picker();
+        assert!(app.mode == Mode::Branch, "the list did not open");
+        let picker = app.branches.as_mut().unwrap();
+        assert_eq!(picker.items.len(), 1);
+        assert_eq!(picker.items[0].name, "main");
+
+        // A name no branch has is started at HEAD and checked out.
+        "feature".chars().for_each(|c| picker.push(c));
+        app.switch_selected_branch();
+        assert!(app.mode == Mode::Nav, "the list stayed open");
+        let git::State::Repo(snap) = git::read(&dir) else {
+            panic!("not read as a repository");
+        };
+        assert_eq!(snap.branch.as_deref(), Some("feature"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -224,9 +224,8 @@ pub fn root_of(cwd: &Path) -> PathBuf {
     if let Some(root) = ROOTS.lock().ok().and_then(|m| m.get(cwd).cloned()) {
         return root;
     }
-    match git(cwd, &["rev-parse", "--show-toplevel"]).ok().flatten() {
-        Some(out) => {
-            let root = PathBuf::from(out.trim());
+    match toplevel(cwd) {
+        Some(root) => {
             if let Ok(mut m) = ROOTS.lock() {
                 m.insert(cwd.to_path_buf(), root.clone());
             }
@@ -234,6 +233,13 @@ pub fn root_of(cwd: &Path) -> PathBuf {
         }
         None => cwd.to_path_buf(),
     }
+}
+
+/// The top of the work tree `cwd` sits in, asked of git now. `None` outside a
+/// repository, and with no git to ask.
+pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
+    let out = git(cwd, &["rev-parse", "--show-toplevel"]).ok().flatten()?;
+    Some(PathBuf::from(out.trim()))
 }
 
 /// A directory that stopped being a repository may become a different one.
