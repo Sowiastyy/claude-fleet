@@ -11,4 +11,5 @@ pub mod git;
 pub mod history;
 pub mod registry;
 pub mod repos;
+pub mod update;
 pub mod usage;

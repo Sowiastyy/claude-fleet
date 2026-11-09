@@ -1,6 +1,6 @@
 [package]
 name = "fleet-gui"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,12 @@ description = "Claude Fleet as a desktop app: chat and terminal over the same Cl
 [[bin]]
 name = "claude-fleet-gui"
 path = "src/main.rs"
+
+[features]
+# Serve the page built into the binary (dist/) rather than the dev server at
+# `devUrl`. `tauri build` turns this on by itself; a plain `cargo build` of a
+# binary meant to run on its own (a release) has to ask for it.
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

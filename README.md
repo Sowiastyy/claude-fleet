@@ -64,9 +64,23 @@ with Tauri and React from the same core (`crates/gui`).
   as the new account.
 - **Limits** at the foot of the sidebar, **git panel** (commit, push, pull,
   generate a message) and **resume** from the new-chat screen.
-- **Background**: an image behind everything, darkened 65% on the new-chat
-  screen and 85% in a conversation; both levels, the image (or your own) and
-  the accent color are in **Background**.
+- **Images** in a message: the image button, paste (`Ctrl+V`) or drop them on
+  the message box. Large ones are scaled down to what Claude uses; the thread
+  shows them, click for full size.
+- **Model and permissions** pickers under the message box (arrow keys and
+  Enter work), `Shift+Tab` steps through Ask first / Accept edits / Plan only
+  as in Claude Code. The chat shows the model actually running.
+- **Appearance**: Harbor, plus SmartWood Console's Dark, Light, Blue and
+  Graphite; an accent (the theme's, a preset, or your own, refused when it
+  would not read on the background); an image behind everything, darkened
+  65% on the new-chat screen and 85% in a conversation.
+- **Busy conversations fork.** Resuming a conversation that another live
+  Claude Code process holds (a background job, another window) starts a copy
+  with `--fork-session` instead of failing with "That session is running in
+  the background".
+- **Updates** like the terminal app's: every release carries
+  `claude-fleet-gui.exe`; the sidebar offers it, swaps the file, and
+  **Restart** reopens the open sessions on their conversations.
 
 The chat runs `claude -p` with stream-json in both directions; the terminal
 runs `claude` under a pseudoterminal. The app picks the conversation id
@@ -84,6 +98,9 @@ cd crates/gui
 npm install
 npx tauri build --no-bundle      # target/release/claude-fleet-gui.exe
 npx tauri dev                    # or: run with hot reload
+# or, after `npm run build`, plain cargo (the feature embeds the page;
+# without it the binary looks for the dev server):
+cargo build --release -p fleet-gui --features custom-protocol
 npm run preview:ui               # the page alone, on made-up data, at
                                  # http://localhost:1421/preview/
 ```

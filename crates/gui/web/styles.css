@@ -224,6 +224,15 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .bar.thin { height: 4px; }
+.update-btn { margin: 8px 12px 0; display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--accent); border-radius: 10px; background: var(--soft); color: var(--fog); text-align: left; font-size: 13px; }
+.update-btn:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.update-btn svg { color: var(--accent); flex: none; }
+.update-btn:disabled { cursor: default; }
+.update-btn.ready { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.update-btn.ready svg { color: inherit; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
 /* ---------- main */
 .main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
