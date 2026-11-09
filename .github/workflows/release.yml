@@ -2,6 +2,10 @@ name: Release
 
 # Every push to main that changes the program is released on its own.
 #
+# The release stays a draft until every build is attached. The apps ask GitHub
+# for the latest release and take their own asset from it; one that asked while
+# the GUI was still building found no GUI build there and offered nothing.
+#
 # The version is the next patch after the newest `v*` tag. To move the minor
 # or major number, set `version` in Cargo.toml above the newest tag and that
 # is used instead. The number is written into Cargo.toml only for the build,
@@ -76,7 +80,8 @@ jobs:
       - if: steps.version.outputs.new == 'true'
         run: cargo build --release --locked
 
-      - name: Publish release
+      # A draft has no tag yet; publishing makes it, at --target.
+      - name: Draft release
         if: steps.version.outputs.new == 'true'
         shell: bash
         env:
@@ -84,6 +89,7 @@ jobs:
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             target/release/claude-fleet.exe \
+            --draft \
             --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
@@ -161,3 +167,15 @@ jobs:
         run: |
           cp target/release/claude-fleet-gui.exe claude-fleet-gui.exe
           gh release upload "${{ needs.release.outputs.tag }}" claude-fleet-gui.exe
+
+  # Out of draft once the builds are attached. A build that failed does not
+  # hold the release back; that release simply lacks it.
+  publish:
+    needs: [release, macos, gui]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.release.outputs.new == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ needs.release.outputs.tag }}" --repo "${{ github.repository }}" --draft=false

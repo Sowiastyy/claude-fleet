@@ -26,8 +26,11 @@ use crate::hub::{self, NewSession, Shared, View};
 /// The asset `release.yml` uploads for the GUI.
 const ASSET: &str = "claude-fleet-gui.exe";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
-/// How often to ask GitHub while the window stays open.
-const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// How often to ask GitHub while the window stays open — as often as the
+/// terminal app does, so a release shows up within minutes of CI publishing
+/// it. Unauthenticated, GitHub allows sixty calls an hour per address; the
+/// two apps together spend twenty-four.
+const EVERY: Duration = Duration::from_secs(5 * 60);
 /// A restore file older than this is from a crash or an old run, not a
 /// restart, and is ignored.
 const RESTORE_FRESH_MS: u64 = 5 * 60 * 1000;
@@ -100,7 +103,7 @@ pub fn check(app: &AppHandle, up: &SharedUpdater) -> Result<UpdateView> {
     Ok(u.view.clone())
 }
 
-/// Check a little after start, then every few hours.
+/// Check a little after start, then every few minutes.
 pub fn watch(app: AppHandle, up: SharedUpdater) {
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(15));
