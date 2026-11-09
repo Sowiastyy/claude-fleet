@@ -11,6 +11,7 @@ import {
   type GitState,
   type Session,
   type Settings,
+  type UpdateState,
   type View,
 } from './api';
 import { backgroundUrl } from './backgrounds';
@@ -38,6 +39,7 @@ export function App() {
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [bgOpen, setBgOpen] = useState(false);
   const [carry, setCarry] = useState(() => localStorage.getItem('fleet.carry') !== '0');
+  const [update, setUpdate] = useState<UpdateState | null>(null);
   const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const ticks = useRef(0);
@@ -62,6 +64,7 @@ export function App() {
     api.foreign().then(setForeign);
     api.settings().then((s) => setSettings({ ...DEFAULTS, ...s }));
     api.customBackground().then(setCustom);
+    api.updateState().then(setUpdate);
     const offs = [
       on<Session[]>('fleet://sessions', setSessions),
       on<{ id: string; event: Event }>('fleet://event', ({ id, event }) =>
@@ -70,6 +73,7 @@ export function App() {
       on<{ id: string; data: string }>('fleet://term', ({ id, data }) => termBuffer.push(id, data)),
       on<{ id: string }>('fleet://term-reset', ({ id }) => termBuffer.reset(id)),
       on<Accounts>('fleet://accounts', setAccounts),
+      on<UpdateState>('fleet://update', setUpdate),
       on<string>('fleet://toast', (t) => notify(t)),
       on<unknown>('fleet://tick', () => {
         ticks.current += 1;
@@ -165,6 +169,16 @@ export function App() {
     }
   };
 
+  const installUpdate = async () => {
+    try {
+      setUpdate(await api.updateInstall());
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const restart = () => api.restart().catch((e) => notify(errorText(e), true));
+
   const saveSettings = (s: Settings) => {
     setSettings(s);
     void api.saveSettings(s);
@@ -208,6 +222,9 @@ export function App() {
         onSelect={select}
         onClose={close}
         onAccounts={() => setAccountsOpen(!accountsOpen)}
+        update={update}
+        onUpdate={installUpdate}
+        onRestart={restart}
       />
       <main className="main">
         {bg && <img className="bg-image" src={bg} alt="" aria-hidden />}

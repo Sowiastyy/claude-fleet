@@ -8,6 +8,7 @@
 
 mod hub;
 mod settings;
+mod updater;
 
 use std::{
     path::{Path, PathBuf},
@@ -34,6 +35,9 @@ struct App {
     accounts: Mutex<Accounts>,
     limits: Mutex<usage::Watch>,
     settings_path: PathBuf,
+    updater: updater::SharedUpdater,
+    /// Where a restart writes the sessions for the next start to reopen.
+    restore_path: PathBuf,
 }
 
 // ---------- sessions
@@ -459,6 +463,37 @@ fn data_url(path: &Path) -> Res<String> {
     ))
 }
 
+// ---------- updates
+
+#[tauri::command]
+fn update_state(app: State<'_, Arc<App>>) -> updater::UpdateView {
+    app.updater.lock().unwrap().view.clone()
+}
+
+#[tauri::command]
+async fn update_check(handle: tauri::AppHandle, app: State<'_, Arc<App>>) -> Res<updater::UpdateView> {
+    let up = app.updater.clone();
+    tauri::async_runtime::spawn_blocking(move || updater::check(&handle, &up))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn update_install(handle: tauri::AppHandle, app: State<'_, Arc<App>>) -> Res<updater::UpdateView> {
+    let up = app.updater.clone();
+    tauri::async_runtime::spawn_blocking(move || updater::install(&handle, &up))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// Start the build on disk on the same sessions, and close this one.
+#[tauri::command]
+fn app_restart(handle: tauri::AppHandle, app: State<'_, Arc<App>>) -> Res<()> {
+    updater::restart(&handle, &app.updater, &app.hub, &app.restore_path).map_err(err)
+}
+
 // ---------- the poller
 
 /// Once a second: Claude Code's registry for terminal sessions' status and
@@ -496,8 +531,12 @@ fn main() {
                 accounts: Mutex::new(Accounts::new()),
                 limits: Mutex::new(usage::Watch::new()),
                 settings_path: dir.join("settings.json"),
+                updater: updater::Updater::new(),
+                restore_path: dir.join("restore.json"),
             });
             tauri_app.manage(app.clone());
+            updater::reopen(&app.hub, &app.restore_path);
+            updater::watch(handle.clone(), app.updater.clone());
             thread::spawn(move || poll(handle, app));
             Ok(())
         })
@@ -530,6 +569,10 @@ fn main() {
             settings_set,
             background_import,
             background_custom,
+            update_state,
+            update_check,
+            update_install,
+            app_restart,
         ])
         .run(tauri::generate_context!())
         .expect("the window could not be opened");

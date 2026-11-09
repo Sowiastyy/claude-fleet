@@ -1,5 +1,5 @@
-import { ChevronsUpDown, Plus, Sailboat, X } from 'lucide-react';
-import type { Accounts, Foreign, Limits, Session, Status } from '../api';
+import { ArrowDownToLine, ChevronsUpDown, LoaderCircle, Plus, RotateCw, Sailboat, X } from 'lucide-react';
+import type { Accounts, Foreign, Limits, Session, Status, UpdateState } from '../api';
 import { fmtDuration } from '../messages';
 
 const STATUS: Record<Status, string> = {
@@ -24,6 +24,9 @@ interface Props {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onAccounts: () => void;
+  update: UpdateState | null;
+  onUpdate: () => void;
+  onRestart: () => void;
 }
 
 export function Sidebar(p: Props) {
@@ -102,6 +105,9 @@ export function Sidebar(p: Props) {
         )}
       </div>
 
+      {p.update && (p.update.available || p.update.installed) && (
+        <UpdateBox u={p.update} running={p.sessions.length} onUpdate={p.onUpdate} onRestart={p.onRestart} />
+      )}
       {p.accounts?.live && <LimitsBox limits={p.accounts.live} />}
     </aside>
   );
@@ -131,5 +137,24 @@ function LimitsBox({ limits }: { limits: Limits }) {
         ) : null,
       )}
     </div>
+  );
+}
+
+function UpdateBox({ u, running, onUpdate, onRestart }: { u: UpdateState; running: number; onUpdate: () => void; onRestart: () => void }) {
+  if (u.installed) {
+    return (
+      <button type="button" className="update-btn ready" onClick={onRestart}>
+        <RotateCw size={15} aria-hidden />
+        <span style={{ flex: 1 }}>Restart to {u.available}</span>
+        {running > 0 && <span className="small">{running} reopen</span>}
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="update-btn" disabled={u.installing} onClick={onUpdate}>
+      {u.installing ? <LoaderCircle size={15} className="spin" aria-hidden /> : <ArrowDownToLine size={15} aria-hidden />}
+      <span style={{ flex: 1 }}>{u.installing ? `Updating to ${u.available}` : `Update to ${u.available}`}</span>
+      <span className="small faint">v{u.current}</span>
+    </button>
   );
 }

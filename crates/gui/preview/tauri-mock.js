@@ -58,6 +58,7 @@
     git_state: git,
     settings_get: { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: q.get('theme') || 'harbor', accent: '' },
     background_custom: null,
+    update_state: { current: '0.2.0', available: q.get('update') ? 'v0.2.9' : null, installing: false, installed: q.get('update') === 'ready', checking: false },
   };
   let next = 1;
   window.__TAURI_INTERNALS__ = {

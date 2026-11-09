@@ -61,7 +61,10 @@ jobs:
         run: |
           v="${{ steps.version.outputs.version }}"
           sed -i -E "0,/^version = \".*\"/s//version = \"$v\"/" Cargo.toml
-          perl -0pi -e "s/(name = \"claude-fleet\"\nversion = )\"[^\"]*\"/\${1}\"$v\"/" Cargo.lock
+          # Every crate that takes the workspace version, or --locked fails.
+          for name in claude-fleet fleet-gui; do
+            perl -0pi -e "s/(name = \"$name\"\nversion = )\"[^\"]*\"/\${1}\"$v\"/" Cargo.lock
+          done
           grep -m1 '^version' Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
@@ -96,7 +99,9 @@ jobs:
         run: |
           v="${{ needs.release.outputs.version }}"
           perl -0pi -e "s/^version = \"[^\"]*\"/version = \"$v\"/m" Cargo.toml
-          perl -0pi -e "s/(name = \"claude-fleet\"\nversion = )\"[^\"]*\"/\${1}\"$v\"/" Cargo.lock
+          for name in claude-fleet fleet-gui; do
+            perl -0pi -e "s/(name = \"$name\"\nversion = )\"[^\"]*\"/\${1}\"$v\"/" Cargo.lock
+          done
           grep -m1 '^version' Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
@@ -109,3 +114,50 @@ jobs:
         run: |
           cp target/release/claude-fleet claude-fleet-macos-arm64
           gh release upload "${{ needs.release.outputs.tag }}" claude-fleet-macos-arm64
+
+  # The desktop app rides on the same release: `claude-fleet-gui.exe` next to
+  # the terminal app. The GUI's updater looks for that asset by name, the way
+  # the terminal app looks for its own.
+  gui:
+    needs: release
+    if: needs.release.outputs.new == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp the version into the build
+        shell: bash
+        run: |
+          v="${{ needs.release.outputs.version }}"
+          sed -i -E "0,/^version = \".*\"/s//version = \"$v\"/" Cargo.toml
+          for name in claude-fleet fleet-gui; do
+            perl -0pi -e "s/(name = \"$name\"\nversion = )\"[^\"]*\"/\${1}\"$v\"/" Cargo.lock
+          done
+          grep -m1 '^version' Cargo.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The page is built into dist/, which the binary embeds at compile time.
+      - name: Build the page
+        working-directory: crates/gui
+        run: |
+          npm ci
+          npm run build
+
+      # custom-protocol: the page is served from inside the binary, not from
+      # the dev server.
+      - run: cargo build --release --locked -p fleet-gui --features custom-protocol
+
+      - name: Attach the GUI build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/release/claude-fleet-gui.exe claude-fleet-gui.exe
+          gh release upload "${{ needs.release.outputs.tag }}" claude-fleet-gui.exe

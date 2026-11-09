@@ -159,7 +159,19 @@ export const api = {
   saveSettings: (settings: Settings) => invoke<void>('settings_set', { settings }),
   importBackground: (path: string) => invoke<string>('background_import', { path }),
   customBackground: () => invoke<string | null>('background_custom'),
+  updateState: () => invoke<UpdateState>('update_state'),
+  updateCheck: () => invoke<UpdateState>('update_check'),
+  updateInstall: () => invoke<UpdateState>('update_install'),
+  restart: () => invoke<void>('app_restart'),
 };
+
+export interface UpdateState {
+  current: string;
+  available: string | null;
+  installing: boolean;
+  installed: boolean;
+  checking: boolean;
+}
 
 export function on<T>(name: string, handler: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(name, (e) => handler(e.payload));
