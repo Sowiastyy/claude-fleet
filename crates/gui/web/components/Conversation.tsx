@@ -1,16 +1,24 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  ArrowDown,
   ArrowUp,
   Bot,
+  Brain,
+  Check,
+  ChevronRight,
+  Circle,
   CircleAlert,
+  CircleDot,
+  Copy,
   FilePlus,
   FileText,
   GitBranch,
   GitFork,
   Globe,
   ListTodo,
+  LoaderCircle,
   MessageSquare,
   Palette,
   Pencil,
@@ -18,12 +26,34 @@ import {
   Search,
   ShieldAlert,
   Square,
+  SquareCheck,
   SquareTerminal,
+  Undo2,
   X,
 } from 'lucide-react';
 import type { Attachment, Event, GitState, Session, View } from '../api';
 import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
-import { allowRule, editDiff, toItems, toolSubject, type Denial, type Item } from '../messages';
+import { copyText } from '../clipboard';
+import {
+  allowRule,
+  editDiff,
+  editedFiles,
+  fmtElapsed,
+  latestTodos,
+  relative,
+  runningTool,
+  stepsSummary,
+  toBlocks,
+  toItems,
+  toolSubject,
+  turnStart,
+  type Block,
+  type Denial,
+  type Item,
+  type ThinkingItem,
+  type Todo,
+  type ToolItem,
+} from '../messages';
 import { Composer } from './Composer';
 import { Picker } from './Picker';
 import { statusLabel } from './Sidebar';
@@ -82,7 +112,7 @@ export function Conversation(p: Props) {
       </header>
 
       {s.view === 'chat' ? (
-        <ChatThread {...p} />
+        <ChatThread key={s.id} {...p} />
       ) : (
         <div className="term-wrap">
           <TerminalView id={s.id} />
@@ -92,34 +122,62 @@ export function Conversation(p: Props) {
   );
 }
 
+// What was typed but not sent, per session, kept while switching between them.
+const drafts = new Map<string, { text: string; images: Attachment[] }>();
+
 function ChatThread(p: Props) {
   const s = p.session;
   const items = useMemo(() => toItems(p.events), [p.events]);
+  const blocks = useMemo(() => toBlocks(items), [items]);
+  const todos = useMemo(() => latestTodos(items), [items]);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const [draft, setDraft] = useState('');
-  const [images, setImages] = useState<Attachment[]>([]);
+  const [away, setAway] = useState(false);
+  const [draft, setDraftState] = useState(() => drafts.get(s.id)?.text ?? '');
+  const [images, setImagesState] = useState<Attachment[]>(() => drafts.get(s.id)?.images ?? []);
   const [shown, setShown] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  const working = s.status === 'working';
+
+  const setDraft = (text: string) => {
+    setDraftState(text);
+    drafts.set(s.id, { text, images });
+  };
+  const setImages = (a: Attachment[]) => {
+    setImagesState(a);
+    drafts.set(s.id, { text: draft, images: a });
+  };
+
+  const toBottom = (smooth = false) => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    pinned.current = true;
+    setAway(false);
+  };
 
   useLayoutEffect(() => {
-    const el = scroller.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [items.length, s.status]);
+    if (pinned.current) toBottom();
+  }, [items.length, s.status, todos?.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    pinned.current = true;
     box.current?.focus();
-  }, [s.id]);
+  }, []);
 
   const ready = !!draft.trim() || images.length > 0;
   const send = () => {
     if (!ready) return;
     p.onSend(draft.trim(), images);
-    setDraft('');
-    setImages([]);
-    pinned.current = true;
+    setDraftState('');
+    setImagesState([]);
+    drafts.delete(s.id);
+    toBottom();
+  };
+  const reuse = (text: string) => {
+    setDraft(text);
+    requestAnimationFrame(() => box.current?.focus());
   };
   const mode = s.permissionMode || 'default';
+  const lastBlock = blocks[blocks.length - 1];
 
   return (
     <>
@@ -128,26 +186,34 @@ function ChatThread(p: Props) {
         ref={scroller}
         onScroll={(e) => {
           const el = e.currentTarget;
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          pinned.current = near;
+          if (away === near) setAway(!near);
         }}
       >
         <div className="thread-inner">
-          {items.map((it) => (
-            <ItemView key={it.key} item={it} cwd={s.cwd} onAllow={p.onAllow} onTerminal={() => p.onView('terminal')} onImage={setShown} />
+          {blocks.map((b) => (
+            <BlockView
+              key={b.key}
+              block={b}
+              live={working && b === lastBlock}
+              cwd={s.cwd}
+              onAllow={p.onAllow}
+              onTerminal={() => p.onView('terminal')}
+              onImage={setShown}
+              onReuse={reuse}
+            />
           ))}
-          {s.status === 'working' && (
-            <div className="working-row">
-              <span className="pulse" aria-hidden>
-                <span />
-                <span />
-                <span />
-              </span>
-              Working
-            </div>
-          )}
+          {working && <LiveStatus items={items} />}
         </div>
       </div>
       <div className="chat-foot">
+        {away && (
+          <button type="button" className="jump" aria-label="Latest" title="Latest" onClick={() => toBottom(true)}>
+            <ArrowDown size={16} aria-hidden />
+          </button>
+        )}
+        {todos && todos.length > 0 && <PlanCard todos={todos} working={working} />}
         <Composer
           id="composer-chat"
           ref={box}
@@ -159,6 +225,7 @@ function ChatThread(p: Props) {
           images={images}
           onImages={setImages}
           onError={p.onError}
+          cwd={s.cwd}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -166,7 +233,7 @@ function ChatThread(p: Props) {
             } else if (e.key === 'Tab' && e.shiftKey) {
               e.preventDefault();
               p.onConfigure(null, nextMode(mode));
-            } else if (e.key === 'Escape' && s.status === 'working') {
+            } else if (e.key === 'Escape' && working) {
               p.onStop();
             }
           }}
@@ -190,7 +257,7 @@ function ChatThread(p: Props) {
             foot={<><kbd>Shift</kbd>+<kbd>Tab</kbd></>}
           />
           <div style={{ flex: 1 }} />
-          {s.status === 'working' && !ready ? (
+          {working && !ready ? (
             <button type="button" className="send-btn stop-btn" aria-label="Stop" onClick={p.onStop}>
               <Square size={14} aria-hidden />
             </button>
@@ -203,6 +270,71 @@ function ChatThread(p: Props) {
       </div>
       {shown && <Lightbox url={shown} onClose={() => setShown(null)} />}
     </>
+  );
+}
+
+/// The line under a turn in progress: how long, and what it is doing.
+function LiveStatus({ items }: { items: Item[] }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const start = turnStart(items);
+  const tool = runningTool(items);
+  const doing = tool ? `${tool.name} ${toolSubject(tool.name, tool.input, '')}`.trim() : 'Working';
+  return (
+    <div className="working-row" role="status">
+      <span className="pulse" aria-hidden>
+        <span />
+        <span />
+        <span />
+      </span>
+      <span className="ellipsis">{doing}</span>
+      {start && <span className="faint">{fmtElapsed(now - start)}</span>}
+      <span className="faint working-esc"><kbd>Esc</kbd></span>
+    </div>
+  );
+}
+
+/// The plan the last TodoWrite set, pinned over the message box.
+function PlanCard({ todos, working }: { todos: Todo[]; working: boolean }) {
+  const done = todos.filter((t) => t.status === 'completed').length;
+  const all = done === todos.length;
+  const [open, setOpen] = useState(!all);
+  useEffect(() => {
+    if (all && !working) setOpen(false);
+  }, [all, working]);
+  const now = todos.find((t) => t.status === 'in_progress');
+  return (
+    <div className="plan">
+      <button type="button" className="plan-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <ListTodo size={15} aria-hidden />
+        <span className="plan-title">Plan</span>
+        <span className="plan-count">{done}/{todos.length}</span>
+        <span className="plan-bar" aria-hidden>
+          <span style={{ width: `${(done / todos.length) * 100}%` }} />
+        </span>
+        {!open && now && <span className="plan-now ellipsis">{now.activeForm || now.content}</span>}
+        <ChevronRight size={14} className="plan-chev" aria-hidden />
+      </button>
+      {open && (
+        <ul className="plan-list">
+          {todos.map((t, i) => (
+            <li key={i} className={`todo ${t.status}`}>
+              {t.status === 'completed' ? (
+                <SquareCheck size={15} aria-hidden />
+              ) : t.status === 'in_progress' ? (
+                <CircleDot size={15} aria-hidden />
+              ) : (
+                <Circle size={15} aria-hidden />
+              )}
+              <span>{t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -227,19 +359,129 @@ function Lightbox({ url, onClose }: { url: string; onClose: () => void }) {
   );
 }
 
-function ItemView({
-  item,
-  cwd,
-  onAllow,
-  onTerminal,
-  onImage,
-}: {
-  item: Item;
+function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="act"
+      aria-label={label}
+      title={label}
+      onClick={async () => {
+        if (await copyText(text)) {
+          setDone(true);
+          window.setTimeout(() => setDone(false), 1400);
+        }
+      }}
+    >
+      {done ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
+    </button>
+  );
+}
+
+/// A fenced block with its language and a copy button over it.
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const pre = useRef<HTMLPreElement>(null);
+  const child = Array.isArray(children) ? children[0] : children;
+  const cls = (child as { props?: { className?: string } } | undefined)?.props?.className ?? '';
+  const lang = /language-([\w+#.-]+)/.exec(cls)?.[1] ?? '';
+  return (
+    <div className="code">
+      <div className="code-head">
+        <span>{lang || 'text'}</span>
+        <CopyLive target={pre} />
+      </div>
+      <pre ref={pre}>{children}</pre>
+    </div>
+  );
+}
+
+function CopyLive({ target }: { target: React.RefObject<HTMLPreElement | null> }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="act"
+      aria-label="Copy code"
+      title="Copy"
+      onClick={async () => {
+        if (target.current && (await copyText(target.current.innerText))) {
+          setDone(true);
+          window.setTimeout(() => setDone(false), 1400);
+        }
+      }}
+    >
+      {done ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
+    </button>
+  );
+}
+
+const MD: Components = { pre: ({ children }) => <CodeBlock>{children}</CodeBlock> };
+
+interface ItemProps {
   cwd: string;
   onAllow: (r: string) => void;
   onTerminal: () => void;
   onImage: (url: string) => void;
-}) {
+  onReuse: (text: string) => void;
+}
+
+function BlockView({ block, live, ...rest }: ItemProps & { block: Block; live: boolean }) {
+  if (block.kind === 'steps') return <Steps items={block.items} live={live} cwd={rest.cwd} />;
+  return <ItemView item={block} live={live} {...rest} />;
+}
+
+/// A run of tool calls as one line that opens: open while it runs, folded
+/// once the turn moves on.
+function Steps({ items, live, cwd }: { items: Array<ToolItem | ThinkingItem>; live: boolean; cwd: string }) {
+  const [open, setOpen] = useState<boolean | null>(null);
+  const shown = open ?? live;
+  const failed = items.filter((i) => i.kind === 'tool' && i.result?.isError).length;
+  const files = editedFiles(items);
+  const running = items.some((i) => i.kind === 'tool' && !i.result);
+  return (
+    <div className="steps">
+      <button type="button" className="steps-head" aria-expanded={shown} onClick={() => setOpen(!shown)}>
+        {running ? <LoaderCircle size={14} className="spin" aria-hidden /> : <ChevronRight size={14} className="steps-chev" aria-hidden />}
+        <span className="steps-sum">{stepsSummary(items)}</span>
+        {failed > 0 && <span className="steps-bad">{failed} failed</span>}
+      </button>
+      {!shown && files.length > 0 && (
+        <div className="file-chips">
+          {files.map((f) => (
+            <span key={f.path} className="file-chip">
+              <Pencil size={11} aria-hidden />
+              {relative(f.path, cwd).split('/').pop()}
+              <span className="add">+{f.added}</span>
+              <span className="del">−{f.removed}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {shown && (
+        <div className="steps-body">
+          {items.map((it) => (it.kind === 'thinking' ? <Thinking key={it.key} text={it.text} /> : <ToolCard key={it.key} item={it} cwd={cwd} />))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Thinking({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="thinking">
+      <button type="button" className="thinking-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Brain size={14} aria-hidden />
+        <span>Thinking</span>
+        <ChevronRight size={13} className="steps-chev" aria-hidden />
+      </button>
+      {open && <div className="thinking-body">{text}</div>}
+    </div>
+  );
+}
+
+function ItemView({ item, live, cwd, onAllow, onTerminal, onImage, onReuse }: ItemProps & { item: Item; live: boolean }) {
   switch (item.kind) {
     case 'user':
       return (
@@ -254,6 +496,14 @@ function ItemView({
             </div>
           )}
           {item.text && <div className="msg-user">{item.text}</div>}
+          {item.text && (
+            <div className="acts">
+              <CopyButton text={item.text} />
+              <button type="button" className="act" aria-label="Edit and resend" title="Edit and resend" onClick={() => onReuse(item.text)}>
+                <Undo2 size={14} aria-hidden />
+              </button>
+            </div>
+          )}
         </div>
       );
     case 'note':
@@ -267,15 +517,35 @@ function ItemView({
       return (
         <div className="msg-ai">
           <Sailboat size={18} color="var(--accent)" style={{ flex: 'none', marginTop: 3 }} aria-hidden />
-          <div className="md">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
+          <div className="msg-ai-body">
+            <div className="md">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>{item.text}</ReactMarkdown>
+            </div>
+            {!live && (
+              <div className="acts left">
+                <CopyButton text={item.text} />
+              </div>
+            )}
           </div>
+        </div>
+      );
+    case 'thinking':
+      return (
+        <div className="steps solo">
+          <Thinking text={item.text} />
         </div>
       );
     case 'tool':
       return <ToolCard item={item} cwd={cwd} />;
     case 'denials':
       return <Denials denials={item.denials} cwd={cwd} onAllow={onAllow} onTerminal={onTerminal} />;
+    case 'meta':
+      return item.durationMs != null || item.costUsd != null ? (
+        <div className="turn-meta">
+          {item.durationMs != null && <span>{fmtElapsed(item.durationMs)}</span>}
+          {item.costUsd != null && item.costUsd > 0 && <span>${item.costUsd < 0.01 ? item.costUsd.toFixed(3) : item.costUsd.toFixed(2)}</span>}
+        </div>
+      ) : null;
     case 'error':
       return (
         <div className="msg-error">
@@ -315,7 +585,7 @@ function toolIcon(name: string) {
   }
 }
 
-function ToolCard({ item, cwd }: { item: Extract<Item, { kind: 'tool' }>; cwd: string }) {
+function ToolCard({ item, cwd }: { item: ToolItem; cwd: string }) {
   const diff = editDiff(item.input);
   const [open, setOpen] = useState(!!diff);
   const r = item.result;
@@ -328,7 +598,7 @@ function ToolCard({ item, cwd }: { item: Extract<Item, { kind: 'tool' }>; cwd: s
         {toolIcon(item.name)}
         <span className="tool-name">{item.name}</span>
         <span className="tool-subject">{toolSubject(item.name, item.input, cwd)}</span>
-        <span className={`tool-meta ${metaClass}`}>{meta}</span>
+        <span className={`tool-meta ${metaClass}`}>{!r ? <LoaderCircle size={13} className="spin" aria-label="running" /> : meta}</span>
       </button>
       {open && (diff || body) && (
         <div className="tool-body">

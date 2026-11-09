@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ChevronsUpDown, LoaderCircle, Plus, RotateCw, Sailboat, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronsUpDown, LoaderCircle, Plus, RotateCw, Sailboat, Search, X } from 'lucide-react';
 import type { Accounts, Foreign, Limits, Session, Status, UpdateState } from '../api';
 import { fmtDuration } from '../messages';
 
@@ -27,6 +27,7 @@ interface Props {
   update: UpdateState | null;
   onUpdate: () => void;
   onRestart: () => void;
+  onPalette: () => void;
 }
 
 export function Sidebar(p: Props) {
@@ -53,6 +54,11 @@ export function Sidebar(p: Props) {
           <Plus size={16} aria-hidden />
           <span style={{ flex: 1 }}>New session</span>
           {p.sessions.length < 9 && <kbd>F{p.sessions.length + 1}</kbd>}
+        </button>
+        <button type="button" className="nav-item" onClick={p.onPalette}>
+          <Search size={16} aria-hidden />
+          <span style={{ flex: 1 }}>Search</span>
+          <kbd>Ctrl K</kbd>
         </button>
       </nav>
 

@@ -293,6 +293,63 @@ fn home_dir() -> String {
     dirs::home_dir().unwrap_or_default().display().to_string()
 }
 
+// ---------- files, for @-mentions
+
+/// Files under `cwd`, relative to it, for the message box to offer after
+/// `@`. Git's list where there is one (it already skips what is ignored), a
+/// shallow walk otherwise.
+#[tauri::command]
+async fn files_list(cwd: String) -> Vec<String> {
+    const MAX: usize = 20_000;
+    let dir = PathBuf::from(&cwd);
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C")
+        .arg(&dir)
+        .args(["ls-files", "-co", "--exclude-standard"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    if let Ok(out) = cmd.output()
+        && out.status.success()
+    {
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .take(MAX)
+            .map(str::to_string)
+            .collect();
+    }
+    let mut found = Vec::new();
+    walk(&dir, &dir, 0, &mut found, 5_000);
+    found
+}
+
+fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>, max: usize) {
+    const SKIP: [&str; 8] = [".git", "node_modules", "target", "dist", "build", ".next", ".venv", "__pycache__"];
+    if depth > 6 || out.len() >= max {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        if out.len() >= max {
+            return;
+        }
+        let path = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !SKIP.contains(&name.as_str()) {
+                walk(root, &path, depth + 1, out, max);
+            }
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
 // ---------- git
 
 #[derive(Serialize)]
@@ -560,6 +617,7 @@ fn main() {
             recent_conversations,
             recent_projects,
             home_dir,
+            files_list,
             git_state,
             git_commit,
             git_generate,
