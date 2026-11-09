@@ -93,7 +93,19 @@ export interface Settings {
   customImage: string | null;
   newChatDim: number;
   chatDim: number;
+  theme: string;
   accent: string;
+}
+
+/// An image on its way into a message.
+export interface Attachment {
+  id: string;
+  name: string;
+  mediaType: string;
+  /// Base64, no `data:` prefix.
+  data: string;
+  /// The same image as a data URL, for showing it.
+  url: string;
 }
 
 export interface NewSession {
@@ -103,6 +115,7 @@ export interface NewSession {
   permissionMode?: string;
   resume?: string;
   terminal?: boolean;
+  images?: Attachment[];
 }
 
 // The stream-json objects Claude Code prints, plus the fleet's own
@@ -114,8 +127,12 @@ export type Event = Record<string, any>;
 export const api = {
   sessions: () => invoke<Session[]>('sessions_list'),
   log: (id: string) => invoke<Event[]>('session_log', { id }),
-  create: (req: NewSession) => invoke<string>('session_create', { req }),
-  send: (id: string, text: string) => invoke<void>('session_send', { id, text }),
+  create: (req: NewSession) =>
+    invoke<string>('session_create', {
+      req: { ...req, images: (req.images ?? []).map(({ mediaType, data }) => ({ mediaType, data })) },
+    }),
+  send: (id: string, text: string, images: Attachment[] = []) =>
+    invoke<void>('session_send', { id, text, images: images.map(({ mediaType, data }) => ({ mediaType, data })) }),
   interrupt: (id: string) => invoke<void>('session_interrupt', { id }),
   setView: (id: string, view: View, rows: number, cols: number) =>
     invoke<void>('session_set_view', { id, view, rows, cols }),

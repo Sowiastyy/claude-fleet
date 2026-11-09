@@ -13,7 +13,8 @@
     { id: 's3', name: 'claude-fleet', cwd: 'C:\\code\\claude-fleet', conversation: 'c', view: 'terminal', status: 'idle', waitingFor: '', model: '', permissionMode: 'acceptEdits', startedAt: now - 2280e3 },
   ];
   const log = [
-    { type: 'fleet_user', text: 'The checkout total ignores the voucher when the cart has a mattress in it. Fix it and add a test.' },
+    { type: 'fleet_user', text: 'The checkout total ignores the voucher when the cart has a mattress in it. Fix it and add a test.', images: ['data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300"><rect width="480" height="300" fill="#f4f1ea"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#d9d3c4"/><rect x="24" y="84" width="280" height="18" rx="4" fill="#bdb5a3"/><rect x="24" y="114" width="200" height="18" rx="4" fill="#bdb5a3"/><rect x="320" y="230" width="136" height="46" rx="8" fill="#c0403f"/></svg>')] },
+    { type: 'fleet_note', text: 'Forked from f51217cf, running elsewhere' },
     { type: 'assistant', message: { content: [{ type: 'text', text: 'The voucher is applied **before** the mattress size surcharge is added, so the discount comes off the old subtotal. I will apply it last, after every surcharge.' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'C:\\code\\smartwood-web\\src\\checkout\\total.ts' } }] } },
     { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'export function total(lines, voucher) {\n  ...\n}' }] } },
     { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: 'C:\\code\\smartwood-web\\src\\checkout\\total.ts', old_string: 'const discounted = applyVoucher(subtotal, voucher);\nreturn discounted + surcharges(lines);', new_string: 'const priced = subtotal + surcharges(lines);\nreturn applyVoucher(priced, voucher);' } }] } },
@@ -55,7 +56,7 @@
     recent_projects: ['C:\\code\\claude-fleet', 'C:\\code\\smartwood-web', 'C:\\code\\smartwood-api'],
     home_dir: 'C:\\Users\\me',
     git_state: git,
-    settings_get: { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, accent: '#E2B867' },
+    settings_get: { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: q.get('theme') || 'harbor', accent: '' },
     background_custom: null,
   };
   let next = 1;
@@ -70,5 +71,6 @@
   const click = (sel, delay) => setTimeout(() => document.querySelector(sel)?.click(), delay);
   if (q.get('open') === '1') click('.session-btn', 800);
   if (q.get('accounts') === '1') click('.account-btn', 800);
-  if (q.get('bg') === '1') click('.ghost-btn', 800);
+  if (q.get('click')) click(q.get('click'), 1500);
+  if (q.get('bg') === '1') click(q.get('open') === '1' ? '[aria-label=Appearance]' : '.ghost-btn', 1200);
 })();

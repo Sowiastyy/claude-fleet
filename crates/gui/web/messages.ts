@@ -12,7 +12,8 @@ export interface Denial {
 }
 
 export type Item =
-  | { kind: 'user'; key: string; text: string }
+  | { kind: 'user'; key: string; text: string; images: string[] }
+  | { kind: 'note'; key: string; text: string }
   | { kind: 'text'; key: string; text: string }
   | { kind: 'tool'; key: string; id: string; name: string; input: Record<string, unknown>; result?: ToolResult }
   | { kind: 'denials'; key: string; denials: Denial[] }
@@ -35,7 +36,15 @@ export function toItems(events: Event[]): Item[] {
   events.forEach((e, i) => {
     switch (e.type) {
       case 'fleet_user':
-        items.push({ kind: 'user', key: `u${i}`, text: String(e.text ?? '') });
+        items.push({
+          kind: 'user',
+          key: `u${i}`,
+          text: String(e.text ?? ''),
+          images: Array.isArray(e.images) ? e.images.filter((u: unknown) => typeof u === 'string') : [],
+        });
+        break;
+      case 'fleet_note':
+        items.push({ kind: 'note', key: `n${i}`, text: String(e.text ?? '') });
         break;
       case 'fleet_error':
         items.push({ kind: 'error', key: `e${i}`, text: String(e.text ?? '') });

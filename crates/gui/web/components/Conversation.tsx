@@ -8,20 +8,24 @@ import {
   FilePlus,
   FileText,
   GitBranch,
+  GitFork,
   Globe,
-  ImageIcon,
   ListTodo,
   MessageSquare,
+  Palette,
   Pencil,
   Sailboat,
   Search,
   ShieldAlert,
   Square,
   SquareTerminal,
+  X,
 } from 'lucide-react';
-import type { Event, GitState, Session, View } from '../api';
+import type { Attachment, Event, GitState, Session, View } from '../api';
+import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
 import { allowRule, editDiff, toItems, toolSubject, type Denial, type Item } from '../messages';
-import { MODELS, MODES } from './Home';
+import { Composer } from './Composer';
+import { Picker } from './Picker';
 import { statusLabel } from './Sidebar';
 import { TerminalView } from './TerminalView';
 
@@ -30,13 +34,14 @@ interface Props {
   events: Event[];
   git: GitState | null;
   showGit: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, images: Attachment[]) => void;
   onStop: () => void;
   onView: (v: View) => void;
   onAllow: (rule: string) => void;
   onConfigure: (model: string | null, mode: string | null) => void;
   onToggleGit: () => void;
-  onBackground: () => void;
+  onAppearance: () => void;
+  onError: (text: string) => void;
 }
 
 export function Conversation(p: Props) {
@@ -71,8 +76,8 @@ export function Conversation(p: Props) {
         <button type="button" className="icon-btn boxed" aria-label="Git" aria-pressed={p.showGit} onClick={p.onToggleGit}>
           <GitBranch size={16} aria-hidden />
         </button>
-        <button type="button" className="icon-btn boxed" aria-label="Background" onClick={p.onBackground}>
-          <ImageIcon size={16} aria-hidden />
+        <button type="button" className="icon-btn boxed" aria-label="Appearance" title="Appearance" onClick={p.onAppearance}>
+          <Palette size={16} aria-hidden />
         </button>
       </header>
 
@@ -93,6 +98,8 @@ function ChatThread(p: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const [draft, setDraft] = useState('');
+  const [images, setImages] = useState<Attachment[]>([]);
+  const [shown, setShown] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
 
   useLayoutEffect(() => {
@@ -104,13 +111,15 @@ function ChatThread(p: Props) {
     box.current?.focus();
   }, [s.id]);
 
+  const ready = !!draft.trim() || images.length > 0;
   const send = () => {
-    const t = draft.trim();
-    if (!t) return;
-    p.onSend(t);
+    if (!ready) return;
+    p.onSend(draft.trim(), images);
     setDraft('');
+    setImages([]);
     pinned.current = true;
   };
+  const mode = s.permissionMode || 'default';
 
   return (
     <>
@@ -124,7 +133,7 @@ function ChatThread(p: Props) {
       >
         <div className="thread-inner">
           {items.map((it) => (
-            <ItemView key={it.key} item={it} cwd={s.cwd} onAllow={p.onAllow} onTerminal={() => p.onView('terminal')} />
+            <ItemView key={it.key} item={it} cwd={s.cwd} onAllow={p.onAllow} onTerminal={() => p.onView('terminal')} onImage={setShown} />
           ))}
           {s.status === 'working' && (
             <div className="working-row">
@@ -139,62 +148,121 @@ function ChatThread(p: Props) {
         </div>
       </div>
       <div className="chat-foot">
-        <div className="composer">
-          <label htmlFor="composer-chat" className="sr-only">Message</label>
-          <textarea
-            id="composer-chat"
-            ref={box}
-            rows={2}
-            placeholder="Reply"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              } else if (e.key === 'Escape' && s.status === 'working') {
-                p.onStop();
-              }
-            }}
+        <Composer
+          id="composer-chat"
+          ref={box}
+          label="Message"
+          placeholder="Reply"
+          rows={2}
+          value={draft}
+          onChange={setDraft}
+          images={images}
+          onImages={setImages}
+          onError={p.onError}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            } else if (e.key === 'Tab' && e.shiftKey) {
+              e.preventDefault();
+              p.onConfigure(null, nextMode(mode));
+            } else if (e.key === 'Escape' && s.status === 'working') {
+              p.onStop();
+            }
+          }}
+        >
+          <Picker
+            label="Model"
+            variant="foot"
+            placement="up"
+            value={modelChoice(s.model)}
+            display={s.model ? modelName(s.model) : 'Default'}
+            choices={MODELS}
+            onChange={(v) => p.onConfigure(v, null)}
           />
-          <div className="composer-row">
-            <label>
-              <span className="sr-only">Model</span>
-              <select className="foot-select" value={MODELS.some(([v]) => v === s.model) ? s.model : ''} onChange={(e) => p.onConfigure(e.target.value, null)}>
-                {MODELS.map(([v, l]) => (
-                  <option key={v} value={v}>{v === '' && s.model ? s.model : l}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span className="sr-only">Permissions</span>
-              <select className="foot-select" value={s.permissionMode || 'default'} onChange={(e) => p.onConfigure(null, e.target.value)}>
-                {MODES.map(([v, l]) => (
-                  <option key={v} value={v}>{l}</option>
-                ))}
-              </select>
-            </label>
-            <div style={{ flex: 1 }} />
-            {s.status === 'working' && !draft.trim() ? (
-              <button type="button" className="send-btn stop-btn" aria-label="Stop" onClick={p.onStop}>
-                <Square size={14} aria-hidden />
-              </button>
-            ) : (
-              <button type="button" className="send-btn" aria-label="Send" disabled={!draft.trim()} onClick={send}>
-                <ArrowUp size={16} strokeWidth={2.25} aria-hidden />
-              </button>
-            )}
-          </div>
-        </div>
+          <Picker
+            label="Permissions"
+            variant="foot"
+            placement="up"
+            value={mode}
+            choices={MODES}
+            onChange={(v) => p.onConfigure(null, v)}
+            foot={<><kbd>Shift</kbd>+<kbd>Tab</kbd></>}
+          />
+          <div style={{ flex: 1 }} />
+          {s.status === 'working' && !ready ? (
+            <button type="button" className="send-btn stop-btn" aria-label="Stop" onClick={p.onStop}>
+              <Square size={14} aria-hidden />
+            </button>
+          ) : (
+            <button type="button" className="send-btn" aria-label="Send" disabled={!ready} onClick={send}>
+              <ArrowUp size={16} strokeWidth={2.25} aria-hidden />
+            </button>
+          )}
+        </Composer>
       </div>
+      {shown && <Lightbox url={shown} onClose={() => setShown(null)} />}
     </>
   );
 }
 
-function ItemView({ item, cwd, onAllow, onTerminal }: { item: Item; cwd: string; onAllow: (r: string) => void; onTerminal: () => void }) {
+function Lightbox({ url, onClose }: { url: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  return (
+    <div className="lightbox" role="dialog" aria-label="Image" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <img src={url} alt="" />
+      <button type="button" className="icon-btn boxed lightbox-x" aria-label="Close" onClick={onClose}>
+        <X size={17} aria-hidden />
+      </button>
+    </div>
+  );
+}
+
+function ItemView({
+  item,
+  cwd,
+  onAllow,
+  onTerminal,
+  onImage,
+}: {
+  item: Item;
+  cwd: string;
+  onAllow: (r: string) => void;
+  onTerminal: () => void;
+  onImage: (url: string) => void;
+}) {
   switch (item.kind) {
     case 'user':
-      return <div className="msg-user">{item.text}</div>;
+      return (
+        <div className="msg-user-wrap">
+          {item.images.length > 0 && (
+            <div className="msg-images">
+              {item.images.map((url, i) => (
+                <button key={i} type="button" className="msg-image" aria-label={`Image ${i + 1}`} onClick={() => onImage(url)}>
+                  <img src={url} alt="" />
+                </button>
+              ))}
+            </div>
+          )}
+          {item.text && <div className="msg-user">{item.text}</div>}
+        </div>
+      );
+    case 'note':
+      return (
+        <div className="msg-note">
+          <GitFork size={13} aria-hidden />
+          {item.text}
+        </div>
+      );
     case 'text':
       return (
         <div className="msg-ai">
