@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+<defs>
+<linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#070B18"/>
+<stop offset="0.62" stop-color="#16244A"/>
+<stop offset="1" stop-color="#0A1226"/>
+</linearGradient>
+<linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#132447"/>
+<stop offset="1" stop-color="#050913"/>
+</linearGradient>
+</defs>
+<rect width="1600" height="1000" fill="url(#night)"/>
+<g fill="#DCE6FF">
+<circle cx="120" cy="90" r="1.6"/><circle cx="260" cy="180" r="1.2"/><circle cx="410" cy="70" r="1.8"/>
+<circle cx="530" cy="230" r="1.1"/><circle cx="690" cy="120" r="1.5"/><circle cx="820" cy="60" r="1.2"/>
+<circle cx="960" cy="200" r="1.7"/><circle cx="1080" cy="110" r="1.1"/><circle cx="1240" cy="70" r="1.4"/>
+<circle cx="1390" cy="170" r="1.9"/><circle cx="1520" cy="100" r="1.2"/><circle cx="1460" cy="300" r="1.1"/>
+<circle cx="200" cy="320" r="1.3"/><circle cx="760" cy="300" r="1.2"/><circle cx="1180" cy="330" r="1.5"/>
+<circle cx="350" cy="420" r="1.0"/><circle cx="1000" cy="420" r="1.1"/><circle cx="60" cy="460" r="1.4"/>
+</g>
+<circle cx="1220" cy="250" r="54" fill="#F3F0DC"/>
+<circle cx="1242" cy="238" r="50" fill="#16244A" opacity="0.35"/>
+<rect y="640" width="1600" height="360" fill="url(#sea)"/>
+<g fill="#F3F0DC" opacity="0.5">
+<rect x="1180" y="668" width="80" height="3" rx="1.5"/>
+<rect x="1160" y="700" width="120" height="3" rx="1.5"/>
+<rect x="1195" y="736" width="70" height="3" rx="1.5"/>
+<rect x="1150" y="776" width="140" height="3" rx="1.5"/>
+<rect x="1205" y="820" width="50" height="3" rx="1.5"/>
+</g>
+<g fill="#03060D">
+<path d="M300 640 L470 640 L450 662 L322 662 Z"/>
+<path d="M380 636 L380 470 L456 632 Z"/>
+<path d="M372 636 L372 500 L318 632 Z"/>
+<path d="M620 650 L760 650 L744 668 L638 668 Z"/>
+<path d="M686 646 L686 520 L748 642 Z"/>
+<path d="M680 646 L680 548 L636 642 Z"/>
+<path d="M880 644 L980 644 L968 658 L892 658 Z"/>
+<path d="M928 641 L928 560 L972 638 Z"/>
+<path d="M0 640 L120 612 L210 640 Z"/>
+<path d="M1380 640 L1500 600 L1600 618 L1600 640 Z"/>
+</g>
+</svg>

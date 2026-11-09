@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 const BUNDLE: &str = "Claude Fleet.app";
-const ICON: &[u8] = include_bytes!("../assets/macos/icon.icns");
+const ICON: &[u8] = include_bytes!("../../../assets/macos/icon.icns");
 
 const RUN: &str = r#"#!/bin/sh
 cd "$HOME" || exit 1

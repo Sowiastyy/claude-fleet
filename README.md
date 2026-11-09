@@ -41,12 +41,52 @@ from the
 or build it yourself:
 
 ```
-cargo install --git https://github.com/Sowiastyy/claude-fleet
+cargo install --git https://github.com/Sowiastyy/claude-fleet claude-fleet
 ```
 
 Then run `claude-fleet` in any directory. With no session or shell running
 yet, the pane shows the fleet's name in block letters turning in 3D, and
 Clawd, Claude Code's mascot, dancing in the corner.
+
+## Desktop app
+
+`claude-fleet-gui` is the fleet as a window instead of a terminal, built
+with Tauri and React from the same core (`crates/gui`).
+
+- **Chat or terminal, per session.** A session shows as a chat (messages,
+  tool calls, edits as diffs, refused tool calls with an Allow button) or as
+  Claude Code's own terminal. **Chat** / **Terminal** in the header switches;
+  both run the same conversation, so nothing is lost either way.
+- **Sessions** in the sidebar with their state (`working`, `idle`, `needs
+  you`), `F1`–`F9` to jump, sessions started elsewhere listed under them.
+- **Accounts** at the top of the sidebar: the same profiles and hotswap as
+  the terminal app (see "Accounts"); **Move over** restarts running sessions
+  as the new account.
+- **Limits** at the foot of the sidebar, **git panel** (commit, push, pull,
+  generate a message) and **resume** from the new-chat screen.
+- **Background**: an image behind everything, darkened 65% on the new-chat
+  screen and 85% in a conversation; both levels, the image (or your own) and
+  the accent color are in **Background**.
+
+The chat runs `claude -p` with stream-json in both directions; the terminal
+runs `claude` under a pseudoterminal. The app picks the conversation id
+itself (`--session-id`), which is what lets either one carry on the other's
+conversation (`--resume`).
+
+A chat cannot ask for permission mid-turn the way the terminal does: a tool
+call that needs it is refused, and the card it leaves offers to allow that
+tool (`Bash(npm:*)` for a command) and retry, or to answer in the terminal.
+
+Build (Node 20+ and Rust):
+
+```
+cd crates/gui
+npm install
+npx tauri build --no-bundle      # target/release/claude-fleet-gui.exe
+npx tauri dev                    # or: run with hot reload
+npm run preview:ui               # the page alone, on made-up data, at
+                                 # http://localhost:1421/preview/
+```
 
 ## macOS
 
@@ -754,6 +794,17 @@ probe shows exactly the four bytes you are asking about (see pitfall 1).
 cargo build --release
 cargo test
 ```
+
+The repository is a Cargo workspace:
+
+| crate | what |
+|---|---|
+| `crates/core` (`fleet-core`) | Claude Code's local state, accounts, limits, git: what both apps share |
+| `crates/cli` (`claude-fleet`) | the terminal app |
+| `crates/gui` (`fleet-gui`) | the desktop app (see "Desktop app") |
+
+A plain `cargo build` / `test` / `clippy` covers the first two; the desktop
+app needs its page built first, so it is left to `npx tauri build`.
 
 The binary lands in `target/release/claude-fleet.exe`. For the restart loop
 described under "Live changes", copy it once next to `target` and run that

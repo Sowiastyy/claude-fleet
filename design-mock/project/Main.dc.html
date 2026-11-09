@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fleet — new chat</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="position: relative; display: flex; width: 100%; height: 900px; overflow: hidden; background: #0D131D; color: #E6EBF2; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+
+<aside style="position: relative; z-index: 3; width: 276px; flex: none; display: flex; flex-direction: column; background: #111926; border-right: 1px solid #222D3D">
+  <div style="display: flex; align-items: center; gap: 10px; padding: 16px 18px 12px">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 18H2a4 4 0 0 0 4 4h12a4 4 0 0 0 4-4Z"></path><path d="M21 14 10 2 3 14h18Z"></path><path d="M10 2v16"></path></svg>
+    <span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 18px; letter-spacing: -0.2px">Fleet</span>
+  </div>
+
+  <div style="padding: 0 12px 12px">
+    <button type="button" onClick="{{toggleAccounts}}" aria-expanded="{{accountsOpenText}}" aria-label="Switch account" style="width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 10px; background: #18222F; border: 1px solid #273345; border-radius: 10px; color: inherit; font: inherit; text-align: left; cursor: pointer">
+      <span style="width: 30px; height: 30px; flex: none; border-radius: 50%; background: #273345; color: {{accent}}; display: flex; align-items: center; justify-content: center; font-weight: 600">{{me.initial}}</span>
+      <span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+        <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{me.email}}</span>
+        <span style="font-size: 12px; color: #9AA8BA">{{me.planLabel}}</span>
+      </span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9AA8BA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 15 5 5 5-5"></path><path d="m7 9 5-5 5 5"></path></svg>
+    </button>
+  </div>
+
+  <nav aria-label="Fleet" style="display: flex; flex-direction: column; gap: 2px; padding: 0 12px">
+    <button type="button" onClick="{{goHome}}" style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: none; border-radius: 8px; background: {{homeBg}}; color: inherit; font: inherit; text-align: left; cursor: pointer">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+      <span style="flex: 1">New session</span>
+      <kbd style="font-family: inherit; font-size: 11px; color: #9AA8BA; border: 1px solid #2F3C50; box-shadow: inset 0 -1px 0 #2F3C50; border-radius: 5px; padding: 0 5px">{{nextKey}}</kbd>
+    </button>
+    <button type="button" style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>
+      <span style="flex: 1">Resume a conversation</span>
+    </button>
+    <button type="button" style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      <span style="flex: 1">Big Brother reports</span>
+      <span style="font-size: 12px; font-weight: 600; color: #0D131D; background: #F08A4B; border-radius: 999px; padding: 0 7px">2</span>
+    </button>
+  </nav>
+
+  <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 18px 22px 6px">
+    <h2 style="margin: 0; font-size: 13px; font-weight: 600; color: #C5CFDC">Sessions</h2>
+    <span style="font-size: 12px; color: #7C8AA0">{{sessionCount}} running</span>
+  </div>
+  <ul style="list-style: none; margin: 0; padding: 0 12px; display: flex; flex-direction: column; gap: 2px">
+    <sc-for list="{{sessions}}" as="item" hint-placeholder-count="4">
+      <li>
+        <button type="button" onClick="{{item.open}}" aria-current="{{item.current}}" style="width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: none; border-radius: 8px; background: {{item.rowBg}}; color: inherit; font: inherit; text-align: left; cursor: pointer">
+          <span aria-hidden="true" style="margin-top: 6px; width: 8px; height: 8px; flex: none; border-radius: 50%; background: {{item.color}}; box-shadow: 0 0 0 3px {{item.halo}}"></span>
+          <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px">
+            <span style="display: flex; align-items: center; gap: 6px">
+              <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{item.name}}</span>
+              <sc-if value="{{item.watcher}}" hint-placeholder-val="{{false}}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Big Brother" role="img"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              </sc-if>
+            </span>
+            <span style="display: flex; align-items: center; gap: 5px; font-size: 12px; color: #8E9CB0; white-space: nowrap; overflow: hidden">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+              <span style="overflow: hidden; text-overflow: ellipsis">{{item.where}}</span>
+            </span>
+            <span style="font-size: 12px; color: {{item.color}}">{{item.label}}</span>
+          </span>
+          <kbd style="margin-top: 2px; font-family: inherit; font-size: 11px; color: #9AA8BA; border: 1px solid #2F3C50; box-shadow: inset 0 -1px 0 #2F3C50; border-radius: 5px; padding: 0 5px">{{item.fkey}}</kbd>
+        </button>
+      </li>
+    </sc-for>
+  </ul>
+
+  <div style="padding: 16px 22px 6px">
+    <h2 style="margin: 0; font-size: 13px; font-weight: 600; color: #8E9CB0">Started elsewhere</h2>
+  </div>
+  <div style="display: flex; align-items: center; gap: 10px; margin: 0 12px; padding: 7px 10px; color: #7C8AA0">
+    <span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #7C8AA0; box-sizing: border-box"></span>
+    <span style="flex: 1">dashboard-7f</span>
+    <span style="font-size: 12px">working</span>
+  </div>
+
+  <div style="flex: 1"></div>
+
+  <div style="margin: 0 12px 12px; padding: 12px; border: 1px solid #222D3D; border-radius: 10px; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: flex; flex-direction: column; gap: 5px">
+      <div style="display: flex; justify-content: space-between; font-size: 12px"><span style="color: #C5CFDC">5-hour limit</span><span style="color: #9AA8BA">{{me.h5}}% used, resets in {{me.h5Reset}}</span></div>
+      <div style="height: 6px; border-radius: 3px; background: #222D3D; overflow: hidden"><div style="height: 100%; width: {{me.h5}}%; background: {{accent}}; border-radius: 3px"></div></div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 5px">
+      <div style="display: flex; justify-content: space-between; font-size: 12px"><span style="color: #C5CFDC">Weekly limit</span><span style="color: #9AA8BA">{{me.d7}}% used, resets in {{me.d7Reset}}</span></div>
+      <div style="height: 6px; border-radius: 3px; background: #222D3D; overflow: hidden"><div style="height: 100%; width: {{me.d7}}%; background: {{accent}}; border-radius: 3px"></div></div>
+    </div>
+  </div>
+</aside>
+
+<main style="position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column">
+  <sc-if value="{{hasBg}}" hint-placeholder-val="{{true}}">
+    <img src="{{bgUrl}}" alt="" aria-hidden="true" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover">
+  </sc-if>
+  <div aria-hidden="true" style="position: absolute; inset: 0; background: #070A10; opacity: {{overlayOpacity}}; transition: opacity 700ms ease"></div>
+
+  <div style="position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column">
+
+    <sc-if value="{{isHome}}" hint-placeholder-val="{{true}}">
+      <div style="display: flex; justify-content: flex-end; padding: 14px 18px">
+        <button type="button" onClick="{{openSettings}}" style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: rgba(17,25,38,0.72); border: 1px solid #2F3C50; border-radius: 8px; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg>
+          Background
+        </button>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 0 32px 72px">
+        <h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 44px; letter-spacing: -1px; line-height: 1.1; text-align: center">Evening, Karton</h1>
+        <p style="margin: 0 0 6px; color: #C5CFDC; font-size: 15px; text-align: center">{{summary}}</p>
+
+        <div style="width: 100%; max-width: 680px; background: rgba(20,29,43,0.94); border: 1px solid #2F3C50; border-radius: 14px; padding: 14px 14px 10px; box-sizing: border-box">
+          <label for="composer-home" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Describe a task</label>
+          <textarea id="composer-home" rows="3" placeholder="Describe a task" value="{{draft}}" onChange="{{onDraft}}" onKeyDown="{{onKey}}" style="width: 100%; box-sizing: border-box; resize: none; border: none; outline: none; background: transparent; color: #E6EBF2; font: inherit; font-size: 15px; line-height: 1.5"></textarea>
+          <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px">
+            <button type="button" aria-label="Attach a file" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: transparent; color: #9AA8BA; cursor: pointer">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+            </button>
+            <div style="flex: 1"></div>
+            <button type="button" aria-label="Voice" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: transparent; color: #9AA8BA; cursor: pointer">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" x2="12" y1="19" y2="22"></line></svg>
+            </button>
+            <button type="button" onClick="{{send}}" aria-label="Start session" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: {{accent}}; color: #1A1408; cursor: pointer">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg>
+            </button>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 680px">
+          <button type="button" style="display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: rgba(17,25,38,0.8); border: 1px solid #2F3C50; border-radius: 999px; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>
+            claude-fleet
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9AA8BA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+          <button type="button" style="display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: rgba(17,25,38,0.8); border: 1px solid #2F3C50; border-radius: 999px; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+            Opus 5.5 <span style="color: #9AA8BA">medium effort</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9AA8BA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+          <button type="button" style="display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: rgba(17,25,38,0.8); border: 1px solid #2F3C50; border-radius: 999px; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path></svg>
+            Asks before edits
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9AA8BA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+        </div>
+
+        <section aria-label="Recent conversations" style="width: 100%; max-width: 680px; margin-top: 18px; background: rgba(17,25,38,0.78); border: 1px solid #222D3D; border-radius: 12px; padding: 6px">
+          <h2 style="margin: 6px 10px 4px; font-size: 13px; font-weight: 600; color: #C5CFDC">Pick up where you left off</h2>
+          <sc-for list="{{recent}}" as="r" hint-placeholder-count="3">
+            <button type="button" onClick="{{r.open}}" style="width: 100%; display: flex; align-items: center; gap: 12px; padding: 9px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9AA8BA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>
+              <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.title}}</span>
+              <span style="font-size: 12px; color: #9AA8BA">{{r.project}}</span>
+              <span style="width: 34px; text-align: right; font-size: 12px; color: #7C8AA0">{{r.ago}}</span>
+            </button>
+          </sc-for>
+        </section>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{isChat}}" hint-placeholder-val="{{false}}">
+      <header style="display: flex; align-items: center; gap: 14px; padding: 12px 18px; background: rgba(13,19,29,0.55); border-bottom: 1px solid rgba(47,60,80,0.6)">
+        <span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 50%; background: {{active.color}}; box-shadow: 0 0 0 3px {{active.halo}}"></span>
+        <div style="display: flex; flex-direction: column; min-width: 0">
+          <span style="font-weight: 600; font-size: 15px">{{active.name}}</span>
+          <span style="font-size: 12px; color: #9AA8BA">{{active.path}}</span>
+        </div>
+        <span style="font-size: 12px; color: {{active.color}}; border: 1px solid {{active.color}}; border-radius: 999px; padding: 1px 9px">{{active.label}}</span>
+        <div style="flex: 1"></div>
+        <div role="group" aria-label="View" style="display: flex; padding: 3px; background: rgba(17,25,38,0.9); border: 1px solid #2F3C50; border-radius: 9px">
+          <button type="button" onClick="{{toChat}}" aria-pressed="{{chatPressed}}" style="display: flex; align-items: center; gap: 6px; padding: 5px 11px; border: none; border-radius: 6px; background: {{chatTabBg}}; color: {{chatTabFg}}; font: inherit; font-size: 13px; cursor: pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            Chat
+          </button>
+          <button type="button" onClick="{{toTerminal}}" aria-pressed="{{termPressed}}" style="display: flex; align-items: center; gap: 6px; padding: 5px 11px; border: none; border-radius: 6px; background: {{termTabBg}}; color: {{termTabFg}}; font: inherit; font-size: 13px; cursor: pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line></svg>
+            Terminal
+          </button>
+        </div>
+        <button type="button" aria-label="Editor" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 1px solid #2F3C50; border-radius: 8px; background: rgba(17,25,38,0.9); color: #C5CFDC; cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+        </button>
+        <button type="button" onClick="{{toggleGit}}" aria-pressed="{{gitPressed}}" aria-label="Git panel" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 1px solid {{gitBtnBorder}}; border-radius: 8px; background: rgba(17,25,38,0.9); color: {{gitBtnFg}}; cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+        </button>
+        <button type="button" onClick="{{openSettings}}" aria-label="Background" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 1px solid #2F3C50; border-radius: 8px; background: rgba(17,25,38,0.9); color: #C5CFDC; cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg>
+        </button>
+      </header>
+
+      <sc-if value="{{isChatMode}}" hint-placeholder-val="{{true}}">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 28px 28px 12px">
+          <div style="max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px">
+            <sc-for list="{{messages}}" as="m" hint-placeholder-count="4">
+              <sc-if value="{{m.isUser}}" hint-placeholder-val="{{false}}">
+                <div style="align-self: flex-end; max-width: 78%; background: #223047; border: 1px solid #31425C; border-radius: 14px 14px 4px 14px; padding: 10px 14px; line-height: 1.55">{{m.text}}</div>
+              </sc-if>
+              <sc-if value="{{m.isAssistant}}" hint-placeholder-val="{{true}}">
+                <div style="display: flex; gap: 12px; align-items: flex-start">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; margin-top: 3px"><path d="M22 18H2a4 4 0 0 0 4 4h12a4 4 0 0 0 4-4Z"></path><path d="M21 14 10 2 3 14h18Z"></path><path d="M10 2v16"></path></svg>
+                  <p style="margin: 0; line-height: 1.65; color: #DDE3EB; max-width: 68ch">{{m.text}}</p>
+                </div>
+              </sc-if>
+              <sc-if value="{{m.isTool}}" hint-placeholder-val="{{false}}">
+                <div style="margin-left: 30px; display: flex; align-items: center; gap: 10px; background: rgba(24,34,47,0.92); border: 1px solid #273345; border-radius: 9px; padding: 8px 12px; font-size: 13px">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{m.iconColor}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg>
+                  <span style="font-weight: 600">{{m.title}}</span>
+                  <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #C5CFDC; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{m.target}}</span>
+                  <span style="margin-left: auto; color: {{m.metaColor}}; white-space: nowrap">{{m.meta}}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{m.isDiff}}" hint-placeholder-val="{{false}}">
+                <div style="margin-left: 30px; background: rgba(17,25,38,0.95); border: 1px solid #273345; border-radius: 9px; overflow: hidden; font-size: 13px">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #222D3D">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#E2B867" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path></svg>
+                    <span style="font-weight: 600">Edited</span>
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #C5CFDC">{{m.target}}</span>
+                    <span style="margin-left: auto"><span style="color: #59C48F">+3</span> <span style="color: #F07C70">−2</span></span>
+                  </div>
+                  <div style="padding: 6px 0; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; line-height: 1.7">
+                    <sc-for list="{{m.lines}}" as="l" hint-placeholder-count="5">
+                      <div style="display: flex; background: {{l.bg}}; color: {{l.color}}; white-space: pre"><span aria-hidden="true" style="width: 28px; flex: none; text-align: center; color: {{l.signColor}}">{{l.sign}}</span><span>{{l.text}}</span></div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{m.isPending}}" hint-placeholder-val="{{false}}">
+                <div style="margin-left: 30px; background: rgba(24,34,47,0.97); border: 1px solid #7FB2FF; border-radius: 11px; padding: 14px; display: flex; flex-direction: column; gap: 10px">
+                  <div style="display: flex; align-items: center; gap: 9px">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#7FB2FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg>
+                    <span style="font-weight: 600">{{m.question}}</span>
+                  </div>
+                  <code style="display: block; font-family: 'IBM Plex Mono', monospace; font-size: 13px; background: #0D131D; border: 1px solid #273345; border-radius: 7px; padding: 9px 12px; color: #E6EBF2">{{m.command}}</code>
+                  <div style="display: flex; flex-wrap: wrap; gap: 8px">
+                    <button type="button" onClick="{{m.allow}}" style="padding: 7px 14px; border: none; border-radius: 8px; background: {{accent}}; color: #1A1408; font: inherit; font-weight: 600; cursor: pointer">Allow once</button>
+                    <button type="button" onClick="{{m.allow}}" style="padding: 7px 14px; border: 1px solid #2F3C50; border-radius: 8px; background: #18222F; color: #E6EBF2; font: inherit; cursor: pointer">{{m.always}}</button>
+                    <button type="button" onClick="{{m.deny}}" style="padding: 7px 14px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #C5CFDC; font: inherit; cursor: pointer">Deny</button>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{m.isThinking}}" hint-placeholder-val="{{false}}">
+                <div style="margin-left: 30px; display: flex; align-items: center; gap: 10px; color: #9AA8BA; font-size: 13px">
+                  <span aria-hidden="true" style="display: flex; gap: 4px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #F08A4B"></span><span style="width: 6px; height: 6px; border-radius: 50%; background: #F08A4B; opacity: 0.6"></span><span style="width: 6px; height: 6px; border-radius: 50%; background: #F08A4B; opacity: 0.3"></span></span>
+                  Working 12s
+                </div>
+              </sc-if>
+            </sc-for>
+          </div>
+        </div>
+        <div style="padding: 10px 28px 18px">
+          <div style="max-width: 760px; margin: 0 auto; background: rgba(20,29,43,0.96); border: 1px solid #2F3C50; border-radius: 14px; padding: 10px 12px 8px; box-sizing: border-box">
+            <label for="composer-chat" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Message</label>
+            <textarea id="composer-chat" rows="2" placeholder="Reply, or type / for commands" value="{{draft}}" onChange="{{onDraft}}" onKeyDown="{{onKey}}" style="width: 100%; box-sizing: border-box; resize: none; border: none; outline: none; background: transparent; color: #E6EBF2; font: inherit; font-size: 14.5px; line-height: 1.5"></textarea>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span style="font-size: 12px; color: #7C8AA0">Opus 5.5, asks before edits</span>
+              <div style="flex: 1"></div>
+              <button type="button" onClick="{{send}}" aria-label="Send" style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: {{accent}}; color: #1A1408; cursor: pointer">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{isTerminal}}" hint-placeholder-val="{{false}}">
+        <div style="flex: 1; min-height: 0; margin: 16px 18px 18px; display: flex; flex-direction: column; background: rgba(7,10,16,0.94); border: 1px solid #273345; border-radius: 12px; overflow: hidden">
+          <div style="flex: 1; min-height: 0; overflow: auto; padding: 16px 18px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6">
+            <sc-for list="{{terminal}}" as="t" hint-placeholder-count="12">
+              <div style="white-space: pre; color: {{t.color}}; font-weight: {{t.weight}}">{{t.text}}</div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{hasToast}}" hint-placeholder-val="{{false}}">
+    <div role="status" style="position: absolute; z-index: 5; top: 16px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #18222F; border: 1px solid #59C48F; border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); white-space: nowrap">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#59C48F" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+      {{toast}}
+    </div>
+  </sc-if>
+</main>
+
+<sc-if value="{{showGitPanel}}" hint-placeholder-val="{{false}}">
+  <aside aria-label="Git" style="position: relative; z-index: 2; width: 320px; flex: none; display: flex; flex-direction: column; background: #111926; border-left: 1px solid #222D3D; overflow-y: auto">
+    <div style="padding: 16px 16px 12px; border-bottom: 1px solid #222D3D; display: flex; flex-direction: column; gap: 4px">
+      <div style="display: flex; align-items: center; gap: 8px; font-weight: 600">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+        {{active.branch}}
+      </div>
+      <span style="font-size: 12px; color: #9AA8BA">2 commits ahead of origin, nothing to pull</span>
+    </div>
+    <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid #222D3D">
+      <label for="commit-msg" style="font-size: 13px; font-weight: 600; color: #C5CFDC">Commit message</label>
+      <textarea id="commit-msg" rows="3" placeholder="Message" style="width: 100%; box-sizing: border-box; resize: none; background: #0D131D; border: 1px solid #273345; border-radius: 8px; padding: 8px 10px; color: #E6EBF2; font: inherit; font-size: 13px"></textarea>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+        <button type="button" style="display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 0; border: none; border-radius: 8px; background: {{accent}}; color: #1A1408; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><line x1="3" x2="9" y1="12" y2="12"></line><line x1="15" x2="21" y1="12" y2="12"></line></svg>
+          Commit
+        </button>
+        <button type="button" style="display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 0; border: 1px solid #2F3C50; border-radius: 8px; background: #18222F; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 9-6-6-6 6"></path><path d="M12 3v14"></path><path d="M5 21h14"></path></svg>
+          Push
+        </button>
+        <button type="button" style="display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 0; border: 1px solid #2F3C50; border-radius: 8px; background: #18222F; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17V3"></path><path d="m6 11 6 6 6-6"></path><path d="M19 21H5"></path></svg>
+          Pull
+        </button>
+      </div>
+      <button type="button" style="display: flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 0; border: 1px dashed #2F3C50; border-radius: 8px; background: transparent; color: #C5CFDC; font: inherit; font-size: 13px; cursor: pointer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path></svg>
+        Generate message with Haiku
+      </button>
+    </div>
+    <div style="padding: 14px 16px 6px; display: flex; justify-content: space-between; align-items: baseline">
+      <h3 style="margin: 0; font-size: 13px; font-weight: 600; color: #C5CFDC">Changes</h3>
+      <span style="font-size: 12px; color: #7C8AA0">2 files</span>
+    </div>
+    <sc-for list="{{changes}}" as="c" hint-placeholder-count="2">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 6px 16px; font-size: 13px">
+        <span style="width: 16px; text-align: center; font-weight: 600; color: {{c.color}}" aria-label="{{c.kind}}">{{c.mark}}</span>
+        <span style="flex: 1; min-width: 0; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{c.path}}</span>
+        <span style="color: #59C48F">{{c.add}}</span>
+        <span style="color: #F07C70">{{c.del}}</span>
+      </div>
+    </sc-for>
+    <div style="padding: 16px 16px 6px; display: flex; justify-content: space-between; align-items: baseline">
+      <h3 style="margin: 0; font-size: 13px; font-weight: 600; color: #C5CFDC">History</h3>
+    </div>
+    <sc-for list="{{commits}}" as="k" hint-placeholder-count="4">
+      <div style="display: flex; align-items: flex-start; gap: 10px; padding: 6px 16px; font-size: 13px">
+        <span aria-hidden="true" style="margin-top: 6px; width: 7px; height: 7px; flex: none; border-radius: 50%; background: {{k.dot}}"></span>
+        <span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+          <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{k.msg}}</span>
+          <span style="font-size: 12px; color: {{k.hashColor}}">{{k.hash}} <span style="color: #7C8AA0">{{k.ago}}</span></span>
+        </span>
+      </div>
+    </sc-for>
+  </aside>
+</sc-if>
+
+<sc-if value="{{accountsOpen}}" hint-placeholder-val="{{false}}">
+  <button type="button" onClick="{{closeAccounts}}" aria-label="Close account list" style="position: absolute; inset: 0; z-index: 10; border: none; background: rgba(4,7,12,0.35); cursor: default"></button>
+  <div role="dialog" aria-label="Accounts" style="position: absolute; z-index: 11; top: 104px; left: 12px; width: 340px; background: #18222F; border: 1px solid #31425C; border-radius: 12px; box-shadow: 0 24px 60px rgba(0,0,0,0.5); overflow: hidden">
+    <div style="height: 6px"></div>
+    <sc-for list="{{accounts}}" as="a" hint-placeholder-count="3">
+      <button type="button" onClick="{{a.choose}}" aria-current="{{a.currentText}}" style="width: 100%; display: flex; align-items: flex-start; gap: 11px; padding: 10px 14px; border: none; background: {{a.rowBg}}; color: inherit; font: inherit; text-align: left; cursor: pointer">
+        <span style="width: 30px; height: 30px; flex: none; border-radius: 50%; background: #273345; color: {{a.initialColor}}; display: flex; align-items: center; justify-content: center; font-weight: 600">{{a.initial}}</span>
+        <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+          <span style="display: flex; align-items: center; gap: 8px">
+            <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{a.email}}</span>
+            <span style="margin-left: auto; font-size: 12px; color: {{a.tagColor}}">{{a.tag}}</span>
+          </span>
+          <sc-if value="{{a.expired}}" hint-placeholder-val="{{false}}">
+            <span style="font-size: 12px; color: #F07C70">Login expired</span>
+          </sc-if>
+          <sc-if value="{{a.hasUsage}}" hint-placeholder-val="{{true}}">
+            <span style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; font-size: 12px; color: #9AA8BA">
+              <span style="display: flex; flex-direction: column; gap: 3px">
+                <span style="display: flex; justify-content: space-between"><span>5-hour</span><span style="color: {{a.h5Color}}">{{a.h5Text}}</span></span>
+                <span style="height: 4px; border-radius: 2px; background: #273345; overflow: hidden"><span style="display: block; height: 100%; width: {{a.h5}}%; background: {{accent}}"></span></span>
+              </span>
+              <span style="display: flex; flex-direction: column; gap: 3px">
+                <span style="display: flex; justify-content: space-between"><span>Weekly</span><span style="color: {{a.d7Color}}">{{a.d7Text}}</span></span>
+                <span style="height: 4px; border-radius: 2px; background: #273345; overflow: hidden"><span style="display: block; height: 100%; width: {{a.d7}}%; background: {{accent}}"></span></span>
+              </span>
+            </span>
+          </sc-if>
+        </span>
+      </button>
+    </sc-for>
+    <div style="padding: 10px 14px; border-top: 1px solid #273345; display: flex; flex-direction: column; gap: 8px">
+      <span style="font-size: 12px; color: #9AA8BA">Running sessions</span>
+      <div role="group" aria-label="Running sessions" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 3px; background: #0D131D; border: 1px solid #273345; border-radius: 9px">
+        <button type="button" onClick="{{carryOn}}" aria-pressed="{{carryText}}" style="padding: 6px 0; border: none; border-radius: 6px; background: {{carryBg}}; color: {{carryFg}}; font: inherit; font-size: 13px; cursor: pointer">Move over</button>
+        <button type="button" onClick="{{carryOff}}" aria-pressed="{{leaveText}}" style="padding: 6px 0; border: none; border-radius: 6px; background: {{leaveBg}}; color: {{leaveFg}}; font: inherit; font-size: 13px; cursor: pointer">Stay as they are</button>
+      </div>
+    </div>
+    <button type="button" onClick="{{addAccount}}" style="width: 100%; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border: none; border-top: 1px solid #273345; background: transparent; color: #E6EBF2; font: inherit; text-align: left; cursor: pointer">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+      Add an account
+    </button>
+  </div>
+</sc-if>
+
+<sc-if value="{{settingsOpen}}" hint-placeholder-val="{{false}}">
+  <div style="position: absolute; inset: 0; z-index: 20; background: rgba(4,7,12,0.55); display: flex; align-items: center; justify-content: center; padding: 24px">
+    <div role="dialog" aria-label="Background" style="width: 100%; max-width: 600px; background: #18222F; border: 1px solid #31425C; border-radius: 14px; box-shadow: 0 30px 80px rgba(0,0,0,0.55); padding: 22px; display: flex; flex-direction: column; gap: 18px">
+      <div style="display: flex; align-items: flex-start; gap: 12px">
+        <div style="flex: 1">
+          <h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 22px; font-weight: 600">Background</h2>
+        </div>
+        <button type="button" onClick="{{closeSettings}}" aria-label="Close" style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: transparent; color: #C5CFDC; cursor: pointer">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+        </button>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px">
+        <sc-for list="{{backgrounds}}" as="b" hint-placeholder-count="4">
+          <button type="button" onClick="{{b.pick}}" aria-pressed="{{b.pressed}}" style="display: flex; flex-direction: column; gap: 6px; padding: 0; border: none; background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; text-align: left">
+            <span style="display: block; height: 76px; border-radius: 9px; overflow: hidden; background: #0D131D; outline: 2px solid {{b.ring}}; outline-offset: 2px">
+              <sc-if value="{{b.hasImage}}" hint-placeholder-val="{{true}}">
+                <img src="{{b.url}}" alt="" style="display: block; width: 100%; height: 100%; object-fit: cover">
+              </sc-if>
+            </span>
+            <span style="color: {{b.labelColor}}">{{b.label}}</span>
+          </button>
+        </sc-for>
+      </div>
+      <button type="button" style="align-self: flex-start; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid #2F3C50; border-radius: 8px; background: transparent; color: #E6EBF2; font: inherit; font-size: 13px; cursor: pointer">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>
+        Use my own image
+      </button>
+      <div style="display: flex; flex-direction: column; gap: 14px">
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <div style="display: flex; justify-content: space-between"><label for="dim-new">Darkness on a new chat</label><span style="color: {{accent}}; font-weight: 600">{{newDim}}%</span></div>
+          <input id="dim-new" type="range" min="0" max="95" step="5" value="{{newDim}}" onChange="{{setNewDim}}" style="width: 100%; accent-color: {{accent}}">
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <div style="display: flex; justify-content: space-between"><label for="dim-chat">Darkness in a conversation</label><span style="color: {{accent}}; font-weight: 600">{{chatDim}}%</span></div>
+          <input id="dim-chat" type="range" min="0" max="95" step="5" value="{{chatDim}}" onChange="{{setChatDim}}" style="width: 100%; accent-color: {{accent}}">
+        </div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px">
+        <button type="button" onClick="{{previewOther}}" style="padding: 8px 14px; border: 1px solid #2F3C50; border-radius: 8px; background: transparent; color: #E6EBF2; font: inherit; cursor: pointer">{{previewLabel}}</button>
+        <button type="button" onClick="{{closeSettings}}" style="padding: 8px 16px; border: none; border-radius: 8px; background: {{accent}}; color: #1A1408; font: inherit; font-weight: 600; cursor: pointer">Done</button>
+      </div>
+    </div>
+  </div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"startView":{"editor":"enum","options":["home","chat"],"default":"home","section":"Screen"},"startMode":{"editor":"enum","options":["chat","terminal"],"default":"chat","section":"Screen"},"startGit":{"editor":"boolean","default":false,"section":"Screen"},"startAccounts":{"editor":"boolean","default":false,"section":"Screen"},"startSettings":{"editor":"boolean","default":false,"section":"Screen"},"newChatDim":{"editor":"range","min":0,"max":95,"step":5,"unit":"%","default":65,"section":"Background"},"chatDim":{"editor":"range","min":0,"max":95,"step":5,"unit":"%","default":85,"section":"Background"},"background":{"editor":"enum","options":["harbor","ridge","contours","none"],"default":"harbor","section":"Background"},"accent":{"editor":"color","options":["#E2B867","#7FB2FF","#59C48F","#C9A7FF"],"default":"#E2B867","section":"Look"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const s = this.state || {};
+    const p = this.props;
+    const set = (patch) => this.setState(patch);
+    const accent = p.accent ?? '#E2B867';
+
+    const view = s.view ?? p.startView ?? 'home';
+    const mode = s.mode ?? p.startMode ?? 'chat';
+    const showGit = s.showGit ?? (p.startGit ?? false);
+    const accountsOpen = s.accountsOpen ?? (p.startAccounts ?? false);
+    const settingsOpen = s.settingsOpen ?? (p.startSettings ?? false);
+    const active = s.active ?? 'web';
+    const accountId = s.account ?? 'a';
+    const carry = s.carry ?? true;
+    const bg = s.bg ?? p.background ?? 'harbor';
+    const newDim = s.newDim ?? Number(p.newChatDim ?? 65);
+    const chatDim = s.chatDim ?? Number(p.chatDim ?? 85);
+    const draft = s.draft ?? '';
+
+    const urls = {
+      harbor: '/_blob/cda09170120ae386f1bf866b2650d66c',
+      ridge: '/_blob/c68b2b1cd7fc3ed306ba82e7c8596caa',
+      contours: '/_blob/dbdfaf93bb59c1541d2c0fd723095ed6'
+    };
+
+    const look = {
+      working: { color: '#F08A4B', halo: 'rgba(240,138,75,0.22)', label: 'Working' },
+      idle: { color: '#59C48F', halo: 'rgba(89,196,143,0.18)', label: 'Idle, ready for you' },
+      question: { color: '#7FB2FF', halo: 'rgba(127,178,255,0.25)', label: 'Waiting for your answer' }
+    };
+
+    const base = [
+      { id: 'web', name: 'web-checkout', project: 'smartwood-web', branch: 'feat/checkout', status: 'working' },
+      { id: 'api', name: 'orders-api', project: 'smartwood-api', branch: 'main', status: 'question' },
+      { id: 'fleet', name: 'claude-fleet', project: 'claude-fleet', branch: 'main', status: 'idle' },
+      { id: 'bb', name: 'Big Brother, group a', project: 'claude-fleet', branch: 'main', status: 'working', watcher: true }
+    ];
+    const extra = s.extra ?? [];
+    const statusOf = (x) => (s.status && s.status[x.id]) || x.status;
+    const all = base.concat(extra);
+    const sessions = all.map((x, i) => {
+      const st = look[statusOf(x)];
+      const current = view === 'chat' && x.id === active;
+      return {
+        ...x,
+        where: x.branch,
+        fkey: 'F' + (i + 1),
+        color: st.color,
+        halo: st.halo,
+        label: st.label,
+        current: current ? 'true' : 'false',
+        rowBg: current ? '#1E2A3B' : 'transparent',
+        open: () => set({ active: x.id, view: 'chat', accountsOpen: false })
+      };
+    });
+    const act = sessions.find((x) => x.id === active) || sessions[0];
+    const waiting = sessions.filter((x) => statusOf(x) === 'question');
+    const summary = waiting.length
+      ? `${sessions.length} sessions running. ${waiting[0].name} is waiting for your answer.`
+      : `${sessions.length} sessions running. Nothing is waiting on you.`;
+
+    const accountsBase = [
+      { id: 'a', email: 'me@example.com', plan: 'Pro', h5: 53, d7: 7, h5Reset: '1h 34m', d7Reset: '6 days' },
+      { id: 'b', email: 'work@example.com', plan: 'Max', h5: 0, d7: 64, reset5: true, h5Reset: 'now', d7Reset: '2 days' },
+      { id: 'c', email: 'old-team@example.com', plan: 'Pro', expired: true }
+    ];
+    const meRaw = accountsBase.find((a) => a.id === accountId);
+    const me = {
+      ...meRaw,
+      initial: meRaw.email[0].toUpperCase(),
+      planLabel: meRaw.plan + ' plan',
+      h5: meRaw.h5 ?? 0,
+      d7: meRaw.d7 ?? 0,
+      h5Reset: meRaw.h5Reset ?? '—',
+      d7Reset: meRaw.d7Reset ?? '—'
+    };
+    const pctColor = (v) => (v >= 85 ? '#F07C70' : v >= 50 ? '#F0B54A' : '#59C48F');
+    const accounts = accountsBase.map((a) => {
+      const isMe = a.id === accountId;
+      return {
+        ...a,
+        initial: a.email[0].toUpperCase(),
+        initialColor: isMe ? accent : '#C5CFDC',
+        tag: isMe ? 'Signed in' : a.plan,
+        tagColor: isMe ? '#59C48F' : '#9AA8BA',
+        currentText: isMe ? 'true' : 'false',
+        rowBg: isMe ? '#1E2A3B' : 'transparent',
+        hasUsage: !a.expired,
+        h5: a.h5 ?? 0,
+        d7: a.d7 ?? 0,
+        h5Text: a.reset5 ? 'reset, 0%' : `${a.h5 ?? 0}%`,
+        d7Text: `${a.d7 ?? 0}%`,
+        h5Color: a.reset5 ? '#59C48F' : pctColor(a.h5 ?? 0),
+        d7Color: pctColor(a.d7 ?? 0),
+        choose: () => {
+          if (isMe) {
+            set({ accountsOpen: false });
+            return;
+          }
+          const n = sessions.length;
+          const text = carry
+            ? `Switched to ${a.email}. ${n} sessions resumed in place.`
+            : `Switched to ${a.email} for new sessions.`;
+          set({ account: a.id, accountsOpen: false, toast: text });
+          clearTimeout(this.toastTimer);
+          this.toastTimer = setTimeout(() => this.setState({ toast: null }), 3600);
+        }
+      };
+    });
+
+    const diffLines = [
+      { sign: ' ', text: 'const subtotal = lines.reduce(sum, 0);' },
+      { sign: '-', text: 'const discounted = applyVoucher(subtotal, voucher);' },
+      { sign: '-', text: 'return discounted + surcharges(lines);' },
+      { sign: '+', text: 'const priced = subtotal + surcharges(lines);' },
+      { sign: '+', text: '// the voucher applies to what the customer actually pays' },
+      { sign: '+', text: 'return applyVoucher(priced, voucher);' }
+    ].map((l) => ({
+      ...l,
+      bg: l.sign === '+' ? 'rgba(89,196,143,0.12)' : l.sign === '-' ? 'rgba(240,124,112,0.12)' : 'transparent',
+      color: l.sign === '+' ? '#B7E8CC' : l.sign === '-' ? '#F7B9B2' : '#9AA8BA',
+      signColor: l.sign === '+' ? '#59C48F' : l.sign === '-' ? '#F07C70' : '#7C8AA0'
+    }));
+
+    const transcripts = {
+      web: [
+        { kind: 'user', text: 'The checkout total ignores the voucher when the cart has a mattress in it. Fix it and add a test.' },
+        { kind: 'assistant', text: 'The voucher is applied before the mattress size surcharge is added, so the discount comes off the old subtotal. I will apply it last, after every surcharge.' },
+        { kind: 'tool', title: 'Read', target: 'src/checkout/total.ts', meta: '184 lines' },
+        { kind: 'diff', target: 'src/checkout/total.ts', lines: diffLines },
+        { kind: 'tool', title: 'Created', target: 'src/checkout/total.test.ts', meta: '48 lines' },
+        { kind: 'permission', id: 'web-test', question: 'Claude wants to run a command', command: 'npm test -- checkout', always: 'Always allow npm test', result: '14 passed' }
+      ],
+      api: [
+        { kind: 'user', text: 'Add a refunded_at column to orders and backfill it from the payments table.' },
+        { kind: 'tool', title: 'Created', target: 'migrations/0042_orders_refunded_at.sql', meta: '22 lines' },
+        { kind: 'permission', id: 'api-migrate', question: 'Claude wants to run a migration on the staging database', command: 'psql $STAGING_URL -f migrations/0042_orders_refunded_at.sql', always: 'Always allow psql on staging', result: 'ALTER TABLE, UPDATE 18 204' }
+      ],
+      fleet: [
+        { kind: 'user', text: 'Add switching between Claude accounts to the sidebar.' },
+        { kind: 'assistant', text: 'Done. The account row at the top of the list opens a dropdown with every saved account and its limits. Switching restarts the running sessions as the new account, each with its own conversation.' },
+        { kind: 'tool', title: 'Ran', target: 'cargo test', meta: '206 passed', metaColor: '#59C48F' }
+      ],
+      bb: [
+        { kind: 'assistant', text: 'Watching web-checkout and orders-api. orders-api has been waiting on a migration prompt for 4 minutes.' },
+        { kind: 'tool', title: 'Report', target: 'warn: orders-api is about to touch the staging database', meta: '2m ago', metaColor: '#F0B54A' }
+      ]
+    };
+    extra.forEach((x) => {
+      transcripts[x.id] = [{ kind: 'user', text: x.first }];
+    });
+    const decided = s.decided ?? {};
+    const sent = (s.sent ?? {})[act.id] ?? [];
+    let raw = (transcripts[act.id] ?? []).concat(sent.map((t) => ({ kind: 'user', text: t })));
+    const last = raw[raw.length - 1];
+    if (last && last.kind === 'user') raw = raw.concat([{ kind: 'thinking' }]);
+    const messages = raw.map((m) => {
+      const choice = m.kind === 'permission' ? decided[m.id] : null;
+      const out = {
+        ...m,
+        isUser: m.kind === 'user',
+        isAssistant: m.kind === 'assistant',
+        isTool: m.kind === 'tool' || (m.kind === 'permission' && choice === 'allow'),
+        isDiff: m.kind === 'diff',
+        isPending: m.kind === 'permission' && !choice,
+        isThinking: m.kind === 'thinking',
+        iconColor: '#9AA8BA',
+        metaColor: m.metaColor ?? '#7C8AA0'
+      };
+      if (m.kind === 'permission') {
+        out.allow = () => set({ decided: { ...decided, [m.id]: 'allow' }, status: { ...(s.status ?? {}), [act.id]: 'working' } });
+        out.deny = () => set({ decided: { ...decided, [m.id]: 'deny' }, status: { ...(s.status ?? {}), [act.id]: 'idle' } });
+        if (choice === 'allow') {
+          out.title = 'Ran';
+          out.target = m.command;
+          out.meta = m.result;
+          out.metaColor = '#59C48F';
+          out.iconColor = '#59C48F';
+        }
+        if (choice === 'deny') {
+          out.isAssistant = true;
+          out.text = 'Denied. Tell me what to do instead.';
+        }
+      }
+      return out;
+    });
+
+    const terminal = [
+      { text: '> The checkout total ignores the voucher when the cart has a mattress in it.', color: '#E6EBF2', weight: 500 },
+      { text: '  Fix it and add a test.', color: '#E6EBF2', weight: 500 },
+      { text: '', color: '#E6EBF2', weight: 400 },
+      { text: '⏺ Read(src/checkout/total.ts)', color: '#E6EBF2', weight: 400 },
+      { text: '  ⎿  Read 184 lines', color: '#7C8AA0', weight: 400 },
+      { text: '', color: '#E6EBF2', weight: 400 },
+      { text: '⏺ Update(src/checkout/total.ts)', color: '#E6EBF2', weight: 400 },
+      { text: '  ⎿  Updated with 3 additions and 2 removals', color: '#7C8AA0', weight: 400 },
+      { text: '     - return discounted + surcharges(lines);', color: '#F7B9B2', weight: 400 },
+      { text: '     + return applyVoucher(priced, voucher);', color: '#B7E8CC', weight: 400 },
+      { text: '', color: '#E6EBF2', weight: 400 },
+      { text: '⏺ Bash(npm test -- checkout)', color: '#E6EBF2', weight: 400 },
+      { text: '  Do you want to proceed?', color: '#7FB2FF', weight: 500 },
+      { text: '  ❯ 1. Yes', color: '#E2B867', weight: 500 },
+      { text: "    2. Yes, and don't ask again for npm test commands", color: '#C5CFDC', weight: 400 },
+      { text: '    3. No, and tell Claude what to do differently (esc)', color: '#C5CFDC', weight: 400 }
+    ];
+
+    const changes = [
+      { mark: 'M', kind: 'modified', color: '#F0B54A', path: 'src/checkout/total.ts', add: '+3', del: '−2' },
+      { mark: 'A', kind: 'added', color: '#59C48F', path: 'src/checkout/total.test.ts', add: '+48', del: '' }
+    ];
+    const commits = [
+      { msg: 'Apply vouchers after mattress surcharges', hash: 'a41c9e2', ago: '3m ago', mine: true, unpushed: true },
+      { msg: 'Show the size surcharge on the cart line', hash: '7d0b113', ago: '25m ago', mine: true, unpushed: true },
+      { msg: 'Merge branch main into feat/checkout', hash: 'e93f04a', ago: '2h ago' },
+      { msg: 'Checkout: split totals into their own module', hash: '1b77c5d', ago: 'yesterday' }
+    ].map((k) => ({ ...k, dot: k.mine ? accent : '#3A4860', hashColor: k.unpushed ? '#F0B54A' : '#9AA8BA' }));
+
+    const recent = [
+      { title: 'Add a date filter to the orders view', project: 'billing-api', ago: '5h' },
+      { title: 'Batch print manager, build the spec', project: 'pdf-tools', ago: '2d' },
+      { title: 'Make the limit bar bigger and add resume', project: 'claude-fleet', ago: '3d' }
+    ].map((r) => ({ ...r, open: () => set({ active: 'fleet', view: 'chat' }) }));
+
+    const backgrounds = [
+      { key: 'harbor', label: 'Harbor at night' },
+      { key: 'ridge', label: 'Ridge at dusk' },
+      { key: 'contours', label: 'Contours' },
+      { key: 'none', label: 'No image' }
+    ].map((b) => ({
+      ...b,
+      url: urls[b.key] ?? '',
+      hasImage: b.key !== 'none',
+      pressed: b.key === bg ? 'true' : 'false',
+      ring: b.key === bg ? accent : 'transparent',
+      labelColor: b.key === bg ? '#E6EBF2' : '#9AA8BA',
+      pick: () => set({ bg: b.key })
+    }));
+
+    const send = () => {
+      const text = draft.trim();
+      if (!text) return;
+      if (view === 'home') {
+        const n = extra.length;
+        const id = 'new' + (n + 1);
+        set({
+          extra: extra.concat([{ id, name: 'claude-fleet-' + (n + 2), project: 'claude-fleet', branch: 'main', status: 'working', first: text }]),
+          active: id,
+          view: 'chat',
+          mode: 'chat',
+          draft: ''
+        });
+      } else {
+        const all = s.sent ?? {};
+        set({ sent: { ...all, [act.id]: (all[act.id] ?? []).concat([text]) }, draft: '', status: { ...(s.status ?? {}), [act.id]: 'working' } });
+      }
+    };
+
+    const isChat = view === 'chat';
+    const isTerminal = isChat && mode === 'terminal';
+    return {
+      accent,
+      me,
+      sessions,
+      sessionCount: sessions.length,
+      nextKey: 'F' + (sessions.length + 1),
+      summary,
+      recent,
+      accounts,
+      accountsOpen,
+      accountsOpenText: accountsOpen ? 'true' : 'false',
+      settingsOpen,
+      isHome: view === 'home',
+      isChat,
+      isChatMode: isChat && mode === 'chat',
+      isTerminal,
+      showGitPanel: isChat && showGit,
+      hasBg: bg !== 'none',
+      bgUrl: urls[bg] ?? '',
+      overlayOpacity: String((view === 'home' ? newDim : chatDim) / 100),
+      newDim,
+      chatDim,
+      draft,
+      active: { ...act, path: act.project + ' on ' + act.branch },
+      messages,
+      terminal,
+      changes,
+      commits,
+      backgrounds,
+      homeBg: view === 'home' ? '#1E2A3B' : 'transparent',
+      chatPressed: mode === 'chat' ? 'true' : 'false',
+      termPressed: mode === 'terminal' ? 'true' : 'false',
+      chatTabBg: mode === 'chat' ? '#273345' : 'transparent',
+      chatTabFg: mode === 'chat' ? '#E6EBF2' : '#9AA8BA',
+      termTabBg: mode === 'terminal' ? '#273345' : 'transparent',
+      termTabFg: mode === 'terminal' ? '#E6EBF2' : '#9AA8BA',
+      gitPressed: showGit ? 'true' : 'false',
+      gitBtnBorder: showGit ? accent : '#2F3C50',
+      gitBtnFg: showGit ? accent : '#C5CFDC',
+      carryText: carry ? 'true' : 'false',
+      leaveText: carry ? 'false' : 'true',
+      carryBg: carry ? '#273345' : 'transparent',
+      carryFg: carry ? '#E6EBF2' : '#9AA8BA',
+      leaveBg: carry ? 'transparent' : '#273345',
+      leaveFg: carry ? '#9AA8BA' : '#E6EBF2',
+      carryHint: carry
+        ? 'Each one restarts as the new account in its own slot and keeps its conversation.'
+        : 'They keep the old account until you restart them. New sessions use the new one.',
+      hasToast: !!s.toast,
+      toast: s.toast ?? '',
+      previewLabel: view === 'home' ? 'Preview a conversation' : 'Preview a new chat',
+      goHome: () => set({ view: 'home', accountsOpen: false }),
+      toggleAccounts: () => set({ accountsOpen: !accountsOpen }),
+      closeAccounts: () => set({ accountsOpen: false }),
+      carryOn: () => set({ carry: true }),
+      carryOff: () => set({ carry: false }),
+      addAccount: () => {
+        set({ accountsOpen: false, toast: 'New session opened with /login' });
+        clearTimeout(this.toastTimer);
+        this.toastTimer = setTimeout(() => this.setState({ toast: null }), 4200);
+      },
+      openSettings: () => set({ settingsOpen: true }),
+      closeSettings: () => set({ settingsOpen: false }),
+      previewOther: () => set({ view: view === 'home' ? 'chat' : 'home' }),
+      setNewDim: (e) => set({ newDim: Number(e.target.value) }),
+      setChatDim: (e) => set({ chatDim: Number(e.target.value) }),
+      toChat: () => set({ mode: 'chat' }),
+      toTerminal: () => set({ mode: 'terminal' }),
+      toggleGit: () => set({ showGit: !showGit }),
+      onDraft: (e) => set({ draft: e.target.value }),
+      onKey: (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          send();
+        }
+      },
+      send
+    };
+  }
+}
+</script>
+</body>
+</html>

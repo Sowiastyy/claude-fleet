@@ -11,7 +11,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::{git, registry, session};
+use crate::{claude, git, registry};
 
 /// What `M` and the model button step through, cheapest first. The model the
 /// config names goes in front when it is none of these.
@@ -28,7 +28,7 @@ fences, no preamble.";
 pub fn generate(root: &Path, model: &str) -> Result<String, String> {
     let context = git::message_context(root);
 
-    let mut cmd = Command::new(session::claude_binary());
+    let mut cmd = Command::new(claude::claude_binary());
     cmd.current_dir(root)
         .args([
             "-p",

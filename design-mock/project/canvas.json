@@ -1,0 +1,19 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-11-09T11:40:00Z" },
+  "title": "Claude Fleet GUI",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1440, "h": 900, "title": "New chat — background 65% dark", "expand": "fill", "is_interactive": true, "radius": 12 },
+    "Conversation.dc.html": { "x": 1520, "y": 0, "w": 1440, "h": 900, "title": "Conversation — background 85% dark", "expand": "fill", "is_interactive": true, "radius": 12 },
+    "Terminal.dc.html": { "x": 0, "y": 1020, "w": 1440, "h": 900, "title": "Terminal toggle + git panel", "expand": "fill", "is_interactive": true, "radius": 12 },
+    "Hotswap.dc.html": { "x": 1520, "y": 1020, "w": 1440, "h": 900, "title": "Account hotswap", "expand": "fill", "is_interactive": true, "radius": 12 },
+    "Background.dc.html": { "x": 0, "y": 2040, "w": 1440, "h": 900, "title": "Background settings", "expand": "fill", "is_interactive": true, "radius": 12 }
+  },
+  "order": ["Main.dc.html", "Conversation.dc.html", "Terminal.dc.html", "Hotswap.dc.html", "Background.dc.html"],
+  "notes": {
+    "title": { "x": 0, "y": -300, "text": "Claude Fleet GUI — first pass", "kind": "title1", "maxW": 2960 },
+    "howto": { "x": 1520, "y": 2040, "w": 520, "size": "m", "fill": "gray", "text": "Every frame is live: press Play.\n\n• Type in the box and press Enter — a new session starts and the background goes from 65% to 85% dark.\n• Click a session in the list to open its conversation.\n• Chat / Terminal switches the same session between the chat view and the real Claude Code terminal.\n• Click the account at the top left to hotswap accounts.\n• Background (top right) picks the image and both darkness levels." }
+  }
+}

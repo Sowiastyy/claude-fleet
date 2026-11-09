@@ -64,6 +64,8 @@ const KEYCHAIN_POLL: Duration = Duration::from_secs(30);
 pub struct Account {
     pub uuid: String,
     pub email: String,
+    /// What the person is called, as the account says; may be empty.
+    pub name: String,
     /// The organisation the login is for; personal ones are named after the
     /// email by Anthropic, which makes them noise.
     pub org: String,
@@ -126,17 +128,25 @@ pub struct Accounts {
     last_keychain: Instant,
 }
 
+impl Default for Accounts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Accounts {
     pub fn new() -> Self {
-        // An `App` built in a test must not file the developer's own login.
-        #[cfg(test)]
-        return Self::with(Paths {
+        Self::with(Paths::real())
+    }
+
+    /// Accounts that read and write nowhere: for an app built in a test,
+    /// which must not file the developer's own login.
+    pub fn detached() -> Self {
+        Self::with(Paths {
             claude: std::env::temp_dir().join("fleet-accounts-nowhere"),
             global: std::env::temp_dir().join("fleet-accounts-nowhere.json"),
             keychain: false,
-        });
-        #[cfg(not(test))]
-        Self::with(Paths::real())
+        })
     }
 
     fn with(paths: Paths) -> Self {
@@ -355,6 +365,10 @@ fn summarise(profile: &Value) -> Option<Account> {
         return None;
     }
     let email = s(account.get("emailAddress"));
+    let mut name = s(account.get("displayName"));
+    if name.is_empty() {
+        name = s(account.get("fullName"));
+    }
     let mut org = s(account.get("organizationName"));
     if org.contains(&email) || org.ends_with("'s Organization") {
         org.clear();
@@ -368,6 +382,7 @@ fn summarise(profile: &Value) -> Option<Account> {
     Some(Account {
         uuid,
         email,
+        name,
         org,
         plan,
         usage: profile.get("usage").and_then(usage::from_cache),
