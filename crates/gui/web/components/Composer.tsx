@@ -1,8 +1,9 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { FileText, ImagePlus, X } from 'lucide-react';
-import type { Attachment } from '../api';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { FileText, ImagePlus, SquareSlash, SquareTerminal, X } from 'lucide-react';
+import type { Attachment, SlashCommand } from '../api';
 import { api, errorText } from '../api';
 import { imageFiles, readImage } from '../attachments';
+import { rankCommands, slashAt } from '../commands';
 
 const MAX_IMAGES = 20;
 const SHOWN = 8;
@@ -23,6 +24,11 @@ interface Props {
   /// The row under the text: pickers and the send button.
   children: ReactNode;
   className?: string;
+  /// What `/` offers; none, no menu.
+  commands?: SlashCommand[];
+  /// Send this text now: a command picked from the menu that takes nothing
+  /// after it.
+  onSubmit?: (text: string) => void;
 }
 
 // Each folder's file list, kept for a while: listing a big repo is not free.
@@ -72,6 +78,9 @@ export const Composer = forwardRef<HTMLTextAreaElement, Props>(function Composer
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [matches, setMatches] = useState<string[]>([]);
   const [hot, setHot] = useState(0);
+  const [slash, setSlash] = useState<string | null>(null);
+  const [slashHot, setSlashHot] = useState(0);
+  const slashList = useRef<HTMLUListElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   useImperativeHandle(ref, () => box.current!, []);
   const picker = useRef<HTMLInputElement>(null);
@@ -100,10 +109,44 @@ export const Composer = forwardRef<HTMLTextAreaElement, Props>(function Composer
     };
   }, [mention?.query, mention?.start, p.cwd]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const commandMatches = useMemo(
+    () => (slash === null || !p.commands?.length ? [] : rankCommands(p.commands, slash).slice(0, 60)),
+    [slash, p.commands],
+  );
+  useEffect(() => setSlashHot(0), [slash]);
+  // Sent or cleared from outside: the menu goes with the text.
+  useEffect(() => {
+    if (!p.value.startsWith('/')) setSlash(null);
+  }, [p.value]);
+  useEffect(() => {
+    slashList.current?.querySelector<HTMLElement>(`[data-i="${slashHot}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [slashHot]);
+
   const track = () => {
     const el = box.current;
     if (!el) return;
     setMention(p.cwd ? mentionAt(el.value, el.selectionStart) : null);
+    setSlash(slashAt(el.value, el.selectionStart));
+  };
+
+  /// Put the picked command in place of the word being typed; one that
+  /// takes nothing after it is sent at once when `run`.
+  const pick = (c: SlashCommand, run: boolean) => {
+    const el = box.current;
+    if (!el) return;
+    const rest = p.value.replace(/^\/\S*/, '').replace(/^\s+/, '');
+    setSlash(null);
+    if (run && !c.argumentHint && !rest && p.onSubmit) {
+      p.onSubmit(`/${c.name}`);
+      return;
+    }
+    const next = `/${c.name} ${rest}`;
+    const at = c.name.length + 2;
+    p.onChange(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(at, at);
+    });
   };
 
   const insert = (path: string) => {
@@ -139,7 +182,8 @@ export const Composer = forwardRef<HTMLTextAreaElement, Props>(function Composer
     if (read.length) p.onImages([...current.current, ...read]);
   };
 
-  const open = mention && matches.length > 0;
+  const slashOpen = commandMatches.length > 0;
+  const open = !slashOpen && mention && matches.length > 0;
 
   return (
     <div
@@ -166,6 +210,31 @@ export const Composer = forwardRef<HTMLTextAreaElement, Props>(function Composer
         void add(imageFiles(e.dataTransfer.files));
       }}
     >
+      {slashOpen && (
+        <ul className="mentions commands-menu" role="listbox" aria-label="Commands" ref={slashList}>
+          {commandMatches.map((c, i) => (
+            <li
+              key={c.name}
+              data-i={i}
+              role="option"
+              aria-selected={i === slashHot}
+              className={i === slashHot ? 'hot' : ''}
+              onMouseEnter={() => setSlashHot(i)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(c, true);
+              }}
+              title={c.description}
+            >
+              {c.terminal ? <SquareTerminal size={14} aria-hidden /> : <SquareSlash size={14} aria-hidden />}
+              <span className="cmd-name">/{c.name}</span>
+              {c.argumentHint && <span className="cmd-hint">{c.argumentHint}</span>}
+              <span className="cmd-desc">{c.description}</span>
+              {c.terminal && <span className="cmd-tag">terminal</span>}
+            </li>
+          ))}
+        </ul>
+      )}
       {open && (
         <ul className="mentions" role="listbox" aria-label="Files">
           {matches.map((f, i) => {
@@ -217,10 +286,37 @@ export const Composer = forwardRef<HTMLTextAreaElement, Props>(function Composer
         onChange={(e) => {
           p.onChange(e.target.value);
           setMention(p.cwd ? mentionAt(e.target.value, e.target.selectionStart) : null);
+          setSlash(slashAt(e.target.value, e.target.selectionStart));
         }}
         onClick={track}
-        onBlur={() => setMention(null)}
+        onBlur={() => {
+          setMention(null);
+          setSlash(null);
+        }}
         onKeyDown={(e) => {
+          if (slashOpen) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const n = commandMatches.length;
+              setSlashHot((h) => (h + (e.key === 'ArrowDown' ? 1 : n - 1)) % n);
+              return;
+            }
+            if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+              const c = commandMatches[slashHot];
+              // Enter on a command already typed in full sends it as it is.
+              if (!(e.key === 'Enter' && slash === c.name)) {
+                e.preventDefault();
+                pick(c, e.key === 'Enter');
+                return;
+              }
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              e.stopPropagation();
+              setSlash(null);
+              return;
+            }
+          }
           if (open) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault();

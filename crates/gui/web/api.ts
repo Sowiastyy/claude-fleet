@@ -16,6 +16,33 @@ export interface Session {
   model: string;
   permissionMode: string;
   startedAt: number;
+  /// Runs in the cloud (`claude --cloud`): terminal only.
+  cloud: boolean;
+  /// Its id and claude.ai/code link, once Claude Code has said them.
+  cloudId: string;
+  cloudUrl: string;
+  cloudTask: string;
+  /// Its terminal process is running.
+  alive: boolean;
+}
+
+/// A slash command Claude Code runs, as it describes it.
+export interface SlashCommand {
+  name: string;
+  description: string;
+  argumentHint: string;
+  aliases: string[];
+  /// Only the interactive terminal has it.
+  terminal: boolean;
+}
+
+/// A cloud session seen here, to attach to again.
+export interface CloudRecent {
+  id: string;
+  url: string;
+  task: string;
+  cwd: string;
+  at: number;
 }
 
 export interface Foreign {
@@ -116,6 +143,13 @@ export interface NewSession {
   resume?: string;
   terminal?: boolean;
   images?: Attachment[];
+  /// A new cloud session for `prompt`, or with `resume` the existing one
+  /// that id or claude.ai/code link names.
+  cloud?: boolean;
+  /// Pull this cloud session into a local terminal session.
+  teleport?: string;
+  /// Typed into the terminal once Claude Code is up.
+  typeIn?: string;
 }
 
 // The stream-json objects Claude Code prints, plus the fleet's own
@@ -140,6 +174,14 @@ export const api = {
   configure: (id: string, model: string | null, permissionMode: string | null) =>
     invoke<void>('session_configure', { id, model, permissionMode }),
   close: (id: string) => invoke<void>('session_close', { id }),
+  terminalCommand: (id: string, text: string, rows: number, cols: number) =>
+    invoke<void>('session_terminal_command', { id, text, rows, cols }),
+  clear: (id: string) => invoke<void>('session_clear', { id }),
+  restartTerm: (id: string, rows: number, cols: number) => invoke<void>('session_restart', { id, rows, cols }),
+  commands: (cwd: string) => invoke<SlashCommand[]>('slash_commands', { cwd }),
+  cloudRecent: () => invoke<CloudRecent[]>('cloud_recent'),
+  cloudForget: (id: string) => invoke<void>('cloud_forget', { id }),
+  openUrl: (url: string) => invoke<void>('open_url', { url }),
   termWrite: (id: string, data: string) => invoke<void>('term_write', { id, data }),
   termResize: (id: string, rows: number, cols: number) => invoke<void>('term_resize', { id, rows, cols }),
   foreign: () => invoke<Foreign[]>('foreign_sessions'),

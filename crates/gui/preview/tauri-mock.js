@@ -1,17 +1,21 @@
 // A stand-in for the Tauri bridge, so the window's page can be opened in a
 // plain browser with made-up data: `npm run preview:ui`, then
 // http://localhost:1421/preview/ (add ?open=1 for a conversation,
-// ?open=1&git=1 for the git panel, ?accounts=1, ?bg=1).
+// ?open=1&git=1 for the git panel, ?accounts=1, ?bg=1, ?open=4 for the cloud
+// session, ?type=/co to type into the message box).
 (() => {
   const q = new URLSearchParams(location.search);
   if (q.get('git') === '1') localStorage.setItem('fleet.git', '1');
   else localStorage.removeItem('fleet.git');
+  localStorage.setItem('fleet.where', q.get('where') || 'local');
   const now = Date.now();
   const sessions = [
     { id: 's1', name: 'web-checkout', cwd: 'C:\\code\\smartwood-web', conversation: 'a', view: 'chat', status: 'working', waitingFor: '', model: 'claude-opus-5-5', permissionMode: 'default', startedAt: now - 840e3 },
     { id: 's2', name: 'orders-api', cwd: 'C:\\code\\smartwood-api', conversation: 'b', view: 'chat', status: 'waiting', waitingFor: 'permission', model: '', permissionMode: 'default', startedAt: now - 3720e3 },
     { id: 's3', name: 'claude-fleet', cwd: 'C:\\code\\claude-fleet', conversation: 'c', view: 'terminal', status: 'idle', waitingFor: '', model: '', permissionMode: 'acceptEdits', startedAt: now - 2280e3 },
-  ];
+    { id: 's4', name: 'smartwood-web', cwd: 'C:\\code\\smartwood-web', conversation: 'd', view: 'terminal', status: 'working', waitingFor: '', model: '', permissionMode: 'default', startedAt: now - 600e3, cloud: true, cloudId: 'cse_01HkV2m9', cloudUrl: 'https://claude.ai/code/cse_01HkV2m9', cloudTask: 'Upgrade the image pipeline to sharp 0.34' },
+  ].map((s) => ({ cloud: false, cloudId: '', cloudUrl: '', cloudTask: '', alive: true, ...s }));
+  const cmd = (name, description, argumentHint = '', terminal = false, aliases = []) => ({ name, description, argumentHint, aliases, terminal });
   const log = [
     { type: 'fleet_user', text: 'The checkout total ignores the voucher when the cart has a mattress in it. Fix it and add a test.', images: ['data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300"><rect width="480" height="300" fill="#f4f1ea"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#d9d3c4"/><rect x="24" y="84" width="280" height="18" rx="4" fill="#bdb5a3"/><rect x="24" y="114" width="200" height="18" rx="4" fill="#bdb5a3"/><rect x="320" y="230" width="136" height="46" rx="8" fill="#c0403f"/></svg>')] },
     { type: 'fleet_note', text: 'Forked from f51217cf, running elsewhere' },
@@ -64,6 +68,25 @@
     git_state: git,
     settings_get: { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: q.get('theme') || 'harbor', accent: '' },
     background_custom: null,
+    slash_commands: [
+      cmd('compact', 'Free up context by summarizing the conversation so far', '<optional custom summarization instructions>'),
+      cmd('clear', 'Start a new session with empty context; previous session stays on disk (resumable with /resume)', '', false, ['reset', 'new']),
+      cmd('context', 'Show current context usage'),
+      cmd('model', 'Set the AI model for Claude Code', '<model>'),
+      cmd('init', 'Initialize a new CLAUDE.md file with codebase documentation'),
+      cmd('code-review', 'Review the current diff for correctness bugs', '[level] [target]'),
+      cmd('security-review', 'Complete a security review of the pending changes on the current branch'),
+      cmd('usage', 'Show session cost, plan usage, and activity stats', '', false, ['cost', 'stats']),
+      cmd('caveman:caveman-commit', '(caveman) Ultra-compressed commit message generator'),
+      cmd('config', 'Set a setting by key', 'key=value'),
+      cmd('login', 'Sign in to your Anthropic account', '', true),
+      cmd('resume', 'Resume a previous conversation', '[conversation id or search term]', true),
+      cmd('permissions', 'Manage allow and deny tool permission rules', '', true),
+    ],
+    cloud_recent: [
+      { id: 'cse_01HkV2m9', url: 'https://claude.ai/code/cse_01HkV2m9', task: 'Upgrade the image pipeline to sharp 0.34', cwd: 'C:\\code\\smartwood-web', at: now - 600e3 },
+      { id: 'session_011CUx9', url: 'https://claude.ai/code/session_011CUx9', task: 'Translate the invoice templates to Czech', cwd: 'C:\\code\\billing-api', at: now - 90000e3 },
+    ],
     update_state: { current: '0.2.0', available: q.get('update') ? 'v0.2.9' : null, installing: false, installed: q.get('update') === 'ready', checking: false },
   };
   let next = 1;
@@ -76,8 +99,17 @@
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
   const click = (sel, delay) => setTimeout(() => document.querySelector(sel)?.click(), delay);
-  if (q.get('open') === '1') click('.session-btn', 800);
+  if (q.get('open')) setTimeout(() => document.querySelectorAll('.session-btn')[Number(q.get('open')) - 1]?.click(), 800);
+  if (q.get('type')) {
+    setTimeout(() => {
+      const el = document.querySelector('textarea');
+      if (!el) return;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, q.get('type'));
+      el.focus();
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, 1800);
+  }
   if (q.get('accounts') === '1') click('.account-btn', 800);
   if (q.get('click')) click(q.get('click'), 1500);
-  if (q.get('bg') === '1') click(q.get('open') === '1' ? '[aria-label=Appearance]' : '.ghost-btn', 1200);
+  if (q.get('bg') === '1') click(q.get('open') ?'[aria-label=Appearance]' : '.ghost-btn', 1200);
 })();

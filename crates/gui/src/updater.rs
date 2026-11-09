@@ -136,6 +136,12 @@ struct Reopen {
     view: View,
     model: String,
     permission_mode: String,
+    /// A cloud session comes back attached to its id; one whose id never
+    /// showed does not come back (it would start a second cloud session).
+    #[serde(default)]
+    cloud: bool,
+    #[serde(default)]
+    cloud_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -165,6 +171,8 @@ pub fn restart(app: &AppHandle, up: &SharedUpdater, shared: &Shared, restore_pat
                 view: s.view,
                 model: s.model,
                 permission_mode: s.permission_mode,
+                cloud: s.cloud,
+                cloud_id: s.cloud_id,
             })
             .collect()
     };
@@ -200,6 +208,20 @@ pub fn reopen(shared: &Shared, restore_path: &Path) {
         return;
     }
     for s in r.sessions {
+        if s.cloud {
+            if !s.cloud_id.is_empty() {
+                let _ = hub::create(
+                    shared,
+                    NewSession {
+                        cwd: s.cwd,
+                        cloud: true,
+                        resume: Some(s.cloud_id),
+                        ..Default::default()
+                    },
+                );
+            }
+            continue;
+        }
         // A session that never got to say anything has no transcript to
         // resume; it comes back fresh.
         let resume = history::exists(&s.conversation).then_some(s.conversation);

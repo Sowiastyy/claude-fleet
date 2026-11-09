@@ -14,6 +14,12 @@
 //! window) cannot be resumed: Claude Code refuses it. Such a session forks
 //! instead, `--resume <old> --fork-session --session-id <new>`, and carries on
 //! as the copy.
+//!
+//! A cloud session (see `cloud`) runs on Anthropic's machines; here it is a
+//! terminal running `claude --cloud`, which has no chat view. A teleported
+//! one is the other way round: a cloud session pulled into a local process
+//! with `claude --teleport <id>`, which becomes an ordinary session once
+//! Claude Code reports the conversation it made for it.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -26,6 +32,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
+use crate::cloud;
 use fleet_core::{claude::claude_binary, history, registry};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
@@ -64,6 +71,16 @@ pub struct SessionView {
     pub model: String,
     pub permission_mode: String,
     pub started_at: u64,
+    /// Runs in the cloud, through `claude --cloud`.
+    pub cloud: bool,
+    /// The cloud session's id and link, once Claude Code has said them.
+    pub cloud_id: String,
+    pub cloud_url: String,
+    /// What the cloud session was started to do.
+    pub cloud_task: String,
+    /// Whether its terminal process is running (a chat starts its own with
+    /// the next message).
+    pub alive: bool,
 }
 
 struct ChatProc {
@@ -109,6 +126,13 @@ pub struct Session {
     generation: u64,
     chat: Option<ChatProc>,
     term: Option<TermProc>,
+    pub cloud: bool,
+    pub cloud_id: String,
+    pub cloud_url: String,
+    pub cloud_task: String,
+    /// The cloud session a local process is pulling in with `--teleport`,
+    /// until the registry tells which conversation it became.
+    teleport: Option<String>,
 }
 
 impl Session {
@@ -124,6 +148,11 @@ impl Session {
             model: self.model.clone(),
             permission_mode: self.permission_mode.clone(),
             started_at: self.started_at,
+            cloud: self.cloud,
+            cloud_id: self.cloud_id.clone(),
+            cloud_url: self.cloud_url.clone(),
+            cloud_task: self.cloud_task.clone(),
+            alive: self.term.is_some() || self.chat.is_some(),
         }
     }
 
@@ -132,6 +161,22 @@ impl Session {
     fn claude_args(&mut self) -> (Vec<String>, Option<Value>) {
         let mut args = Vec::new();
         let mut note = None;
+        if self.cloud {
+            // The cloud keeps the conversation; a new one is started from the
+            // task, and only a new one takes the model and mode chosen here.
+            if self.cloud_id.is_empty() {
+                args.extend(["--cloud".to_string(), self.cloud_task.clone()]);
+                self.push_choices(&mut args);
+            } else {
+                args.extend(["--cloud".to_string(), self.cloud_id.clone()]);
+            }
+            return (args, None);
+        }
+        if let Some(id) = self.teleport.clone() {
+            args.extend(["--teleport".to_string(), id]);
+            self.push_choices(&mut args);
+            return (args, None);
+        }
         if let Some(src) = self.fork_from.clone().filter(|_| !history::exists(&self.conversation)) {
             args.extend(fork_args(&src, &self.conversation));
         } else if self.started || history::exists(&self.conversation) {
@@ -147,16 +192,20 @@ impl Session {
         } else {
             args.extend(["--session-id".to_string(), self.conversation.clone()]);
         }
+        self.push_choices(&mut args);
+        for tool in &self.allowed_tools {
+            args.extend(["--allowedTools".to_string(), tool.clone()]);
+        }
+        (args, note)
+    }
+
+    fn push_choices(&self, args: &mut Vec<String>) {
         if !self.model.is_empty() {
             args.extend(["--model".to_string(), self.model.clone()]);
         }
         if !self.permission_mode.is_empty() && self.permission_mode != "default" {
             args.extend(["--permission-mode".to_string(), self.permission_mode.clone()]);
         }
-        for tool in &self.allowed_tools {
-            args.extend(["--allowedTools".to_string(), tool.clone()]);
-        }
-        (args, note)
     }
 
     /// Carry on as a copy of the conversation under a new id. Returns the
@@ -217,20 +266,30 @@ pub struct NewSession {
     pub type_in: Option<String>,
     #[serde(default)]
     pub images: Vec<Image>,
+    /// Run in the cloud: a new cloud session for `prompt`, or, with
+    /// `resume`, the existing one that id or claude.ai/code link names.
+    #[serde(default)]
+    pub cloud: bool,
+    /// Pull this cloud session into a local terminal session.
+    #[serde(default)]
+    pub teleport: Option<String>,
 }
 
 pub struct Hub {
     pub sessions: Vec<Session>,
     next: u64,
     app: AppHandle,
+    /// Where the cloud sessions seen are kept (see `cloud::remember`).
+    pub cloud_path: PathBuf,
 }
 
 impl Hub {
-    pub fn new(app: AppHandle) -> Shared {
+    pub fn new(app: AppHandle, cloud_path: PathBuf) -> Shared {
         Arc::new(Mutex::new(Self {
             sessions: Vec::new(),
             next: 1,
             app,
+            cloud_path,
         }))
     }
 
@@ -327,10 +386,35 @@ pub struct Image {
 }
 
 /// Start a session. Returns its id.
-pub fn create(shared: &Shared, req: NewSession) -> Result<String> {
+pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
     let cwd = PathBuf::from(&req.cwd);
     if !cwd.is_dir() {
         bail!("no such folder: {}", cwd.display());
+    }
+    let not_cloud = "not a cloud session id or claude.ai/code link";
+    let teleport = match req.teleport.as_deref() {
+        Some(t) => Some(cloud::id_of(t).context(not_cloud)?),
+        None => None,
+    };
+    // A cloud session, or one pulled out of the cloud, lives in its terminal.
+    let (cloud_id, cloud_task) = if req.cloud {
+        req.terminal = true;
+        match req.resume.take() {
+            Some(r) => (cloud::id_of(&r).context(not_cloud)?, String::new()),
+            None => {
+                let task = req.prompt.take().unwrap_or_default().trim().to_string();
+                if task.is_empty() {
+                    bail!("describe the task for the cloud session");
+                }
+                (String::new(), task)
+            }
+        }
+    } else {
+        (String::new(), String::new())
+    };
+    if teleport.is_some() {
+        req.terminal = true;
+        req.resume = None;
     }
     let id = {
         let mut hub = shared.lock().unwrap();
@@ -339,6 +423,33 @@ pub fn create(shared: &Shared, req: NewSession) -> Result<String> {
         let (conversation, started, log) = match &req.resume {
             Some(conv) => (conv.clone(), true, load_transcript(conv)),
             None => (uuid::Uuid::new_v4().to_string(), false, Vec::new()),
+        };
+        // An attached cloud session takes back the task it was started with.
+        let cloud_task = if req.cloud && cloud_task.is_empty() {
+            cloud::recent(&hub.cloud_path)
+                .into_iter()
+                .find(|r| r.id == cloud_id)
+                .map(|r| r.task)
+                .unwrap_or_default()
+        } else {
+            cloud_task
+        };
+        if !cloud_id.is_empty() {
+            cloud::remember(
+                &hub.cloud_path,
+                cloud::Recent {
+                    id: cloud_id.clone(),
+                    url: cloud::url_of(&cloud_id),
+                    task: cloud_task.clone(),
+                    cwd: cwd.display().to_string(),
+                    at: now_ms(),
+                },
+            );
+        }
+        let cloud_url = if cloud_id.is_empty() {
+            String::new()
+        } else {
+            cloud::url_of(&cloud_id)
         };
         let name = hub.free_name(&cwd);
         hub.sessions.push(Session {
@@ -369,14 +480,22 @@ pub fn create(shared: &Shared, req: NewSession) -> Result<String> {
             generation: 0,
             chat: None,
             term: None,
+            cloud: req.cloud,
+            cloud_id,
+            cloud_url,
+            cloud_task,
+            teleport,
         });
         hub.emit_sessions();
         id
     };
     if req.terminal {
-        start_term(shared, &id, 30, 100)?;
+        if let Err(e) = start_term(shared, &id, 30, 100) {
+            let _ = close(shared, &id);
+            return Err(e);
+        }
         if let Some(text) = req.type_in {
-            type_when_ready(shared.clone(), id.clone(), text);
+            type_when_ready(shared.clone(), id.clone(), text, STARTUP_WAIT_MS);
         }
     } else {
         let prompt = req.prompt.unwrap_or_default();
@@ -569,7 +688,10 @@ fn last_lines(text: &str, n: usize) -> String {
 /// Bookkeeping hooks and command lists are Claude Code talking to itself.
 fn worth_keeping(event: &Value) -> bool {
     match event.get("type").and_then(Value::as_str) {
-        Some("system") => event.get("subtype").and_then(Value::as_str) == Some("init"),
+        Some("system") => matches!(
+            event.get("subtype").and_then(Value::as_str),
+            Some("init") | Some("compact_boundary")
+        ),
         Some("stream_event") => false,
         _ => true,
     }
@@ -628,6 +750,12 @@ pub fn set_view(shared: &Shared, id: &str, view: View, rows: u16, cols: u16) -> 
         let s = hub.find_mut(id)?;
         if s.view == view {
             return Ok(());
+        }
+        if view == View::Chat && s.cloud {
+            bail!("a cloud session runs in its terminal; open it on claude.ai for the web view");
+        }
+        if view == View::Chat && s.teleport.is_some() {
+            bail!("the teleport has not finished yet; the chat opens once Claude Code has the conversation");
         }
         s.view = view;
         match view {
@@ -691,11 +819,15 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     let id = id.to_string();
     let shared = shared.clone();
     let note_sent = note.is_some();
+    let ordinary = !s.cloud && s.teleport.is_none();
+    let mut watch_link = s.cloud && s.cloud_id.is_empty();
     thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         let b64 = base64::engine::general_purpose::STANDARD;
         // The start of what it printed, to tell a refusal from a real exit.
         let mut head: Vec<u8> = Vec::new();
+        // The latest stretch of output, for a new cloud session's link.
+        let mut tail = String::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -707,6 +839,19 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
                         "fleet://term",
                         json!({ "id": id, "data": b64.encode(&buf[..n]) }),
                     );
+                    if watch_link {
+                        tail.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if let Some((cloud_id, url)) = cloud::find_link(&tail) {
+                            watch_link = false;
+                            adopt_cloud_id(&shared, &id, generation, cloud_id, url);
+                        } else if tail.len() > 16 * 1024 {
+                            let mut cut = tail.len() - 4 * 1024;
+                            while !tail.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            tail.drain(..cut);
+                        }
+                    }
                 }
             }
         }
@@ -717,7 +862,7 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
         }
         s.term = None;
         s.status = Status::Idle;
-        if !note_sent && s.fork_from.is_none() && refused_as_busy(&String::from_utf8_lossy(&head)) {
+        if ordinary && !note_sent && s.fork_from.is_none() && refused_as_busy(&String::from_utf8_lossy(&head)) {
             let note = s.fork();
             hub.emit_event(&id, &note);
             hub.emit_sessions();
@@ -734,15 +879,101 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     Ok(())
 }
 
-/// Type `text` and Enter into a terminal once Claude Code has drawn its
-/// prompt; a fixed wait, since a fresh process drops what comes too early.
-fn type_when_ready(shared: Shared, id: String, text: String) {
+/// A new cloud session's link, read off its terminal: kept on the session
+/// and in the list of cloud sessions.
+fn adopt_cloud_id(shared: &Shared, id: &str, generation: u64, cloud_id: String, url: String) {
+    let mut hub = shared.lock().unwrap();
+    let path = hub.cloud_path.clone();
+    let Ok(s) = hub.find_mut(id) else { return };
+    if s.generation != generation || !s.cloud_id.is_empty() {
+        return;
+    }
+    s.cloud_id = cloud_id.clone();
+    s.cloud_url = url.clone();
+    let entry = cloud::Recent {
+        id: cloud_id,
+        url,
+        task: s.cloud_task.clone(),
+        cwd: s.cwd.display().to_string(),
+        at: now_ms(),
+    };
+    cloud::remember(&path, entry);
+    hub.emit_sessions();
+}
+
+/// How long a fresh Claude Code takes to draw its prompt: what is typed
+/// before that is dropped.
+const STARTUP_WAIT_MS: u64 = 3500;
+
+/// Type `text` and Enter into a terminal after `wait_ms`.
+fn type_when_ready(shared: Shared, id: String, text: String, wait_ms: u64) {
     thread::spawn(move || {
-        thread::sleep(std::time::Duration::from_millis(3500));
+        thread::sleep(std::time::Duration::from_millis(wait_ms));
         let _ = term_write(&shared, &id, &text);
         thread::sleep(std::time::Duration::from_millis(300));
         let _ = term_write(&shared, &id, "\r");
     });
+}
+
+/// Run a command only the interactive terminal has (`/login`, `/resume`):
+/// show the session's terminal, starting it when it is not running, and
+/// type the command into it.
+pub fn terminal_command(shared: &Shared, id: &str, text: &str, rows: u16, cols: u16) -> Result<()> {
+    let (view, running) = {
+        let hub = shared.lock().unwrap();
+        let s = hub.find(id).context("no such session")?;
+        (s.view, s.term.is_some())
+    };
+    let wait = if view == View::Terminal && running {
+        0
+    } else {
+        if view == View::Terminal {
+            start_term(shared, id, rows, cols)?;
+        } else {
+            set_view(shared, id, View::Terminal, rows, cols)?;
+        }
+        STARTUP_WAIT_MS
+    };
+    type_when_ready(shared.clone(), id.to_string(), text.to_string(), wait);
+    Ok(())
+}
+
+/// Start a terminal session's process again after it exited.
+pub fn restart_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
+    {
+        let hub = shared.lock().unwrap();
+        let s = hub.find(id).context("no such session")?;
+        if s.view != View::Terminal {
+            bail!("the session is showing its chat");
+        }
+        if s.term.is_some() {
+            return Ok(());
+        }
+    }
+    start_term(shared, id, rows, cols)
+}
+
+/// Start over on a new, empty conversation in the same session, as `/clear`
+/// does. The old one stays in Claude Code's history.
+pub fn clear(shared: &Shared, id: &str) -> Result<()> {
+    let mut hub = shared.lock().unwrap();
+    let s = hub.find_mut(id)?;
+    if s.cloud {
+        bail!("a cloud session cannot be cleared from here");
+    }
+    s.generation += 1;
+    s.stop_chat();
+    s.conversation = uuid::Uuid::new_v4().to_string();
+    s.started = false;
+    s.fork_from = None;
+    s.teleport = None;
+    s.pending = None;
+    s.last_pids.clear();
+    s.status = Status::Idle;
+    s.waiting_for.clear();
+    s.log = vec![json!({ "type": "fleet_note", "text": "New conversation" })];
+    hub.emit_sessions();
+    Ok(())
 }
 
 pub fn term_write(shared: &Shared, id: &str, data: &str) -> Result<()> {
@@ -823,7 +1054,13 @@ pub fn restart_all(shared: &Shared) -> usize {
             s.stop_chat();
             if s.term.is_some() {
                 s.stop_term();
-                terms.push(s.id.clone());
+                // A new cloud session whose link never showed would start a
+                // second one on the same task: it stays stopped instead.
+                if s.cloud && s.cloud_id.is_empty() {
+                    s.status = Status::Idle;
+                } else {
+                    terms.push(s.id.clone());
+                }
             } else if s.status == Status::Working {
                 s.status = Status::Idle;
             }
@@ -842,6 +1079,7 @@ pub fn restart_all(shared: &Shared) -> usize {
 pub fn sync_registry(shared: &Shared, entries: &[registry::RegistryEntry]) {
     let mut hub = shared.lock().unwrap();
     let mut changed = false;
+    let mut seen: Vec<cloud::Recent> = Vec::new();
     for s in hub.sessions.iter_mut() {
         let Some(pid) = s.term.as_ref().and_then(|t| t.pid) else {
             continue;
@@ -849,6 +1087,31 @@ pub fn sync_registry(shared: &Shared, entries: &[registry::RegistryEntry]) {
         let Some(e) = registry::find_by_pid(entries, pid) else {
             continue;
         };
+        // A teleported session becomes the local conversation it was
+        // pulled into.
+        if s.teleport.is_some() && !e.session_id.is_empty() && cloud::id_of(&e.session_id).is_none() {
+            s.teleport = None;
+            s.conversation = e.session_id.clone();
+            s.started = true;
+            changed = true;
+        }
+        // A cloud session's process may name the cloud session before its
+        // screen shows the link.
+        if s.cloud
+            && s.cloud_id.is_empty()
+            && let Some(cloud_id) = cloud::id_of(&e.session_id)
+        {
+            s.cloud_url = cloud::url_of(&cloud_id);
+            s.cloud_id = cloud_id.clone();
+            seen.push(cloud::Recent {
+                id: cloud_id,
+                url: s.cloud_url.clone(),
+                task: s.cloud_task.clone(),
+                cwd: s.cwd.display().to_string(),
+                at: now_ms(),
+            });
+            changed = true;
+        }
         let status = match e.status.as_str() {
             "busy" => Status::Working,
             "waiting" => Status::Waiting,
@@ -859,6 +1122,9 @@ pub fn sync_registry(shared: &Shared, entries: &[registry::RegistryEntry]) {
             s.waiting_for = e.waiting_for.clone();
             changed = true;
         }
+    }
+    for entry in seen {
+        cloud::remember(&hub.cloud_path, entry);
     }
     if changed {
         hub.emit_sessions();
@@ -886,6 +1152,9 @@ pub fn load_transcript(conversation: &str) -> Vec<Value> {
             continue;
         }
         match v.get("type").and_then(Value::as_str) {
+            Some("system") if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
+                out.push(json!({ "type": "fleet_note", "text": "Conversation compacted" }));
+            }
             Some("assistant") => out.push(json!({ "type": "assistant", "message": v["message"] })),
             Some("user") => {
                 let content = &v["message"]["content"];
@@ -936,11 +1205,27 @@ fn image_url(item: &Value) -> Option<String> {
 }
 
 /// What a person typed, or `None` for what Claude Code wrote in their name:
-/// command echoes, reminders, interruption notes.
+/// reminders, command output, interruption notes. A slash command comes back
+/// as it was typed.
 fn said(text: &str) -> Option<String> {
     let t = text.trim();
+    if let Some(name) = tag(t, "command-name") {
+        let args = tag(t, "command-args").unwrap_or_default();
+        let name = if name.starts_with('/') { name } else { format!("/{name}") };
+        return Some(if args.is_empty() { name } else { format!("{name} {args}") });
+    }
     if t.is_empty() || t.starts_with('<') || t.starts_with("[Request interrupted") {
         return None;
     }
     Some(t.to_string())
+}
+
+/// The trimmed text inside `<name>...</name>`, when there is any.
+fn tag(text: &str, name: &str) -> Option<String> {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    let inner = text[start..end].trim();
+    (!inner.is_empty()).then(|| inner.to_string())
 }

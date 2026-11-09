@@ -11,7 +11,10 @@ import {
   Circle,
   CircleAlert,
   CircleDot,
+  Cloud,
   Copy,
+  ExternalLink,
+  RotateCw,
   FilePlus,
   FileText,
   GitBranch,
@@ -20,6 +23,7 @@ import {
   ListTodo,
   LoaderCircle,
   MessageSquare,
+  MonitorDown,
   Palette,
   Pencil,
   Sailboat,
@@ -31,8 +35,9 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import type { Attachment, Event, GitState, Session, View } from '../api';
+import type { Attachment, Event, GitState, Session, SlashCommand, View } from '../api';
 import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
+import { commandsFor, routeSlash } from '../commands';
 import { copyText } from '../clipboard';
 import {
   allowRule,
@@ -72,6 +77,15 @@ interface Props {
   onToggleGit: () => void;
   onAppearance: () => void;
   onError: (text: string) => void;
+  /// `/clear`: start over on a new conversation.
+  onClear: () => void;
+  /// Run a command only the interactive terminal has.
+  onTerminalCommand: (text: string) => void;
+  onOpenUrl: (url: string) => void;
+  /// Pull this cloud session into a local session.
+  onTeleport: () => void;
+  /// Start the terminal again after it exited.
+  onRestart: () => void;
 }
 
 export function Conversation(p: Props) {
@@ -83,20 +97,46 @@ export function Conversation(p: Props) {
         <span className={`dot ${s.status}`} aria-hidden />
         <div className="stack" style={{ flex: 'none', maxWidth: '40%' }}>
           <span className="ellipsis" style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</span>
-          <span className="small mist ellipsis">
-            {s.cwd}
-            {branch ? ` on ${branch}` : ''}
+          <span className="small mist ellipsis" title={s.cloud ? s.cloudTask : undefined}>
+            {s.cloud && s.cloudTask ? s.cloudTask : s.cwd}
+            {!s.cloud && branch ? ` on ${branch}` : ''}
           </span>
         </div>
         <span className={`chip status-text ${s.status}`}>{statusLabel(s)}</span>
+        {s.cloud && (
+          <span className="chip cloud-chip" title={s.cloudId || 'Waiting for the cloud session link'}>
+            <Cloud size={12} aria-hidden /> {s.cloudId ? 'cloud' : 'cloud, starting'}
+          </span>
+        )}
         <div style={{ flex: 1 }} />
+        {s.view === 'terminal' && !s.alive && s.status !== 'starting' && (
+          <button type="button" className="btn btn-icon-text" onClick={p.onRestart} title="Its process has exited">
+            <RotateCw size={13} aria-hidden /> Restart
+          </button>
+        )}
+        {s.cloud && s.cloudUrl && (
+          <button type="button" className="btn btn-icon-text" onClick={() => p.onOpenUrl(s.cloudUrl)} title={s.cloudUrl}>
+            <ExternalLink size={13} aria-hidden /> claude.ai
+          </button>
+        )}
+        {s.cloud && s.cloudId && (
+          <button type="button" className="btn btn-icon-text" onClick={p.onTeleport} title="Continue this cloud session in a local session (claude --teleport)">
+            <MonitorDown size={13} aria-hidden /> Teleport
+          </button>
+        )}
         {s.view === 'chat' && s.status === 'working' && (
           <button type="button" className="btn" onClick={p.onStop} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Square size={13} aria-hidden /> Stop
           </button>
         )}
         <div className="segmented" role="group" aria-label="View">
-          <button type="button" aria-pressed={s.view === 'chat'} onClick={() => p.onView('chat')}>
+          <button
+            type="button"
+            aria-pressed={s.view === 'chat'}
+            disabled={s.cloud}
+            title={s.cloud ? 'A cloud session runs in its terminal' : undefined}
+            onClick={() => p.onView('chat')}
+          >
             <MessageSquare size={14} aria-hidden /> Chat
           </button>
           <button type="button" aria-pressed={s.view === 'terminal'} onClick={() => p.onView('terminal')}>
@@ -136,8 +176,17 @@ function ChatThread(p: Props) {
   const [draft, setDraftState] = useState(() => drafts.get(s.id)?.text ?? '');
   const [images, setImagesState] = useState<Attachment[]>(() => drafts.get(s.id)?.images ?? []);
   const [shown, setShown] = useState<string | null>(null);
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
   const box = useRef<HTMLTextAreaElement>(null);
   const working = s.status === 'working';
+
+  useEffect(() => {
+    let live = true;
+    void commandsFor(s.cwd).then((c) => live && setCommands(c));
+    return () => {
+      live = false;
+    };
+  }, [s.cwd]);
 
   const setDraft = (text: string) => {
     setDraftState(text);
@@ -164,12 +213,31 @@ function ChatThread(p: Props) {
   }, []);
 
   const ready = !!draft.trim() || images.length > 0;
-  const send = () => {
-    if (!ready) return;
-    p.onSend(draft.trim(), images);
-    setDraftState('');
-    setImagesState([]);
-    drafts.delete(s.id);
+  const send = (typed?: string) => {
+    const text = (typed ?? draft).trim();
+    if (!text && !images.length) return;
+    const done = () => {
+      setDraftState('');
+      setImagesState([]);
+      drafts.delete(s.id);
+    };
+    const route = images.length ? { kind: 'chat' as const } : routeSlash(text, commands);
+    switch (route.kind) {
+      case 'clear':
+        done();
+        p.onClear();
+        return;
+      case 'model':
+        done();
+        p.onConfigure(route.model, null);
+        return;
+      case 'terminal':
+        done();
+        p.onTerminalCommand(text);
+        return;
+    }
+    p.onSend(text, images);
+    done();
     toBottom();
   };
   const reuse = (text: string) => {
@@ -226,6 +294,8 @@ function ChatThread(p: Props) {
           onImages={setImages}
           onError={p.onError}
           cwd={s.cwd}
+          commands={commands}
+          onSubmit={send}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -262,7 +332,7 @@ function ChatThread(p: Props) {
               <Square size={14} aria-hidden />
             </button>
           ) : (
-            <button type="button" className="send-btn" aria-label="Send" disabled={!ready} onClick={send}>
+            <button type="button" className="send-btn" aria-label="Send" disabled={!ready} onClick={() => send()}>
               <ArrowUp size={16} strokeWidth={2.25} aria-hidden />
             </button>
           )}

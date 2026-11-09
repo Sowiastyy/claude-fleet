@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, GitBranch, History, Palette, Plus, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
+import { Check, CircleAlert, Cloud, ExternalLink, GitBranch, History, Palette, Plus, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
 import {
   api,
   errorText,
   on,
   type Account,
   type Accounts,
+  type CloudRecent,
   type Event,
   type Foreign,
   type Recent,
   type GitState,
+  type NewSession,
   type Session,
   type Settings,
   type UpdateState,
@@ -25,6 +27,7 @@ import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
 import { AppearanceDialog } from './components/AppearanceDialog';
 import { CommandPalette, type Command } from './components/CommandPalette';
+import { isCloudRef } from './commands';
 
 const DEFAULTS: Settings = { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: 'harbor', accent: '' };
 
@@ -44,6 +47,7 @@ export function App() {
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [recent, setRecent] = useState<Recent[]>([]);
+  const [clouds, setClouds] = useState<CloudRecent[]>([]);
   const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const ticks = useRef(0);
@@ -120,16 +124,59 @@ export function App() {
   };
 
   const start = async (o: StartOpts) => {
+    const req: NewSession = o.cloud
+      ? isCloudRef(o.prompt)
+        ? { cwd: o.cwd, cloud: true, resume: o.prompt.trim() }
+        : { cwd: o.cwd, cloud: true, prompt: o.prompt, model: o.model || undefined, permissionMode: o.mode }
+      : {
+          cwd: o.cwd,
+          prompt: o.terminal ? undefined : o.prompt,
+          images: o.terminal ? [] : o.images,
+          model: o.model || undefined,
+          permissionMode: o.mode,
+          terminal: o.terminal,
+          typeIn: o.typeIn,
+        };
     try {
-      const id = await api.create({
-        cwd: o.cwd,
-        prompt: o.terminal ? undefined : o.prompt,
-        images: o.terminal ? [] : o.images,
-        model: o.model || undefined,
-        permissionMode: o.mode,
-        terminal: o.terminal,
-      });
-      select(id);
+      select(await api.create(req));
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const attachCloud = async (r: CloudRecent) => {
+    try {
+      select(await api.create({ cwd: r.cwd, cloud: true, resume: r.id }));
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const teleport = async (s: Session) => {
+    try {
+      select(await api.create({ cwd: s.cwd, teleport: s.cloudId }));
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const openUrl = (url: string) => api.openUrl(url).catch((e) => notify(errorText(e), true));
+
+  const runInTerminal = async (text: string) => {
+    if (!active) return;
+    if (active.view === 'chat') termBuffer.reset(active.id);
+    try {
+      await api.terminalCommand(active.id, text, 30, 100);
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const clearSession = async () => {
+    if (!active) return;
+    try {
+      await api.clear(active.id);
+      await loadLog(active.id);
     } catch (e) {
       notify(errorText(e), true);
     }
@@ -216,7 +263,9 @@ export function App() {
   }, [sessions, accountsOpen, bgOpen, select]);
 
   useEffect(() => {
-    if (paletteOpen) api.recent().then(setRecent).catch(() => setRecent([]));
+    if (!paletteOpen) return;
+    api.recent().then(setRecent).catch(() => setRecent([]));
+    api.cloudRecent().then(setClouds).catch(() => setClouds([]));
   }, [paletteOpen]);
 
   const resume = async (r: Recent) => {
@@ -244,14 +293,21 @@ export function App() {
     { id: 'new', group: 'Actions', label: 'New session', hint: `F${Math.min(sessions.length + 1, 9)}`, icon: <Plus size={15} />, run: goHome },
     ...(active
       ? [
-          {
-            id: 'view',
-            group: 'Actions',
-            label: active.view === 'chat' ? 'Show terminal' : 'Show chat',
-            icon: active.view === 'chat' ? <SquareTerminal size={15} /> : <MessageSquare size={15} />,
-            run: () => void setView(active.view === 'chat' ? 'terminal' : 'chat'),
-          },
+          ...(active.cloud
+            ? []
+            : [
+                {
+                  id: 'view',
+                  group: 'Actions',
+                  label: active.view === 'chat' ? 'Show terminal' : 'Show chat',
+                  icon: active.view === 'chat' ? <SquareTerminal size={15} /> : <MessageSquare size={15} />,
+                  run: () => void setView(active.view === 'chat' ? 'terminal' : 'chat'),
+                },
+              ]),
           { id: 'git', group: 'Actions', label: showGit ? 'Hide git panel' : 'Show git panel', icon: <GitBranch size={15} />, run: toggleGit },
+          ...(active.cloud && active.cloudUrl
+            ? [{ id: 'cloud-open', group: 'Actions', label: 'Open on claude.ai', icon: <ExternalLink size={15} />, run: () => void openUrl(active.cloudUrl) }]
+            : []),
         ]
       : []),
     { id: 'appearance', group: 'Actions', label: 'Appearance', icon: <Palette size={15} />, run: () => setBgOpen(true) },
@@ -262,6 +318,14 @@ export function App() {
       hint: settings.theme === t.key ? 'current' : undefined,
       icon: <Sun size={15} />,
       run: () => saveSettings({ ...settings, theme: t.key }),
+    })),
+    ...clouds.map((r) => ({
+      id: `c-${r.id}`,
+      group: 'Cloud sessions',
+      label: r.task || r.id,
+      hint: r.id,
+      icon: <Cloud size={15} />,
+      run: () => void attachCloud(r),
     })),
     ...recent.map((r) => ({
       id: `r-${r.id}`,
@@ -313,6 +377,14 @@ export function App() {
               onToggleGit={toggleGit}
               onAppearance={() => setBgOpen(true)}
               onError={(t) => notify(t, true)}
+              onClear={() => void clearSession()}
+              onTerminalCommand={(t) => void runInTerminal(t)}
+              onOpenUrl={(u) => void openUrl(u)}
+              onTeleport={() => void teleport(active)}
+              onRestart={() => {
+                termBuffer.reset(active.id);
+                api.restartTerm(active.id, 30, 100).catch((e) => notify(errorText(e), true));
+              }}
             />
           ) : (
             <Home
@@ -320,6 +392,7 @@ export function App() {
               sessions={sessions}
               onStart={start}
               onResume={resume}
+              onAttachCloud={(r) => void attachCloud(r)}
               onAppearance={() => setBgOpen(true)}
               onError={(t) => notify(t, true)}
             />

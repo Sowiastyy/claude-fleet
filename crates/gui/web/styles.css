@@ -527,3 +527,19 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 .palette-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette-hint { flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--faint); }
 .palette-empty { padding: 16px; text-align: center; color: var(--faint); }
+
+/* ---------- slash commands, cloud sessions */
+.commands-menu { max-height: min(340px, 45vh); overflow-y: auto; }
+.commands-menu li { gap: 8px; }
+.cmd-name { flex: none; font-family: var(--mono); font-size: 12.5px; font-weight: 500; color: var(--fog); }
+.cmd-hint { flex: none; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+.cmd-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--mist); }
+.cmd-tag { flex: none; padding: 0 7px; border: 1px solid var(--rope-2); border-radius: 999px; font-size: 11px; color: var(--faint); }
+.cloud-chip { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); }
+.cloud-hint { display: inline-flex; align-items: center; gap: 6px; padding-left: 4px; }
+.btn-icon-text { display: flex; align-items: center; gap: 6px; }
+.session-name { display: flex; align-items: center; gap: 5px; }
+.cloud-mark { flex: none; color: var(--accent); }
+.segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
+/* The new-chat box sits high: its menus open below it. */
+.home .mentions { top: calc(100% + 6px); bottom: auto; }

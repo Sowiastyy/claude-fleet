@@ -59,6 +59,9 @@ export function toItems(events: Event[]): Item[] {
       case 'fleet_error':
         items.push({ kind: 'error', key: `e${i}`, text: String(e.text ?? '') });
         break;
+      case 'system':
+        if (e.subtype === 'compact_boundary') items.push({ kind: 'note', key: `n${i}`, text: 'Conversation compacted' });
+        break;
       case 'assistant': {
         const content = e.message?.content;
         if (!Array.isArray(content)) break;

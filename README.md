@@ -74,6 +74,21 @@ with Tauri and React from the same core (`crates/gui`).
   Graphite; an accent (the theme's, a preset, or your own, refused when it
   would not read on the background); an image behind everything, darkened
   65% on the new-chat screen and 85% in a conversation.
+- **Slash commands.** `/` in the message box lists Claude Code's commands
+  for that folder (built-ins, your own commands and skills, plugins), with
+  their descriptions, as Claude Code reports them. The chat runs them
+  (`/compact`, `/context`, `/review`, a skill); the ones only the
+  interactive terminal has (`/login`, `/resume`, `/permissions`, `/model`
+  with no model named) open the session's terminal and type themselves in.
+  `/clear` starts the session over on a new conversation, `/model opus`
+  switches the model.
+- **Cloud sessions.** **Where: Cloud** under the message box starts the task
+  as a Claude Code cloud session (`claude --cloud`, the ones claude.ai/code
+  shows), shown in its terminal here with a cloud mark. Paste a
+  claude.ai/code link or a session id instead of a task to attach to an
+  existing one. **claude.ai** opens it in the browser, **Teleport** carries
+  it on in a local session (`claude --teleport`), and the cloud sessions
+  seen are listed on the new-chat screen and in `Ctrl+K` to attach again.
 - **Busy conversations fork.** Resuming a conversation that another live
   Claude Code process holds (a background job, another window) starts a copy
   with `--fork-session` instead of failing with "That session is running in

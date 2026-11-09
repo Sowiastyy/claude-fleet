@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ChevronsUpDown, LoaderCircle, Plus, RotateCw, Sailboat, Search, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Sailboat, Search, X } from 'lucide-react';
 import type { Accounts, Foreign, Limits, Session, Status, UpdateState } from '../api';
 import { fmtDuration } from '../messages';
 
@@ -78,11 +78,14 @@ export function Sidebar(p: Props) {
               >
                 <span className={`dot ${s.status}`} aria-hidden />
                 <span className="stack" style={{ gap: 1 }}>
-                  <span className="ellipsis" style={{ fontWeight: 500 }}>{s.name}</span>
-                  <span className="small faint ellipsis">{s.cwd}</span>
+                  <span className="ellipsis session-name" style={{ fontWeight: 500 }}>
+                    {s.cloud && <Cloud size={13} aria-label="cloud" className="cloud-mark" />}
+                    {s.name}
+                  </span>
+                  <span className="small faint ellipsis">{s.cloud && s.cloudTask ? s.cloudTask : s.cwd}</span>
                   <span className={`small status-text ${s.status}`}>
                     {statusLabel(s)}
-                    {s.view === 'terminal' ? ', terminal' : ''}
+                    {s.cloud ? ', cloud' : s.view === 'terminal' ? ', terminal' : ''}
                   </span>
                 </span>
                 {i < 9 && <kbd style={{ marginTop: 2 }}>F{i + 1}</kbd>}

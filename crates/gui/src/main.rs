@@ -6,6 +6,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cloud;
+mod commands;
 mod hub;
 mod settings;
 mod updater;
@@ -38,6 +40,8 @@ struct App {
     updater: updater::SharedUpdater,
     /// Where a restart writes the sessions for the next start to reopen.
     restore_path: PathBuf,
+    /// Claude Code's slash commands, per folder.
+    commands: commands::Cache,
 }
 
 // ---------- sessions
@@ -92,6 +96,25 @@ fn session_close(app: State<'_, Arc<App>>, id: String) -> Res<()> {
     hub::close(&app.hub, &id).map_err(err)
 }
 
+/// Run a slash command only the interactive terminal has, in the session's
+/// terminal.
+#[tauri::command]
+fn session_terminal_command(app: State<'_, Arc<App>>, id: String, text: String, rows: u16, cols: u16) -> Res<()> {
+    hub::terminal_command(&app.hub, &id, &text, rows, cols).map_err(err)
+}
+
+/// Start a terminal session's process again after it exited.
+#[tauri::command]
+fn session_restart(app: State<'_, Arc<App>>, id: String, rows: u16, cols: u16) -> Res<()> {
+    hub::restart_term(&app.hub, &id, rows, cols).map_err(err)
+}
+
+/// `/clear`: the session starts over on a new conversation.
+#[tauri::command]
+fn session_clear(app: State<'_, Arc<App>>, id: String) -> Res<()> {
+    hub::clear(&app.hub, &id).map_err(err)
+}
+
 #[tauri::command]
 fn term_write(app: State<'_, Arc<App>>, id: String, data: String) -> Res<()> {
     hub::term_write(&app.hub, &id, &data).map_err(err)
@@ -123,6 +146,63 @@ fn foreign_sessions(app: State<'_, Arc<App>>) -> Vec<Foreign> {
             status: e.status.clone(),
         })
         .collect()
+}
+
+// ---------- slash commands and cloud sessions
+
+/// The slash commands Claude Code runs in `cwd`, for the message box.
+#[tauri::command]
+async fn slash_commands(app: State<'_, Arc<App>>, cwd: String) -> Res<Vec<commands::SlashCommand>> {
+    let app = app.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || app.commands.get(&cwd))
+        .await
+        .map_err(err)
+}
+
+/// The cloud sessions seen here, newest first.
+#[tauri::command]
+fn cloud_recent(app: State<'_, Arc<App>>) -> Vec<cloud::Recent> {
+    let path = app.hub.lock().unwrap().cloud_path.clone();
+    cloud::recent(&path)
+}
+
+#[tauri::command]
+fn cloud_forget(app: State<'_, Arc<App>>, id: String) {
+    let path = app.hub.lock().unwrap().cloud_path.clone();
+    cloud::forget(&path, &id);
+}
+
+/// Open a claude.ai page in the default browser. Only claude.ai, and only
+/// characters a link the app builds can have, so nothing here reaches a
+/// shell as anything but a link.
+#[tauri::command]
+fn open_url(url: String) -> Res<()> {
+    let safe = url.starts_with("https://claude.ai/")
+        && url
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/:._-?=".contains(c));
+    if !safe {
+        return Err("not a claude.ai link".into());
+    }
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("rundll32");
+        c.args(["url.dll,FileProtocolHandler", &url]);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&url);
+        c
+    };
+    cmd.spawn().map(|_| ()).map_err(err)
 }
 
 // ---------- accounts and limits
@@ -584,12 +664,13 @@ fn main() {
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("claude-fleet-gui"));
             let app = Arc::new(App {
-                hub: hub::Hub::new(handle.clone()),
+                hub: hub::Hub::new(handle.clone(), dir.join("cloud.json")),
                 accounts: Mutex::new(Accounts::new()),
                 limits: Mutex::new(usage::Watch::new()),
                 settings_path: dir.join("settings.json"),
                 updater: updater::Updater::new(),
                 restore_path: dir.join("restore.json"),
+                commands: commands::Cache::default(),
             });
             tauri_app.manage(app.clone());
             updater::reopen(&app.hub, &app.restore_path);
@@ -607,6 +688,13 @@ fn main() {
             session_allow,
             session_configure,
             session_close,
+            session_terminal_command,
+            session_clear,
+            session_restart,
+            slash_commands,
+            cloud_recent,
+            cloud_forget,
+            open_url,
             term_write,
             term_resize,
             foreign_sessions,
