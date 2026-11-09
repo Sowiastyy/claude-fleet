@@ -15,17 +15,21 @@ pub struct Settings {
     pub new_chat_dim: u8,
     /// Percent of black over the image in a conversation.
     pub chat_dim: u8,
+    /// `harbor`, `dark`, `light`, `blue` or `graphite`.
+    pub theme: String,
+    /// Empty for the theme's own, a preset name, or a `#rrggbb` color.
     pub accent: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: "harbor".into(),
             background: "harbor".into(),
             custom_image: None,
             new_chat_dim: 65,
             chat_dim: 85,
-            accent: "#E2B867".into(),
+            accent: String::new(),
         }
     }
 }

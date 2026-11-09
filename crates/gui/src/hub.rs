@@ -9,6 +9,11 @@
 //! The chat is `claude -p` speaking stream-json both ways: one JSON object per
 //! line in each direction, kept alive between turns. Every object it prints is
 //! kept in the session's log and sent on to the window as it arrives.
+//!
+//! A conversation another live process holds (a background job, another
+//! window) cannot be resumed: Claude Code refuses it. Such a session forks
+//! instead, `--resume <old> --fork-session --session-id <new>`, and carries on
+//! as the copy.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -90,6 +95,15 @@ pub struct Session {
     pub waiting_for: String,
     pub log: Vec<Value>,
     started_at: u64,
+    /// Set while the conversation is a fork of this one that Claude Code has
+    /// not written yet: the next process starts the fork, not a plain resume.
+    fork_from: Option<String>,
+    /// The processes this session ran, so its own just-killed one does not
+    /// count as someone else holding the conversation.
+    last_pids: Vec<u32>,
+    /// The last message written to the chat, kept until its turn ends so a
+    /// process that refuses to start can be replaced and sent it again.
+    pending: Option<String>,
     /// Bumped whenever a process is replaced, so a reader thread of the old
     /// one can tell that what it reads no longer counts.
     generation: u64,
@@ -113,12 +127,23 @@ impl Session {
         }
     }
 
-    /// The flags every process of this session starts with.
-    fn claude_args(&mut self) -> Vec<String> {
+    /// The flags every process of this session starts with, and the note to
+    /// show when it had to fork.
+    fn claude_args(&mut self) -> (Vec<String>, Option<Value>) {
         let mut args = Vec::new();
-        if self.started || history::exists(&self.conversation) {
+        let mut note = None;
+        if let Some(src) = self.fork_from.clone().filter(|_| !history::exists(&self.conversation)) {
+            args.extend(fork_args(&src, &self.conversation));
+        } else if self.started || history::exists(&self.conversation) {
             self.started = true;
-            args.extend(["--resume".to_string(), self.conversation.clone()]);
+            self.fork_from = None;
+            if held_elsewhere(&self.conversation, &self.last_pids) {
+                note = Some(self.fork());
+                let src = self.fork_from.clone().expect("just set");
+                args.extend(fork_args(&src, &self.conversation));
+            } else {
+                args.extend(["--resume".to_string(), self.conversation.clone()]);
+            }
         } else {
             args.extend(["--session-id".to_string(), self.conversation.clone()]);
         }
@@ -131,7 +156,19 @@ impl Session {
         for tool in &self.allowed_tools {
             args.extend(["--allowedTools".to_string(), tool.clone()]);
         }
-        args
+        (args, note)
+    }
+
+    /// Carry on as a copy of the conversation under a new id. Returns the
+    /// note the thread shows for it.
+    fn fork(&mut self) -> Value {
+        let src = std::mem::replace(&mut self.conversation, uuid::Uuid::new_v4().to_string());
+        let short: String = src.chars().take(8).collect();
+        self.fork_from = Some(src);
+        self.started = true;
+        let note = json!({ "type": "fleet_note", "text": format!("Forked from {short}, running elsewhere") });
+        self.log.push(note.clone());
+        note
     }
 
     fn stop_chat(&mut self) {
@@ -178,6 +215,8 @@ pub struct NewSession {
     /// Typed into the terminal once Claude Code is up, e.g. `/login`.
     #[serde(default)]
     pub type_in: Option<String>,
+    #[serde(default)]
+    pub images: Vec<Image>,
 }
 
 pub struct Hub {
@@ -251,6 +290,42 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn fork_args(src: &str, new: &str) -> [String; 5] {
+    [
+        "--resume".to_string(),
+        src.to_string(),
+        "--fork-session".to_string(),
+        "--session-id".to_string(),
+        new.to_string(),
+    ]
+}
+
+/// Whether a live Claude Code process other than `ours` has the
+/// conversation open.
+fn held_elsewhere(conversation: &str, ours: &[u32]) -> bool {
+    registry::read_all()
+        .iter()
+        .any(|e| e.session_id == conversation && !ours.contains(&e.pid))
+}
+
+/// What Claude Code says when the conversation is someone else's to resume.
+fn refused_as_busy(text: &str) -> bool {
+    text.contains("running in the background") || text.contains("--fork-session")
+}
+
+fn emit_to(app: &AppHandle, id: &str, event: &Value) {
+    let _ = app.emit("fleet://event", json!({ "id": id, "event": event }));
+}
+
+/// An image attached to a message, as the window read it.
+#[derive(serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Image {
+    pub media_type: String,
+    /// Base64, no `data:` prefix.
+    pub data: String,
+}
+
 /// Start a session. Returns its id.
 pub fn create(shared: &Shared, req: NewSession) -> Result<String> {
     let cwd = PathBuf::from(&req.cwd);
@@ -288,6 +363,9 @@ pub fn create(shared: &Shared, req: NewSession) -> Result<String> {
             waiting_for: String::new(),
             log,
             started_at: now_ms(),
+            fork_from: None,
+            last_pids: Vec::new(),
+            pending: None,
             generation: 0,
             chat: None,
             term: None,
@@ -300,14 +378,21 @@ pub fn create(shared: &Shared, req: NewSession) -> Result<String> {
         if let Some(text) = req.type_in {
             type_when_ready(shared.clone(), id.clone(), text);
         }
-    } else if let Some(prompt) = req.prompt.filter(|p| !p.trim().is_empty()) {
-        send(shared, &id, &prompt)?;
+    } else {
+        let prompt = req.prompt.unwrap_or_default();
+        if !prompt.trim().is_empty() || !req.images.is_empty() {
+            send(shared, &id, &prompt, &req.images)?;
+        }
     }
     Ok(id)
 }
 
 /// Send a message to the chat, starting its process when there is none.
-pub fn send(shared: &Shared, id: &str, text: &str) -> Result<()> {
+pub fn send(shared: &Shared, id: &str, text: &str, images: &[Image]) -> Result<()> {
+    let text = text.trim();
+    if text.is_empty() && images.is_empty() {
+        bail!("nothing to send");
+    }
     let mut hub = shared.lock().unwrap();
     let app = hub.app.clone();
     let s = hub.find_mut(id)?;
@@ -317,14 +402,35 @@ pub fn send(shared: &Shared, id: &str, text: &str) -> Result<()> {
     if s.chat.is_none() {
         start_chat(shared, s, app)?;
     }
+    let mut content: Vec<Value> = images
+        .iter()
+        .map(|i| {
+            json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": i.media_type, "data": i.data }
+            })
+        })
+        .collect();
+    if !text.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
     let line = json!({
         "type": "user",
-        "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
-    });
+        "message": { "role": "user", "content": content }
+    })
+    .to_string();
     let chat = s.chat.as_mut().expect("just started");
     writeln!(chat.stdin, "{line}").context("the chat process is gone")?;
     chat.stdin.flush()?;
-    let echo = json!({ "type": "fleet_user", "text": text });
+    s.pending = Some(line);
+    let echo = json!({
+        "type": "fleet_user",
+        "text": text,
+        "images": images
+            .iter()
+            .map(|i| format!("data:{};base64,{}", i.media_type, i.data))
+            .collect::<Vec<_>>(),
+    });
     s.log.push(echo.clone());
     s.status = Status::Working;
     s.waiting_for.clear();
@@ -351,6 +457,10 @@ pub fn interrupt(shared: &Shared, id: &str) -> Result<()> {
 }
 
 fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
+    let (args, note) = s.claude_args();
+    if let Some(note) = &note {
+        emit_to(&app, &s.id, note);
+    }
     let mut cmd = Command::new(claude_binary());
     cmd.current_dir(&s.cwd)
         .args([
@@ -361,7 +471,7 @@ fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
             "stream-json",
             "--verbose",
         ])
-        .args(s.claude_args())
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -379,6 +489,7 @@ fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
     s.generation += 1;
     let generation = s.generation;
     let id = s.id.clone();
+    s.last_pids = vec![child.id()];
     s.chat = Some(ChatProc { child, stdin });
 
     let errors = Arc::new(Mutex::new(String::new()));
@@ -411,9 +522,32 @@ fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
         if let Some(mut c) = s.chat.take() {
             let _ = c.child.wait();
         }
+        let text = errors.lock().unwrap().trim().to_string();
+        // Refused because another process holds the conversation: fork it
+        // and hand the copy the message the refusal swallowed.
+        if mid_turn
+            && s.fork_from.is_none()
+            && refused_as_busy(&text)
+            && let Some(line) = s.pending.clone()
+        {
+            let note = s.fork();
+            hub.emit_event(&id, &note);
+            let s = hub.find_mut(&id).expect("still there");
+            let retried = start_chat(&shared, s, app.clone()).and_then(|()| {
+                let chat = s.chat.as_mut().context("no chat")?;
+                writeln!(chat.stdin, "{line}")?;
+                chat.stdin.flush()?;
+                Ok(())
+            });
+            if retried.is_ok() {
+                hub.emit_sessions();
+                return;
+            }
+        }
+        let Ok(s) = hub.find_mut(&id) else { return };
         s.status = Status::Idle;
+        s.pending = None;
         if mid_turn {
-            let text = errors.lock().unwrap().trim().to_string();
             let event = json!({
                 "type": "fleet_error",
                 "text": if text.is_empty() { "Claude Code stopped".to_string() } else { last_lines(&text, 6) },
@@ -422,7 +556,6 @@ fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
             hub.emit_event(&id, &event);
         }
         hub.emit_sessions();
-        let _ = &app;
     });
     Ok(())
 }
@@ -459,6 +592,7 @@ fn on_chat_event(shared: &Shared, id: &str, generation: u64, event: Value) {
             s.status = Status::Working;
         }
         Some("result") => {
+            s.pending = None;
             let denied = event
                 .get("permission_denials")
                 .and_then(Value::as_array)
@@ -530,13 +664,18 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
             pixel_height: 0,
         })
         .context("no pseudoterminal")?;
+    let (args, note) = s.claude_args();
+    if let Some(note) = &note {
+        emit_to(&app, id, note);
+    }
     let mut cmd = CommandBuilder::new(claude_binary());
-    cmd.args(s.claude_args());
+    cmd.args(args);
     cmd.cwd(&s.cwd);
     cmd.env("TERM", "xterm-256color");
     let child = pair.slave.spawn_command(cmd).context("could not start claude")?;
     drop(pair.slave);
     let pid = child.process_id();
+    s.last_pids = pid.into_iter().collect();
     let mut reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
     s.generation += 1;
@@ -550,13 +689,19 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     });
     let id = id.to_string();
     let shared = shared.clone();
+    let note_sent = note.is_some();
     thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         let b64 = base64::engine::general_purpose::STANDARD;
+        // The start of what it printed, to tell a refusal from a real exit.
+        let mut head: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    if head.len() < 8 * 1024 {
+                        head.extend_from_slice(&buf[..n]);
+                    }
                     let _ = app.emit(
                         "fleet://term",
                         json!({ "id": id, "data": b64.encode(&buf[..n]) }),
@@ -566,12 +711,24 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
         }
         let mut hub = shared.lock().unwrap();
         let Ok(s) = hub.find_mut(&id) else { return };
-        if s.generation == generation {
-            s.term = None;
-            s.status = Status::Idle;
-            hub.emit_sessions();
-            let _ = app.emit("fleet://term-exit", json!({ "id": id }));
+        if s.generation != generation {
+            return;
         }
+        s.term = None;
+        s.status = Status::Idle;
+        if !note_sent && s.fork_from.is_none() && refused_as_busy(&String::from_utf8_lossy(&head)) {
+            let note = s.fork();
+            hub.emit_event(&id, &note);
+            hub.emit_sessions();
+            drop(hub);
+            let _ = app.emit("fleet://term-reset", json!({ "id": id }));
+            if start_term(&shared, &id, rows, cols).is_ok() {
+                return;
+            }
+            hub = shared.lock().unwrap();
+        }
+        hub.emit_sessions();
+        let _ = app.emit("fleet://term-exit", json!({ "id": id }));
     });
     Ok(())
 }
@@ -622,7 +779,7 @@ pub fn allow_tool(shared: &Shared, id: &str, tool: &str) -> Result<()> {
         // process with it.
         s.stop_chat();
     }
-    send(shared, id, &format!("{tool} is allowed now. Carry on."))
+    send(shared, id, &format!("{tool} is allowed now. Carry on."), &[])
 }
 
 /// Change the model or the permission mode. Both are start-up flags, so the
@@ -747,18 +904,34 @@ pub fn load_transcript(conversation: &str) -> Vec<Value> {
                 if !results.is_empty() {
                     out.push(json!({ "type": "user", "message": { "content": results } }));
                 }
-                for item in items {
-                    if item.get("type").and_then(Value::as_str) == Some("text")
-                        && let Some(text) = item.get("text").and_then(Value::as_str).and_then(said)
-                    {
-                        out.push(json!({ "type": "fleet_user", "text": text }));
-                    }
+                let texts: Vec<String> = items
+                    .iter()
+                    .filter(|i| i.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|i| i.get("text").and_then(Value::as_str).and_then(said))
+                    .collect();
+                let images: Vec<String> = items.iter().filter_map(image_url).collect();
+                if !texts.is_empty() || !images.is_empty() {
+                    out.push(json!({ "type": "fleet_user", "text": texts.join("\n\n"), "images": images }));
                 }
             }
             _ => {}
         }
     }
     out
+}
+
+/// An image block of a message as a data URL.
+fn image_url(item: &Value) -> Option<String> {
+    if item.get("type").and_then(Value::as_str) != Some("image") {
+        return None;
+    }
+    let src = item.get("source")?;
+    if src.get("type").and_then(Value::as_str) != Some("base64") {
+        return None;
+    }
+    let mime = src.get("media_type").and_then(Value::as_str)?;
+    let data = src.get("data").and_then(Value::as_str)?;
+    Some(format!("data:{mime};base64,{data}"))
 }
 
 /// What a person typed, or `None` for what Claude Code wrote in their name:

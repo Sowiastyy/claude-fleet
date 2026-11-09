@@ -8,6 +8,10 @@ import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource-variable/bricolage-grotesque';
 import './styles.css';
 import { App } from './App';
+import { applyStoredTheme } from './themes';
+
+// Before the first paint, so the window does not flash the default colors.
+applyStoredTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

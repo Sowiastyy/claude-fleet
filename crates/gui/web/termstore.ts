@@ -30,6 +30,17 @@ class TermBuffer {
   reset(id: string) {
     this.data.delete(id);
     this.sizes.delete(id);
+    this.resets.get(id)?.forEach((l) => l());
+  }
+
+  private resets = new Map<string, Set<() => void>>();
+
+  /// Told when the screen should be wiped under an open view.
+  onReset(id: string, l: () => void): () => void {
+    const set = this.resets.get(id) ?? new Set();
+    set.add(l);
+    this.resets.set(id, set);
+    return () => set.delete(l);
   }
 
   subscribe(id: string, l: Listener): () => void {

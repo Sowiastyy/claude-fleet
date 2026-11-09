@@ -14,15 +14,16 @@ import {
   type View,
 } from './api';
 import { backgroundUrl } from './backgrounds';
+import { applyTheme } from './themes';
 import { termBuffer } from './termstore';
 import { Sidebar } from './components/Sidebar';
 import { AccountMenu } from './components/AccountMenu';
-import { Home } from './components/Home';
+import { Home, type StartOpts } from './components/Home';
 import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
-import { BackgroundDialog } from './components/BackgroundDialog';
+import { AppearanceDialog } from './components/AppearanceDialog';
 
-const DEFAULTS: Settings = { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, accent: '#E2B867' };
+const DEFAULTS: Settings = { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: 'harbor', accent: '' };
 
 export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -59,7 +60,7 @@ export function App() {
     api.sessions().then(setSessions);
     api.accounts().then(setAccounts);
     api.foreign().then(setForeign);
-    api.settings().then(setSettings);
+    api.settings().then((s) => setSettings({ ...DEFAULTS, ...s }));
     api.customBackground().then(setCustom);
     const offs = [
       on<Session[]>('fleet://sessions', setSessions),
@@ -67,6 +68,7 @@ export function App() {
         setLogs((l) => ({ ...l, [id]: [...(l[id] ?? []), event] })),
       ),
       on<{ id: string; data: string }>('fleet://term', ({ id, data }) => termBuffer.push(id, data)),
+      on<{ id: string }>('fleet://term-reset', ({ id }) => termBuffer.reset(id)),
       on<Accounts>('fleet://accounts', setAccounts),
       on<string>('fleet://toast', (t) => notify(t)),
       on<unknown>('fleet://tick', () => {
@@ -78,8 +80,8 @@ export function App() {
   }, [notify]);
 
   useEffect(() => {
-    document.documentElement.style.setProperty('--accent', settings.accent);
-  }, [settings.accent]);
+    applyTheme(settings.theme, settings.accent);
+  }, [settings.theme, settings.accent]);
 
   // ----- git, for the header and the panel
   const refreshGit = useCallback(() => {
@@ -109,11 +111,12 @@ export function App() {
     setAccountsOpen(false);
   };
 
-  const start = async (o: { cwd: string; prompt: string; model: string; mode: string; terminal: boolean }) => {
+  const start = async (o: StartOpts) => {
     try {
       const id = await api.create({
         cwd: o.cwd,
         prompt: o.terminal ? undefined : o.prompt,
+        images: o.terminal ? [] : o.images,
         model: o.model || undefined,
         permissionMode: o.mode,
         terminal: o.terminal,
@@ -216,7 +219,7 @@ export function App() {
               events={logs[active.id] ?? []}
               git={git}
               showGit={showGit}
-              onSend={(t) => api.send(active.id, t).catch((e) => notify(errorText(e), true))}
+              onSend={(t, images) => api.send(active.id, t, images).catch((e) => notify(errorText(e), true))}
               onStop={() => void api.interrupt(active.id)}
               onView={setView}
               onAllow={(rule) => api.allow(active.id, rule).catch((e) => notify(errorText(e), true))}
@@ -225,7 +228,8 @@ export function App() {
                 localStorage.setItem('fleet.git', showGit ? '0' : '1');
                 setShowGit(!showGit);
               }}
-              onBackground={() => setBgOpen(true)}
+              onAppearance={() => setBgOpen(true)}
+              onError={(t) => notify(t, true)}
             />
           ) : (
             <Home
@@ -239,7 +243,8 @@ export function App() {
                   notify(errorText(e), true);
                 }
               }}
-              onBackground={() => setBgOpen(true)}
+              onAppearance={() => setBgOpen(true)}
+              onError={(t) => notify(t, true)}
             />
           )}
         </div>
@@ -266,7 +271,7 @@ export function App() {
         />
       )}
       {bgOpen && (
-        <BackgroundDialog
+        <AppearanceDialog
           settings={settings}
           custom={custom}
           onChange={saveSettings}

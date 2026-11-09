@@ -54,8 +54,8 @@ fn session_create(app: State<'_, Arc<App>>, req: NewSession) -> Res<String> {
 }
 
 #[tauri::command]
-fn session_send(app: State<'_, Arc<App>>, id: String, text: String) -> Res<()> {
-    hub::send(&app.hub, &id, &text).map_err(err)
+fn session_send(app: State<'_, Arc<App>>, id: String, text: String, images: Option<Vec<hub::Image>>) -> Res<()> {
+    hub::send(&app.hub, &id, &text, &images.unwrap_or_default()).map_err(err)
 }
 
 #[tauri::command]

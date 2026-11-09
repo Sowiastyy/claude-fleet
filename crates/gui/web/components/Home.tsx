@@ -1,22 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { ArrowUp, ChevronDown, Folder, History, ImageIcon, ShieldAlert, SquareTerminal } from 'lucide-react';
-import { api, type Recent, type Session } from '../api';
+import { ArrowUp, Folder, FolderOpen, History, Palette, SquareTerminal } from 'lucide-react';
+import { api, type Attachment, type Recent, type Session } from '../api';
+import { MODELS, MODES, nextMode } from '../choices';
 import { fmtAgo } from '../messages';
-
-export const MODELS: Array<[string, string]> = [
-  ['', 'Default model'],
-  ['opus', 'Opus'],
-  ['sonnet', 'Sonnet'],
-  ['haiku', 'Haiku'],
-];
-
-export const MODES: Array<[string, string]> = [
-  ['default', 'Asks first'],
-  ['acceptEdits', 'Accepts edits'],
-  ['plan', 'Plans only'],
-  ['bypassPermissions', 'Asks nothing'],
-];
+import { Composer } from './Composer';
+import { Picker, type Choice } from './Picker';
 
 const CHOOSE = '\u0000choose';
 
@@ -25,55 +14,59 @@ function folderName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-export function Pill(p: {
-  label: string;
-  icon?: React.ReactNode;
-  value: string;
-  options: Array<[string, string]>;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <label className="pill">
-      {p.icon}
-      <span className="sr-only">{p.label}</span>
-      <select value={p.value} onChange={(e) => p.onChange(e.target.value)}>
-        {p.options.map(([v, l]) => (
-          <option key={v} value={v}>
-            {l}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="chev" size={13} aria-hidden />
-    </label>
-  );
-}
-
 function greeting(): string {
   const h = new Date().getHours();
   return h < 5 ? 'Late night' : h < 12 ? 'Morning' : h < 18 ? 'Afternoon' : 'Evening';
 }
 
+export interface StartOpts {
+  cwd: string;
+  prompt: string;
+  images: Attachment[];
+  model: string;
+  mode: string;
+  terminal: boolean;
+}
+
 interface Props {
   name: string;
   sessions: Session[];
-  onStart: (opts: { cwd: string; prompt: string; model: string; mode: string; terminal: boolean }) => void;
+  onStart: (opts: StartOpts) => void;
   onResume: (r: Recent) => void;
-  onBackground: () => void;
+  onAppearance: () => void;
+  onError: (text: string) => void;
+}
+
+function stored(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function store(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Remembering is a nicety.
+  }
 }
 
 export function Home(p: Props) {
   const [draft, setDraft] = useState('');
+  const [images, setImages] = useState<Attachment[]>([]);
   const [cwd, setCwd] = useState('');
   const [projects, setProjects] = useState<string[]>([]);
-  const [model, setModel] = useState(() => localStorage.getItem('fleet.model') ?? '');
-  const [mode, setMode] = useState(() => localStorage.getItem('fleet.mode') ?? 'default');
+  const [model, setModel] = useState(() => stored('fleet.model', ''));
+  const [mode, setMode] = useState(() => stored('fleet.mode', 'default'));
   const [recent, setRecent] = useState<Recent[]>([]);
   const box = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     api.projects().then((ps) => {
       setProjects(ps);
-      const saved = localStorage.getItem('fleet.cwd');
+      const saved = stored('fleet.cwd', '');
       if (saved) setCwd(saved);
       else if (ps[0]) setCwd(ps[0]);
       else api.home().then(setCwd);
@@ -88,12 +81,18 @@ export function Home(p: Props) {
   };
   const choose = (dir: string) => {
     setCwd(dir);
-    localStorage.setItem('fleet.cwd', dir);
+    store('fleet.cwd', dir);
   };
+  const chooseMode = (v: string) => {
+    setMode(v);
+    store('fleet.mode', v);
+  };
+  const ready = !!draft.trim() || images.length > 0;
   const start = (terminal: boolean) => {
-    if (!cwd || (!terminal && !draft.trim())) return;
-    p.onStart({ cwd, prompt: draft.trim(), model, mode, terminal });
+    if (!cwd || (!terminal && !ready)) return;
+    p.onStart({ cwd, prompt: draft.trim(), images, model, mode, terminal });
     setDraft('');
+    setImages([]);
   };
 
   const waiting = p.sessions.filter((s) => s.status === 'waiting');
@@ -104,18 +103,18 @@ export function Home(p: Props) {
       ? `${p.sessions.length} running, ${waiting.map((s) => s.name).join(' and ')} ${waiting.length === 1 ? 'needs' : 'need'} you`
       : `${p.sessions.length} running, ${working} working`;
 
-  const folderOptions: Array<[string, string]> = [
-    ...(cwd && !projects.includes(cwd) ? [[cwd, folderName(cwd)] as [string, string]] : []),
-    ...projects.map((d) => [d, folderName(d)] as [string, string]),
-    [CHOOSE, 'Choose folder…'],
+  const folders: Choice[] = [
+    ...(cwd && !projects.includes(cwd) ? [{ value: cwd, label: folderName(cwd), hint: cwd, icon: <Folder size={14} aria-hidden /> }] : []),
+    ...projects.map((d) => ({ value: d, label: folderName(d), hint: d, icon: <Folder size={14} aria-hidden /> })),
+    { value: CHOOSE, label: 'Choose folder…', icon: <FolderOpen size={14} aria-hidden />, divide: true },
   ];
 
   return (
     <>
       <div className="topbar-home">
-        <button type="button" className="ghost-btn" onClick={p.onBackground}>
-          <ImageIcon size={15} aria-hidden />
-          Background
+        <button type="button" className="ghost-btn" onClick={p.onAppearance}>
+          <Palette size={15} aria-hidden />
+          Appearance
         </button>
       </div>
       <div className="home">
@@ -125,59 +124,66 @@ export function Home(p: Props) {
         </h1>
         {summary && <p className="summary">{summary}</p>}
 
-        <div className="composer">
-          <label htmlFor="composer-home" className="sr-only">Task</label>
-          <textarea
-            id="composer-home"
-            ref={box}
-            rows={3}
-            placeholder="Describe a task"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                start(false);
-              }
-            }}
-          />
-          <div className="composer-row">
-            <button type="button" className="icon-btn" title="Open in the terminal" aria-label="Open in the terminal" onClick={() => start(true)}>
-              <SquareTerminal size={17} aria-hidden />
-            </button>
-            <div style={{ flex: 1 }} />
-            <button type="button" className="send-btn" aria-label="Start" disabled={!draft.trim() || !cwd} onClick={() => start(false)}>
-              <ArrowUp size={17} strokeWidth={2.25} aria-hidden />
-            </button>
-          </div>
-        </div>
+        <Composer
+          id="composer-home"
+          ref={box}
+          label="Task"
+          placeholder="Describe a task"
+          rows={3}
+          value={draft}
+          onChange={setDraft}
+          images={images}
+          onImages={setImages}
+          onError={p.onError}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              start(false);
+            } else if (e.key === 'Tab' && e.shiftKey) {
+              e.preventDefault();
+              chooseMode(nextMode(mode));
+            }
+          }}
+        >
+          <button type="button" className="icon-btn" title="Open in the terminal" aria-label="Open in the terminal" onClick={() => start(true)}>
+            <SquareTerminal size={17} aria-hidden />
+          </button>
+          <div style={{ flex: 1 }} />
+          <button type="button" className="send-btn" aria-label="Start" disabled={!ready || !cwd} onClick={() => start(false)}>
+            <ArrowUp size={17} strokeWidth={2.25} aria-hidden />
+          </button>
+        </Composer>
 
         <div className="pills">
-          <Pill
+          <Picker
             label="Folder"
-            icon={<Folder size={14} aria-hidden />}
+            variant="pill"
+            placement="down"
             value={cwd}
-            options={folderOptions}
+            display={cwd ? folderName(cwd) : 'Folder'}
+            icon={<Folder size={14} aria-hidden />}
+            choices={folders}
             onChange={(v) => (v === CHOOSE ? void pickFolder() : choose(v))}
           />
-          <Pill
+          <Picker
             label="Model"
+            variant="pill"
+            placement="down"
             value={model}
-            options={MODELS}
+            choices={MODELS}
             onChange={(v) => {
               setModel(v);
-              localStorage.setItem('fleet.model', v);
+              store('fleet.model', v);
             }}
           />
-          <Pill
+          <Picker
             label="Permissions"
-            icon={<ShieldAlert size={14} aria-hidden />}
+            variant="pill"
+            placement="down"
             value={mode}
-            options={MODES}
-            onChange={(v) => {
-              setMode(v);
-              localStorage.setItem('fleet.mode', v);
-            }}
+            choices={MODES}
+            onChange={chooseMode}
+            foot={<><kbd>Shift</kbd>+<kbd>Tab</kbd></>}
           />
         </div>
 
