@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { ArrowUp, Folder, FolderOpen, History, Palette, SquareTerminal } from 'lucide-react';
 import { api, type Attachment, type Recent, type Session } from '../api';
-import { MODELS, MODES, nextMode } from '../choices';
+import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
 import { fmtAgo } from '../messages';
 import { Composer } from './Composer';
 import { Picker, type Choice } from './Picker';
@@ -58,7 +58,7 @@ export function Home(p: Props) {
   const [images, setImages] = useState<Attachment[]>([]);
   const [cwd, setCwd] = useState('');
   const [projects, setProjects] = useState<string[]>([]);
-  const [model, setModel] = useState(() => stored('fleet.model', ''));
+  const [model, setModel] = useState(() => modelChoice(stored('fleet.model', '')));
   const [mode, setMode] = useState(() => stored('fleet.mode', 'default'));
   const [recent, setRecent] = useState<Recent[]>([]);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -171,6 +171,7 @@ export function Home(p: Props) {
             variant="pill"
             placement="down"
             value={model}
+            display={modelName(model)}
             choices={MODELS}
             onChange={(v) => {
               setModel(v);

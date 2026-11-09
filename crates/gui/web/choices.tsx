@@ -1,18 +1,42 @@
 // The models and permission modes a session can run with.
 import { Feather, FilePen, Gem, ListChecks, Rabbit, Shield, ShieldOff, Sparkles, Wand2, Zap } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { Choice } from './components/Picker';
 
 const I = 14;
 
+/// The current models by their full ids, so the name on each option is the
+/// model that runs, not whatever an alias points at today.
+const MODEL_IDS: Array<[string, ReactNode]> = [
+  ['claude-fable-5-1', <Gem size={I} aria-hidden />],
+  ['claude-opus-5-5', <Wand2 size={I} aria-hidden />],
+  ['claude-opus-5-5[1m]', <Wand2 size={I} aria-hidden />],
+  ['claude-sonnet-5-5', <Feather size={I} aria-hidden />],
+  ['claude-sonnet-5-5[1m]', <Feather size={I} aria-hidden />],
+  ['claude-haiku-5-5', <Rabbit size={I} aria-hidden />],
+];
+
 export const MODELS: Choice[] = [
   { value: '', label: 'Default', icon: <Sparkles size={I} aria-hidden /> },
-  { value: 'claude-fable-5-1', label: 'Fable 5.1', hint: 'claude-fable-5-1', icon: <Gem size={I} aria-hidden />, divide: true },
-  { value: 'opus', label: 'Opus', hint: 'opus', icon: <Wand2 size={I} aria-hidden /> },
-  { value: 'opus[1m]', label: 'Opus 1M', hint: 'opus[1m]', icon: <Wand2 size={I} aria-hidden /> },
-  { value: 'sonnet', label: 'Sonnet', hint: 'sonnet', icon: <Feather size={I} aria-hidden /> },
-  { value: 'sonnet[1m]', label: 'Sonnet 1M', hint: 'sonnet[1m]', icon: <Feather size={I} aria-hidden /> },
-  { value: 'haiku', label: 'Haiku', hint: 'haiku', icon: <Rabbit size={I} aria-hidden /> },
+  ...MODEL_IDS.map(([id, icon], i) => ({
+    value: id,
+    label: modelName(id),
+    hint: id.includes('fable') ? 'usage credits' : undefined,
+    icon,
+    divide: i === 0,
+  })),
 ];
+
+/// What the options used to be, and what a session started with an alias
+/// reports before its first turn.
+const ALIASES: Record<string, string> = {
+  fable: 'claude-fable-5-1',
+  opus: 'claude-opus-5-5',
+  'opus[1m]': 'claude-opus-5-5[1m]',
+  sonnet: 'claude-sonnet-5-5',
+  'sonnet[1m]': 'claude-sonnet-5-5[1m]',
+  haiku: 'claude-haiku-5-5',
+};
 
 export const MODES: Choice[] = [
   { value: 'default', label: 'Ask first', icon: <Shield size={I} aria-hidden /> },
@@ -30,19 +54,18 @@ export function nextMode(mode: string): string {
   return CYCLE[(i + 1) % CYCLE.length];
 }
 
-/// The option a model a session reports belongs to: `claude-opus-5-5[1m]`
-/// is Opus 1M.
+/// The option a model belongs to: an alias or an id with a date stamp maps
+/// to the id it stands for. A model with no option (an older version) is
+/// returned as it is, so nothing in the list is ticked for it.
 export function modelChoice(model: string): string {
-  if (MODELS.some((m) => m.value === model)) return model;
-  const m = model.toLowerCase();
-  const wide = m.includes('[1m]');
-  if (m.includes('fable')) return 'claude-fable-5-1';
-  for (const family of ['opus', 'sonnet']) if (m.includes(family)) return wide ? `${family}[1m]` : family;
-  if (m.includes('haiku')) return 'haiku';
-  return '';
+  const m = model.trim().toLowerCase();
+  if (!m) return '';
+  if (ALIASES[m]) return ALIASES[m];
+  const undated = m.replace(/-\d{8}(?=(\[1m\])?$)/, '');
+  return MODELS.some((c) => c.value === undated) ? undated : model;
 }
 
-/// `claude-opus-5-5[1m]` as `Opus 5.5 1M`; an alias as its option's label.
+/// `claude-opus-5-5[1m]` as `Opus 5.5 1M`; an alias as the model it picks.
 export function modelName(model: string): string {
   const full = /^claude-([a-z]+)-(\d+)(?:-(\d+))?(?:-\d{8})?(\[1m\])?$/i.exec(model);
   if (full) {
@@ -50,5 +73,6 @@ export function modelName(model: string): string {
     const name = family[0].toUpperCase() + family.slice(1);
     return `${name} ${major}${minor ? `.${minor}` : ''}${wide ? ' 1M' : ''}`;
   }
-  return MODELS.find((c) => c.value === model)?.label ?? model;
+  const alias = ALIASES[model.toLowerCase()];
+  return alias ? modelName(alias) : model || 'Default';
 }
