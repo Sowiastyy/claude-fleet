@@ -91,7 +91,8 @@ taking it over. Fleet only reads their metadata.
 
 ## How fleet learns about sessions
 
-Claude Code keeps a local registry, of which fleet is strictly a reader:
+Claude Code keeps a local registry, of which fleet is strictly a reader (the
+one exception is switching accounts, see "Accounts"):
 
 | path | contents |
 |---|---|
@@ -122,6 +123,7 @@ transcript instead.
 | `e` | the editor: a file tree and open files (see below) |
 | `R` | resume an old conversation (see below) |
 | `U` | refresh the account limits now (see below) |
+| `a` | switch Claude accounts (see "Accounts") |
 | `u` | understand project (see below) |
 | `r` | restart into a new build (see below) |
 | `i` | install a newer release from GitHub (see below) |
@@ -739,7 +741,8 @@ queued text really reaches the child's prompt), `--selftest usage` (ask Claude
 Code for fresh limit numbers once and report what happened), `--raw <prog> [args]` (raw
 bytes from any program under a PTY), `--mouse` (whether this terminal hands
 wheel events to the application at all), `--usage` (account limits as the
-sidebar reads them), `--history` (conversations to resume, as the `R` list
+sidebar reads them), `--accounts` (the saved accounts, as the switcher lists
+them, no tokens printed), `--history` (conversations to resume, as the `R` list
 reads them), `--repos` (repositories the remote form offers).
 
 `--raw` answers DSR itself — otherwise the child stalls at startup and the
@@ -879,6 +882,67 @@ accent_dim = "#8A4C36"   # the empty part of the bar
 # bar       = "#6EA87A"  # the bar only, independent of the accent
 # bar_empty = "#2A3A2E"
 ```
+
+## Accounts
+
+The top row of the list is the account new sessions run as. `a` (or a click
+on it) drops down every account saved on this machine, each with the limits
+last seen for it, so the one with room left is easy to spot:
+
+```
+╭ CLAUDE FLEET ────────────────────╮
+│ ● me@example.com        +1 pro ▴ │
+╭ ACCOUNTS 2 ──────────────────────╮
+│   ● me@example.com        in use │
+│   5h ██████░ 91%  7d ▍░░░░░░  7% │
+│ ▸ ○ work@example.com         max │
+│   5h ░░░░░░░  0%  7d ████▍░░ 64% │
+│   + add account           /login │
+│──────────────────────────────────│
+│ enter hotswap  s leave sessions  │
+│ n add  d forget  esc close       │
+╰──────────────────────────────────╯
+```
+
+| key | does |
+|---|---|
+| `enter` | **hotswap**: sign in as that account and start every running session again as it, each in its own slot with its name, group and conversation (`--resume`) |
+| `s` | sign in as it for new sessions only; the running ones stay on the old account until they are restarted |
+| `n` | add an account: a new session opens with `/login` typed in |
+| `d` | forget the account under the cursor (twice, to be sure) |
+| `esc` / `a` | close |
+
+A `0%` with its label lit means that window has reset since the numbers were
+read. Enter with sessions in the middle of a turn asks again first, since
+moving them cuts the turn off.
+
+**How it works.** What Claude Code is signed in as lives in two places: the
+OAuth tokens (`claudeAiOauth` in `~/.claude/.credentials.json`, or the login
+keychain on macOS) and the account they belong to (`oauthAccount` in
+`~/.claude.json`). Everything else, from transcripts and settings to MCP
+servers and their own tokens, belongs to the machine and not to the account.
+Fleet keeps a copy of those two things per account in
+`~/.claude/fleet-accounts/<account-uuid>.json`, and switching puts a copy back.
+Only those two keys are written: the rest of both files is left alone and
+keeps its order.
+
+The copy for the account in use is updated whenever its files change, because
+Claude Code rotates the refresh token every time it refreshes, and a profile
+holding the old one could no longer sign in. Switching away saves it once more
+first. An account added with `/login` becomes a profile once its files have
+settled. New tokens that turn up under the old account, nowhere near its
+expiry, wait up to 20 s for the new account to be written, so a login halfway
+through is never filed under the account it is replacing.
+
+The limits footer only shows numbers cached for the account signed in. Right
+after a switch it is blank until the refresh the switch asks for comes back.
+
+A running `claude` reads its tokens once, at start, which is why a hotswap
+restarts the sessions instead of telling them. Sessions started outside fleet
+can't be restarted that way and stay on the account they started with.
+
+The profiles hold live tokens, with the same protection as Claude Code's own
+credentials file: owner-only on macOS and Linux, your user profile on Windows.
 
 ## Scrolling
 

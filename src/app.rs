@@ -14,6 +14,7 @@ use std::{
 use anyhow::Result;
 
 use crate::{
+    accounts,
     bigbrother::{self, Level, Report, Scope},
     commitmsg, config, git,
     gitview::GitView,
@@ -112,6 +113,8 @@ pub enum Mode {
     PushFailed,
     /// The editor has the pane: a file tree and the files open in it.
     Ide,
+    /// The account dropdown at the top of the list is open.
+    Accounts,
 }
 
 impl Mode {
@@ -214,6 +217,26 @@ impl ResumePicker {
 }
 
 /// The branches of one repository, narrowed down by what has been typed.
+/// The account dropdown, while it is open.
+#[derive(Default)]
+pub struct AccountPicker {
+    /// The row under the cursor: an account, or one past the last for
+    /// "add account".
+    pub cursor: usize,
+    /// Enter was pressed once with sessions in the middle of a turn, which
+    /// moving them over would cut off; the next Enter goes ahead.
+    pub confirm: bool,
+    /// `d` was pressed once on the account under the cursor.
+    pub forget: bool,
+}
+
+/// What a click on the dropdown lands on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AccountHit {
+    Row(usize),
+    Add,
+}
+
 pub struct BranchPicker {
     pub root: PathBuf,
     pub items: Vec<git::Branch>,
@@ -601,6 +624,14 @@ pub struct App {
     unsaved_warned: Option<Instant>,
     /// Listening to the user and reading replies out, while it is on.
     pub voice: crate::voice::Voice,
+    /// The Claude accounts saved on this machine and the one signed in.
+    pub accounts: accounts::Accounts,
+    /// The account dropdown, while it is open.
+    pub account_picker: Option<AccountPicker>,
+    /// Where the account row at the top of the list was drawn, for a click.
+    pub account_header: ratatui::layout::Rect,
+    /// Where the open dropdown drew its rows.
+    pub account_hits: Vec<(ratatui::layout::Rect, AccountHit)>,
 }
 
 /// How many session events the fleet keeps for Big Brothers to collect.
@@ -742,6 +773,10 @@ impl App {
             ide,
             unsaved_warned: None,
             voice: crate::voice::Voice::new(),
+            accounts: accounts::Accounts::new(),
+            account_picker: None,
+            account_header: ratatui::layout::Rect::default(),
+            account_hits: Vec::new(),
             origin_stamp: supervise::origin_stamp(),
             last_exe_check: Instant::now(),
         }
@@ -984,6 +1019,11 @@ impl App {
     /// the session started last. Ids already claimed by the registry are left
     /// out of that guess, so it never hands one conversation to two sessions.
     fn restore_list(&self) -> Vec<supervise::Restore> {
+        self.restore_items().into_iter().map(|(_, r)| r).collect()
+    }
+
+    /// `restore_list`, with the index of the session each entry stands for.
+    fn restore_items(&self) -> Vec<(usize, supervise::Restore)> {
         let registry = registry::read_all();
         let alive: Vec<usize> = self
             .sessions
@@ -1042,9 +1082,219 @@ impl App {
                 let mut r = supervise::Restore::new(s.cwd.clone(), ids[i].clone());
                 r.group = s.group;
                 r.watch = s.watch.as_ref().map(|w| w.scope.name());
-                r
+                (i, r)
             })
             .collect()
+    }
+
+    /// Open the account dropdown with the cursor on the account signed in.
+    pub fn open_accounts(&mut self) {
+        let cursor = self
+            .accounts
+            .current
+            .as_deref()
+            .and_then(|u| self.accounts.list.iter().position(|a| a.uuid == u))
+            .unwrap_or(self.accounts.list.len());
+        self.account_picker = Some(AccountPicker {
+            cursor,
+            ..Default::default()
+        });
+        self.mode = Mode::Accounts;
+    }
+
+    pub fn close_accounts(&mut self) {
+        self.account_picker = None;
+        self.account_hits.clear();
+        self.mode = Mode::Nav;
+    }
+
+    /// Move the dropdown's cursor over the accounts and the "add" row.
+    pub fn move_account_cursor(&mut self, delta: isize) {
+        let rows = self.accounts.list.len() as isize + 1;
+        if let Some(p) = self.account_picker.as_mut() {
+            p.cursor = (p.cursor as isize + delta).rem_euclid(rows) as usize;
+            p.confirm = false;
+            p.forget = false;
+        }
+    }
+
+    /// The sessions whose `claude` holds the signed-in account's tokens in
+    /// memory: every live one of ours but the shells.
+    pub fn account_bound(&self) -> Vec<usize> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_alive() && !s.shell)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// How many of those are in the middle of a turn.
+    pub fn account_bound_busy(&self) -> usize {
+        self.account_bound()
+            .into_iter()
+            .filter(|&i| self.entry_for(i).is_some_and(|e| e.status == "busy"))
+            .count()
+    }
+
+    /// Act on the row under the dropdown's cursor: switch to that account —
+    /// carrying the running sessions over with their conversations when
+    /// `carry` — or start adding one.
+    pub fn choose_account(&mut self, carry: bool) {
+        let Some(p) = self.account_picker.as_ref() else {
+            return;
+        };
+        let confirmed = p.confirm;
+        let Some(account) = self.accounts.list.get(p.cursor).cloned() else {
+            self.add_account();
+            return;
+        };
+        if self.accounts.current.as_deref() == Some(account.uuid.as_str()) {
+            self.close_accounts();
+            self.notify(format!("already signed in as {}", account.email));
+            return;
+        }
+        if carry && self.account_bound_busy() > 0 && !confirmed {
+            if let Some(p) = self.account_picker.as_mut() {
+                p.confirm = true;
+                p.forget = false;
+            }
+            return;
+        }
+        let email = match self.accounts.switch(&account.uuid) {
+            Ok(email) => email,
+            Err(e) => {
+                if let Some(p) = self.account_picker.as_mut() {
+                    p.confirm = false;
+                }
+                self.notify(format!("could not switch: {e:#}"));
+                return;
+            }
+        };
+        self.close_accounts();
+        let left = self.account_bound().len();
+        let moved = if carry { self.carry_sessions_over() } else { 0 };
+        // The footer was showing the old account's limits; it goes blank until
+        // the new account's are fetched, which is now.
+        self.usage.refresh();
+        self.refresh_usage();
+        let tail = if account.needs_login {
+            " — its login ran out, /login in a session"
+        } else {
+            ""
+        };
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        self.notify(if carry && moved > 0 {
+            format!(
+                "signed in as {email}, {moved} session{} moved over, conversations kept{tail}",
+                plural(moved)
+            )
+        } else if !carry && left > 0 {
+            format!(
+                "signed in as {email} for new sessions; {left} running stay on the old one{tail}"
+            )
+        } else {
+            format!("signed in as {email}{tail}")
+        });
+    }
+
+    /// Start every live session of ours again as the account now signed in,
+    /// each in its own slot, with its conversation, name and group.
+    ///
+    /// A running `claude` read its tokens at start and keeps them; there is no
+    /// telling it to read them again. So the process goes and a new one takes
+    /// its place with `--resume` — the same move a fleet restart makes, minus
+    /// the restart.
+    fn carry_sessions_over(&mut self) -> usize {
+        let mut moved = 0;
+        for (i, r) in self.restore_items() {
+            let label = self.sessions[i].label.clone();
+            let group = self.sessions[i].group;
+            self.sessions[i].kill();
+            let spawned = match r.watch.as_deref().and_then(Scope::parse) {
+                Some(scope) => self.start_big_brother(scope, r.cwd, r.session, false),
+                None => {
+                    let mut args = match r.session {
+                        Some(id) => vec!["--resume".to_string(), id],
+                        None => Vec::new(),
+                    };
+                    args.extend(crate::voice::session_args(
+                        &self.voice,
+                        self.companion().is_some(),
+                    ));
+                    self.spawn_raw(r.cwd, &args, &[], None).map(Some)
+                }
+            };
+            match spawned {
+                Ok(Some(idx)) => {
+                    let mut s = self.sessions.remove(idx);
+                    s.label = label;
+                    s.group = group;
+                    // Dropping the old one reaps what `kill` started.
+                    self.sessions[i] = s;
+                    moved += 1;
+                }
+                Ok(None) => {}
+                Err(e) => self.notify(format!("{label} did not come back: {e:#}")),
+            }
+        }
+        // The companion has no conversation worth keeping; a fresh one as the
+        // new account does the same job.
+        if let Some(i) = self.companion() {
+            self.sessions[i].kill();
+            if let Ok(Some(idx)) = self.start_companion() {
+                let s = self.sessions.remove(idx);
+                self.sessions[i] = s;
+            }
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+        moved
+    }
+
+    /// Sign in to another account in a new session. The one signed in now is
+    /// kept; the new one becomes a profile as soon as Claude Code has written
+    /// it, and is the account new sessions use from then on.
+    pub fn add_account(&mut self) {
+        self.close_accounts();
+        if self.sessions.len() >= 9 {
+            self.notify("every F1-F9 slot is taken — close one to log in from");
+            return;
+        }
+        let cwd = self.default_cwd();
+        let before = self.sessions.len();
+        if let Err(e) = self.spawn_session(cwd) {
+            self.notify(format!("could not start a session: {e:#}"));
+            return;
+        }
+        if self.sessions.len() > before {
+            let idx = self.selected;
+            self.sessions[idx].queue_submit("/login");
+            self.understand_window = None;
+            self.notify("log in to the other account here — fleet saves it once it is signed in");
+        }
+    }
+
+    /// `d` in the dropdown: once to ask, twice to forget the account.
+    pub fn forget_account(&mut self) {
+        let Some(p) = self.account_picker.as_mut() else {
+            return;
+        };
+        let Some(account) = self.accounts.list.get(p.cursor).cloned() else {
+            return;
+        };
+        if !p.forget {
+            p.forget = true;
+            p.confirm = false;
+            return;
+        }
+        p.forget = false;
+        match self.accounts.forget(&account.uuid) {
+            Ok(()) => {
+                self.move_account_cursor(0);
+                self.notify(format!("forgot {}", account.email));
+            }
+            Err(e) => self.notify(format!("{e:#}")),
+        }
     }
 
     /// Open the list of past conversations.
@@ -2701,6 +2951,12 @@ impl App {
                 self.spent_since_refresh = true;
             }
             self.record_states();
+            if let Some(email) = self.accounts.poll() {
+                self.notify(format!("account saved: {email} — a switches between accounts"));
+            }
+            if let Some(problem) = self.accounts.problem.take() {
+                self.notify(format!("accounts: {problem}"));
+            }
             if self.usage_refresh_due() {
                 self.refresh_usage();
             }

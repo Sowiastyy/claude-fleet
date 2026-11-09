@@ -15,7 +15,7 @@ use ratatui::{
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
-    app::{App, BranchRow, GitHit, GitJob, Mode, NewSessionForm, SpawnKind},
+    app::{AccountHit, App, BranchRow, GitHit, GitJob, Mode, NewSessionForm, SpawnKind},
     bigbrother::{Level, Scope},
     clawd, commitmsg, config, editor, git,
     gitview::{GitView, Row},
@@ -26,6 +26,10 @@ use crate::{
 };
 
 pub const SIDEBAR_WIDTH: u16 = 36;
+
+/// Rows the account switcher takes at the top of the list: the account and
+/// the rule under it. A click on a card counts its rows from below these.
+pub const ACCOUNT_ROWS: u16 = 2;
 
 /// The git panel on the right. Wide enough for a hash, most of a commit
 /// subject and its age.
@@ -133,6 +137,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Rebuilt by whatever draws a clickable part this frame; a hidden panel
     // leaves nothing to click.
     app.git_hits.clear();
+    app.account_header = Rect {
+        x: sidebar.x + 1,
+        y: sidebar.y + 1,
+        width: sidebar.width.saturating_sub(2),
+        height: 1,
+    };
     draw_sidebar(f, app, sidebar);
     if app.mode == Mode::Ide {
         draw_ide(f, app, pane);
@@ -163,6 +173,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::BigBrother => draw_big_brother(f, app),
         Mode::Reports => draw_reports(f, app),
         Mode::PushFailed => draw_push_failed(f, app),
+        Mode::Accounts => draw_accounts(f, app, sidebar),
         _ => {}
     }
 }
@@ -486,6 +497,14 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let header_rows = ACCOUNT_ROWS.min(inner.height);
+    let [header_area, inner] =
+        Layout::vertical([Constraint::Length(header_rows), Constraint::Min(0)]).areas(inner);
+    f.render_widget(
+        Paragraph::new(account_header_lines(app, header_area.width as usize)),
+        header_area,
+    );
+
     let mut limits = usage_lines(app, inner.width as usize);
     // A sidebar too short for both keeps the sessions: the limits are the half
     // one can also read with `/usage`.
@@ -507,6 +526,342 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     if reserved > 0 {
         f.render_widget(Paragraph::new(limits), limits_area);
     }
+}
+
+/// The account row at the top of the list: who new sessions run as, and the
+/// arrow that opens the dropdown. Under it a rule, which the open dropdown
+/// hangs from.
+fn account_header_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let open = app.mode == Mode::Accounts;
+    let current = app.accounts.current_account();
+    let (glyph, glyph_color, name) = match (current, app.accounts.current.as_ref()) {
+        (Some(a), _) if a.needs_login => ("!", theme::dead(), a.email.clone()),
+        (Some(a), _) => ("\u{25cf}", theme::idle(), a.email.clone()),
+        // Signed in a moment ago; the profile is written once the files settle.
+        (None, Some(_)) => ("\u{25cf}", theme::muted(), "signing in\u{2026}".to_string()),
+        (None, None) => ("\u{25cb}", theme::faint(), "not signed in".to_string()),
+    };
+    let plan = current.map(|a| a.plan.clone()).unwrap_or_default();
+    let others = app
+        .accounts
+        .list
+        .len()
+        .saturating_sub(usize::from(current.is_some()));
+    let more = if others > 0 {
+        format!("+{others} ")
+    } else {
+        String::new()
+    };
+    let arrow = if open { "\u{25b4}" } else { "\u{25be}" };
+    let right = more.chars().count() + plan.chars().count() + 3;
+    let name = truncate(&name, width.saturating_sub(right + 4).max(6));
+    let used = 3 + name.chars().count() + right;
+    let name_style = if open {
+        Style::default().fg(theme::accent()).bold()
+    } else {
+        Style::default().fg(theme::text()).bold()
+    };
+    vec![
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(glyph, Style::default().fg(glyph_color)),
+            Span::raw(" "),
+            Span::styled(name, name_style),
+            Span::raw(" ".repeat(width.saturating_sub(used))),
+            Span::styled(more, Style::default().fg(theme::faint())),
+            Span::styled(plan, Style::default().fg(theme::muted())),
+            Span::raw(" "),
+            Span::styled(arrow, Style::default().fg(theme::accent()).bold()),
+            Span::raw(" "),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "\u{2500}".repeat(width.saturating_sub(2)),
+                Style::default().fg(theme::faint()),
+            ),
+        ]),
+    ]
+}
+
+/// One account's limits on a line: both windows as short bars. A window whose
+/// reset time has passed has nothing spent in it any more, and that is what
+/// makes an account worth switching to, so it reads `0%` with its label lit.
+fn account_usage_line(u: Option<&usage::Usage>, needs_login: bool, width: usize) -> Line<'static> {
+    if needs_login {
+        return Line::from(Span::styled(
+            "   login expired, /login to renew",
+            Style::default().fg(theme::dead()),
+        ));
+    }
+    let Some(u) = u.filter(|u| u.session.is_some() || u.weekly.is_some()) else {
+        return Line::from(Span::styled(
+            "   no limits seen yet",
+            Style::default().fg(theme::faint()),
+        ));
+    };
+    // "   5h " bar " 21%" "  7d " bar " 31%"
+    let bar_width = (width.saturating_sub(3 + 2 + 2 * (3 + 4)) / 2).clamp(3, 12);
+    let mut spans = vec![Span::raw("   ")];
+    for (n, (label, w)) in [("5h", &u.session), ("7d", &u.weekly)]
+        .into_iter()
+        .enumerate()
+    {
+        if n > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let fresh = w.as_ref().is_some_and(|w| w.expired);
+        spans.push(Span::styled(
+            format!("{label} "),
+            if fresh {
+                Style::default().fg(theme::idle()).bold()
+            } else {
+                Style::default().fg(theme::muted())
+            },
+        ));
+        match w {
+            Some(w) => {
+                let pct = if w.expired { 0 } else { w.pct };
+                let (filled, empty) = usage_bar(pct, bar_width);
+                spans.push(Span::styled(filled, Style::default().fg(theme::bar())));
+                spans.push(Span::styled(empty, Style::default().fg(theme::bar_empty())));
+                spans.push(Span::styled(
+                    format!("{:>4}", format!("{pct}%")),
+                    Style::default().fg(usage_color(pct)).bold(),
+                ));
+            }
+            None => spans.push(Span::styled(
+                format!("{:<w$}", "-", w = bar_width + 4),
+                Style::default().fg(theme::faint()),
+            )),
+        }
+    }
+    Line::from(spans)
+}
+
+/// Pad a line out to `width` cells so a background fills the whole row.
+fn fill(mut line: Line<'static>, width: usize, style: Style) -> Line<'static> {
+    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if used < width {
+        line.spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    line.style(style)
+}
+
+/// The dropdown under the account row: every saved account with its last
+/// limits, a row to add one, and what the keys do.
+fn draw_accounts(f: &mut Frame, app: &mut App, sidebar: Rect) {
+    let Some(picker) = app.account_picker.as_ref() else {
+        return;
+    };
+    let screen = f.area();
+    // The column it belongs to, unless that was squeezed too narrow to read.
+    let width = sidebar.width.max(36).min(screen.width);
+    let inner = usize::from(width.saturating_sub(2));
+    let current = app.accounts.current.clone();
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut hits: Vec<(usize, u16, AccountHit)> = Vec::new();
+    for (i, a) in app.accounts.list.iter().enumerate() {
+        let selected = picker.cursor == i;
+        let is_current = current.as_deref() == Some(a.uuid.as_str());
+        let row = if selected {
+            Style::default().bg(theme::surface())
+        } else {
+            Style::default()
+        };
+        let (glyph, glyph_color) = if a.needs_login {
+            ("!", theme::dead())
+        } else if is_current {
+            ("\u{25cf}", theme::idle())
+        } else {
+            ("\u{25cb}", theme::muted())
+        };
+        let tag = if is_current {
+            "in use".to_string()
+        } else {
+            a.plan.clone()
+        };
+        let org = if a.org.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{b7} {}", a.org)
+        };
+        // Marker, glyph and a space before; at least a space, the tag and a
+        // space after.
+        let room = inner.saturating_sub(5 + 1 + tag.chars().count() + 1);
+        let email = truncate(&a.email, room.max(1));
+        // The organisation is the first thing to go: a cut-off one says less
+        // than none, so it shows whole or not at all.
+        let org = if email.chars().count() + org.chars().count() <= room {
+            org
+        } else {
+            String::new()
+        };
+        hits.push((lines.len(), 2, AccountHit::Row(i)));
+        let head = Line::from(vec![
+            Span::styled(
+                if selected { " \u{25b8} " } else { "   " },
+                Style::default().fg(theme::accent()).bold(),
+            ),
+            Span::styled(glyph, Style::default().fg(glyph_color)),
+            Span::raw(" "),
+            Span::styled(
+                email.clone(),
+                if selected || is_current {
+                    Style::default().fg(theme::text()).bold()
+                } else {
+                    Style::default().fg(theme::text())
+                },
+            ),
+            Span::styled(org.clone(), Style::default().fg(theme::faint())),
+            Span::raw(" ".repeat(
+                1 + room.saturating_sub(email.chars().count() + org.chars().count()),
+            )),
+            Span::styled(
+                tag,
+                Style::default().fg(if is_current {
+                    theme::idle()
+                } else {
+                    theme::muted()
+                }),
+            ),
+            Span::raw(" "),
+        ]);
+        lines.push(fill(head, inner, row));
+        // The account in use has its numbers live in the footer; the saved
+        // copy stands in while the footer waits for a fresh fetch.
+        let live = is_current.then(|| app.usage.current.clone()).flatten();
+        let usage = live.as_ref().or(a.usage.as_ref());
+        lines.push(fill(
+            account_usage_line(usage, a.needs_login, inner),
+            inner,
+            row,
+        ));
+    }
+
+    let on_add = picker.cursor >= app.accounts.list.len();
+    hits.push((lines.len(), 1, AccountHit::Add));
+    let add_style = if on_add {
+        Style::default().bg(theme::surface())
+    } else {
+        Style::default()
+    };
+    lines.push(fill(
+        Line::from(vec![
+            Span::styled(
+                if on_add { " \u{25b8} " } else { "   " },
+                Style::default().fg(theme::accent()).bold(),
+            ),
+            Span::styled("+ ", Style::default().fg(theme::accent()).bold()),
+            Span::styled(
+                "add account",
+                Style::default().fg(if on_add { theme::text() } else { theme::muted() }),
+            ),
+            Span::raw(" ".repeat(inner.saturating_sub(5 + 11 + 7))),
+            Span::styled("/login ", Style::default().fg(theme::faint())),
+        ]),
+        inner,
+        add_style,
+    ));
+
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(inner),
+        Style::default().fg(theme::faint()),
+    )));
+
+    let bound = app.account_bound().len();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme::accent()).bold());
+    let say = |t: String| Span::styled(t, Style::default().fg(theme::muted()));
+    if picker.forget {
+        let email = app
+            .accounts
+            .list
+            .get(picker.cursor)
+            .map(|a| a.email.clone())
+            .unwrap_or_default();
+        lines.push(Line::from(Span::styled(
+            format!(" d again forgets {}", truncate(&email, inner.saturating_sub(18))),
+            Style::default().fg(theme::dead()).bold(),
+        )));
+    } else if picker.confirm {
+        let busy = app.account_bound_busy();
+        lines.push(Line::from(Span::styled(
+            format!(" {busy} mid-turn \u{2014} enter again cuts in"),
+            Style::default().fg(theme::busy()).bold(),
+        )));
+        lines.push(Line::from(Span::styled(
+            " s switches and leaves them be",
+            Style::default().fg(theme::muted()),
+        )));
+    } else if bound > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(" hotswap resumes {bound} session{}", plural(bound)),
+            Style::default().fg(theme::faint()),
+        )));
+        lines.push(Line::from(Span::styled(
+            " as the new account, in place",
+            Style::default().fg(theme::faint()),
+        )));
+    }
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        key("enter"),
+        say(" hotswap  ".into()),
+        key("s"),
+        say(" leave sessions".into()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        key("n"),
+        say(" add  ".into()),
+        key("d"),
+        say(" forget  ".into()),
+        key("esc"),
+        say(" close".into()),
+    ]));
+
+    // Hung from the rule under the account row, over the cards.
+    let y = sidebar.y + 1 + ACCOUNT_ROWS - 1;
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(y));
+    let area = Rect {
+        x: sidebar.x,
+        y,
+        width,
+        height,
+    };
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::accent()))
+        .title(Line::from(vec![
+            Span::styled(" ACCOUNTS ", Style::default().fg(theme::accent()).bold()),
+            Span::styled(
+                format!("{} ", app.accounts.list.len()),
+                Style::default().fg(theme::faint()),
+            ),
+        ]));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+
+    let body = Block::bordered().inner(area);
+    app.account_hits = hits
+        .into_iter()
+        .filter(|(at, _, _)| (*at as u16) < body.height)
+        .map(|(at, h, hit)| {
+            let top = body.y + at as u16;
+            let h = h.min(body.y + body.height - top);
+            (
+                Rect {
+                    x: body.x,
+                    y: top,
+                    width: body.width,
+                    height: h,
+                },
+                hit,
+            )
+        })
+        .collect();
 }
 
 /// The account's rate-limit windows as the rows at the foot of the sidebar:
@@ -2401,6 +2756,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             ("up/dn", "select"),
             ("enter", "focus"),
             ("n", "new"),
+            ("a", "account"),
             ("e", "editor"),
             ("s", "shell"),
             ("R", "resume a conversation"),
@@ -2445,6 +2801,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Mode::ConfirmKill => vec![("y", "yes"), ("n/esc", "no")],
         Mode::ConfirmMkdir => vec![("y/enter", "create it"), ("n/esc", "back to the path")],
         Mode::ConfirmRestart => vec![("y", "restart"), ("n/esc", "leave it")],
+        Mode::Accounts => vec![
+            ("enter", "hotswap"),
+            ("s", "switch, leave sessions"),
+            ("n", "add"),
+            ("d", "forget"),
+            ("esc", "close"),
+        ],
         Mode::Resume => vec![
             ("enter", "resume"),
             ("up/dn", "pick a conversation"),
@@ -3097,6 +3460,8 @@ fn draw_help(f: &mut Frame) {
         ("", "(the widths are kept for the next start)"),
         ("U", "refresh the account limits now"),
         ("", "(a hidden /usage session, no tokens)"),
+        ("a", "switch Claude account (click the top row too)"),
+        ("", "(enter hotswaps: sessions resume as the new one)"),
         ("q", "quit"),
         ("", ""),
         ("", "-- FOCUS --"),
@@ -3866,3 +4231,4 @@ mod tests {
         assert_ne!(usage_bar(41, width).0, usage_bar(42, width).0);
     }
 }
+

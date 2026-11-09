@@ -4,6 +4,7 @@
 //! interactive. Sessions started elsewhere are listed read-only: their PTY
 //! belongs to another terminal and cannot be adopted.
 
+mod accounts;
 mod app;
 mod bigbrother;
 mod clawd;
@@ -105,6 +106,7 @@ fn main() -> Result<()> {
         Some("--orphan-probe") => return orphan_probe(),
         Some("--mouse") => return mouse_probe(),
         Some("--usage") => return print_usage_limits(),
+        Some("--accounts") => return print_accounts(),
         Some("--history") => return print_history(),
         Some("--repos") => return print_repos(),
         #[cfg(target_os = "macos")]
@@ -188,6 +190,7 @@ fn print_usage() {
          \x20 --raw <prog> [args...]   raw bytes from any program under a PTY\n\
          \x20 --mouse                  does this terminal hand over the mouse wheel\n\
          \x20 --usage                  account limits as the sidebar reads them\n\
+         \x20 --accounts               saved accounts, as the switcher lists them\n\
          \x20 --history                conversations to resume, as the list reads them\n\
          \x20 --repos                  repositories the remote form offers\n"
     );
@@ -287,6 +290,45 @@ fn print_usage_limits() -> Result<()> {
             ),
         }
     }
+    Ok(())
+}
+
+/// The saved accounts as the dropdown lists them, the signed-in one marked.
+/// Reading them saves the signed-in account first, exactly as starting the
+/// fleet does. No token is printed.
+fn print_accounts() -> Result<()> {
+    let a = accounts::Accounts::new();
+    if let Some(p) = &a.problem {
+        println!("({p})");
+    }
+    let pct = |w: &Option<usage::Window>| match w {
+        Some(w) if w.expired => "reset".to_string(),
+        Some(w) => format!("{}%", w.pct),
+        None => "-".to_string(),
+    };
+    for acc in &a.list {
+        let mark = if a.current.as_deref() == Some(acc.uuid.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        let limits = match &acc.usage {
+            Some(u) => format!(
+                "5h {:>5}  7d {:>5}  seen {} ago",
+                pct(&u.session),
+                pct(&u.weekly),
+                fmt_ago(u.fetched_ago)
+            ),
+            None => "no limits seen".to_string(),
+        };
+        let login = if acc.needs_login {
+            "  login ran out"
+        } else {
+            ""
+        };
+        println!("{mark} {:<36} {:<6} {limits}{login}", acc.email, acc.plan);
+    }
+    println!("{} accounts in ~/.claude/fleet-accounts", a.list.len());
     Ok(())
 }
 
@@ -1121,6 +1163,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             _ => app.resolve_mkdir(false)?,
         },
         Mode::Resume => handle_resume(app, key)?,
+        Mode::Accounts => handle_accounts(app, key),
         Mode::Git => handle_git(app, key),
         Mode::Branch => handle_branch(app, key),
         Mode::Commit => handle_commit(app, key),
@@ -1256,6 +1299,7 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Char('n') => app.open_new_session_form(),
+        KeyCode::Char('a') => app.open_accounts(),
         KeyCode::Char('s') => {
             if let Err(e) = app.spawn_shell() {
                 app.notify(format!("no shell: {e:#}"));
@@ -1304,6 +1348,22 @@ fn handle_nav(app: &mut App, key: KeyEvent) {
         KeyCode::Char('v') => app.toggle_voice(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char(c @ ('[' | ']' | '{' | '}')) => resize_by_key(app, c),
+        _ => {}
+    }
+}
+
+/// The account dropdown. Enter hotswaps — the running sessions come back as
+/// the new account with their conversations — and `s` switches only what
+/// starts from now on.
+fn handle_accounts(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('a') => app.close_accounts(),
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => app.move_account_cursor(-1),
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => app.move_account_cursor(1),
+        KeyCode::Enter => app.choose_account(true),
+        KeyCode::Char('s') => app.choose_account(false),
+        KeyCode::Char('n' | '+') => app.add_account(),
+        KeyCode::Char('d') | KeyCode::Delete => app.forget_account(),
         _ => {}
     }
 }
@@ -1489,10 +1549,40 @@ fn handle_click(app: &mut App, m: MouseEvent) {
         app.dirty.store(true, Ordering::Relaxed);
         return;
     }
+    let at = ratatui::layout::Position::new(m.column, m.row);
+    if app.mode == Mode::Accounts {
+        // A row is picked as enter picks it; anywhere else closes the list.
+        match app
+            .account_hits
+            .iter()
+            .find(|(r, _)| r.contains(at))
+            .map(|(_, h)| *h)
+        {
+            Some(app::AccountHit::Row(i)) => {
+                if let Some(p) = app.account_picker.as_mut() {
+                    if p.cursor != i {
+                        p.confirm = false;
+                        p.forget = false;
+                    }
+                    p.cursor = i;
+                }
+                app.choose_account(true);
+            }
+            Some(app::AccountHit::Add) => app.add_account(),
+            None => app.close_accounts(),
+        }
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
     if !matches!(
         app.mode,
         Mode::Nav | Mode::Focus | Mode::Git | Mode::Commit | Mode::Ide
     ) {
+        return;
+    }
+    if app.account_header.contains(at) {
+        app.open_accounts();
+        app.dirty.store(true, Ordering::Relaxed);
         return;
     }
     if let Some(hit) = hit {
@@ -1517,7 +1607,11 @@ fn handle_click(app: &mut App, m: MouseEvent) {
     if m.column < app.pane_x {
         // Each card is two rows, from the top of the list. The list scrolls
         // only once there are more cards than rows, which nine rarely are.
-        let Some(row) = m.row.checked_sub(app.pane_y) else {
+        let Some(row) = m
+            .row
+            .checked_sub(app.pane_y)
+            .and_then(|r| r.checked_sub(ui::ACCOUNT_ROWS))
+        else {
             return;
         };
         // A card takes the keyboard into its session, the way its F-key
@@ -1827,6 +1921,12 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         } else {
             p.scroll + SCROLL_STEP as usize
         };
+        app.dirty.store(true, Ordering::Relaxed);
+        return;
+    }
+    // The open account list moves its own cursor.
+    if app.mode == Mode::Accounts {
+        app.move_account_cursor(if up { -1 } else { 1 });
         app.dirty.store(true, Ordering::Relaxed);
         return;
     }

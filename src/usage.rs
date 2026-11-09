@@ -227,12 +227,36 @@ fn read_snapshot(path: &PathBuf) -> Option<Snapshot> {
     let raw = fs::read_to_string(path).ok()?;
     let root: Value = serde_json::from_str(&raw).ok()?;
     let cached = root.get("cachedUsageUtilization")?;
+    // Right after an account switch the cache still holds the numbers of the
+    // account switched away from. Showing them under the new one would be
+    // wrong in the worst way — plausible — so they are not shown at all until
+    // the refresh that a switch asks for writes the new account's.
+    let owner = root
+        .get("oauthAccount")
+        .and_then(|a| a.get("accountUuid"))
+        .and_then(Value::as_str);
+    let cached_for = cached.get("accountUuid").and_then(Value::as_str);
+    if let (Some(owner), Some(cached_for)) = (owner, cached_for)
+        && owner != cached_for
+    {
+        return None;
+    }
+    snapshot_of(cached)
+}
+
+fn snapshot_of(cached: &Value) -> Option<Snapshot> {
     let util = cached.get("utilization")?;
     Some(Snapshot {
         session: window(util.get("five_hour")),
         weekly: window(util.get("seven_day")),
         fetched_at_ms: cached.get("fetchedAtMs").and_then(Value::as_u64),
     })
+}
+
+/// The windows in a `cachedUsageUtilization` object kept somewhere else —
+/// the copy an account profile holds of the last numbers seen for it.
+pub fn from_cache(cached: &Value) -> Option<Usage> {
+    snapshot_of(cached).as_ref().map(derive)
 }
 
 fn derive(snap: &Snapshot) -> Usage {
