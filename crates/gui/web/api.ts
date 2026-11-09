@@ -150,6 +150,7 @@ export const api = {
   recent: () => invoke<Recent[]>('recent_conversations'),
   projects: () => invoke<string[]>('recent_projects'),
   home: () => invoke<string>('home_dir'),
+  files: (cwd: string) => invoke<string[]>('files_list', { cwd }),
   git: (cwd: string) => invoke<GitState | null>('git_state', { cwd }),
   commit: (cwd: string, message: string) => invoke<string>('git_commit', { cwd, message }),
   generate: (cwd: string) => invoke<string>('git_generate', { cwd }),

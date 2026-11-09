@@ -426,6 +426,7 @@ pub fn send(shared: &Shared, id: &str, text: &str, images: &[Image]) -> Result<(
     let echo = json!({
         "type": "fleet_user",
         "text": text,
+        "ts": now_ms(),
         "images": images
             .iter()
             .map(|i| format!("data:{};base64,{}", i.media_type, i.data))

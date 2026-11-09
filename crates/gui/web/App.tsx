@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert } from 'lucide-react';
+import { Check, CircleAlert, GitBranch, History, Palette, Plus, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
 import {
   api,
   errorText,
@@ -8,6 +8,7 @@ import {
   type Accounts,
   type Event,
   type Foreign,
+  type Recent,
   type GitState,
   type Session,
   type Settings,
@@ -15,7 +16,7 @@ import {
   type View,
 } from './api';
 import { backgroundUrl } from './backgrounds';
-import { applyTheme } from './themes';
+import { THEMES, applyTheme } from './themes';
 import { termBuffer } from './termstore';
 import { Sidebar } from './components/Sidebar';
 import { AccountMenu } from './components/AccountMenu';
@@ -23,6 +24,7 @@ import { Home, type StartOpts } from './components/Home';
 import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
 import { AppearanceDialog } from './components/AppearanceDialog';
+import { CommandPalette, type Command } from './components/CommandPalette';
 
 const DEFAULTS: Settings = { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: 'harbor', accent: '' };
 
@@ -40,6 +42,8 @@ export function App() {
   const [bgOpen, setBgOpen] = useState(false);
   const [carry, setCarry] = useState(() => localStorage.getItem('fleet.carry') !== '0');
   const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [recent, setRecent] = useState<Recent[]>([]);
   const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const ticks = useRef(0);
@@ -187,6 +191,12 @@ export function App() {
   // ----- keys: F1-F9 jump to a session, even from inside the terminal
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        e.stopPropagation();
+        setPaletteOpen((o) => !o);
+        return;
+      }
       const m = /^F([1-9])$/.exec(e.key);
       if (m) {
         const i = Number(m[1]) - 1;
@@ -204,6 +214,64 @@ export function App() {
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [sessions, accountsOpen, bgOpen, select]);
+
+  useEffect(() => {
+    if (paletteOpen) api.recent().then(setRecent).catch(() => setRecent([]));
+  }, [paletteOpen]);
+
+  const resume = async (r: Recent) => {
+    try {
+      select(await api.create({ cwd: r.cwd, resume: r.id }));
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const toggleGit = () => {
+    localStorage.setItem('fleet.git', showGit ? '0' : '1');
+    setShowGit(!showGit);
+  };
+
+  const commands: Command[] = [
+    ...sessions.map((s, i) => ({
+      id: `s-${s.id}`,
+      group: 'Sessions',
+      label: s.name,
+      hint: i < 9 ? `F${i + 1}` : s.cwd,
+      icon: <span className={`dot ${s.status}`} style={{ marginTop: 0 }} />,
+      run: () => select(s.id),
+    })),
+    { id: 'new', group: 'Actions', label: 'New session', hint: `F${Math.min(sessions.length + 1, 9)}`, icon: <Plus size={15} />, run: goHome },
+    ...(active
+      ? [
+          {
+            id: 'view',
+            group: 'Actions',
+            label: active.view === 'chat' ? 'Show terminal' : 'Show chat',
+            icon: active.view === 'chat' ? <SquareTerminal size={15} /> : <MessageSquare size={15} />,
+            run: () => void setView(active.view === 'chat' ? 'terminal' : 'chat'),
+          },
+          { id: 'git', group: 'Actions', label: showGit ? 'Hide git panel' : 'Show git panel', icon: <GitBranch size={15} />, run: toggleGit },
+        ]
+      : []),
+    { id: 'appearance', group: 'Actions', label: 'Appearance', icon: <Palette size={15} />, run: () => setBgOpen(true) },
+    ...THEMES.map((t) => ({
+      id: `theme-${t.key}`,
+      group: 'Theme',
+      label: `Theme: ${t.label}`,
+      hint: settings.theme === t.key ? 'current' : undefined,
+      icon: <Sun size={15} />,
+      run: () => saveSettings({ ...settings, theme: t.key }),
+    })),
+    ...recent.map((r) => ({
+      id: `r-${r.id}`,
+      group: 'Recent conversations',
+      label: r.summary,
+      hint: r.project,
+      icon: <History size={15} />,
+      run: () => void resume(r),
+    })),
+  ];
 
   const me = accounts?.accounts.find((a) => a.current);
   const firstName = (me?.name ?? '').split(/\s+/)[0] ?? '';
@@ -225,6 +293,7 @@ export function App() {
         update={update}
         onUpdate={installUpdate}
         onRestart={restart}
+        onPalette={() => setPaletteOpen(true)}
       />
       <main className="main">
         {bg && <img className="bg-image" src={bg} alt="" aria-hidden />}
@@ -241,10 +310,7 @@ export function App() {
               onView={setView}
               onAllow={(rule) => api.allow(active.id, rule).catch((e) => notify(errorText(e), true))}
               onConfigure={(model, mode) => api.configure(active.id, model, mode).catch((e) => notify(errorText(e), true))}
-              onToggleGit={() => {
-                localStorage.setItem('fleet.git', showGit ? '0' : '1');
-                setShowGit(!showGit);
-              }}
+              onToggleGit={toggleGit}
               onAppearance={() => setBgOpen(true)}
               onError={(t) => notify(t, true)}
             />
@@ -253,13 +319,7 @@ export function App() {
               name={firstName}
               sessions={sessions}
               onStart={start}
-              onResume={async (r) => {
-                try {
-                  select(await api.create({ cwd: r.cwd, resume: r.id }));
-                } catch (e) {
-                  notify(errorText(e), true);
-                }
-              }}
+              onResume={resume}
               onAppearance={() => setBgOpen(true)}
               onError={(t) => notify(t, true)}
             />
@@ -287,6 +347,7 @@ export function App() {
           onClose={() => setAccountsOpen(false)}
         />
       )}
+      {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
       {bgOpen && (
         <AppearanceDialog
           settings={settings}

@@ -135,6 +135,7 @@ export function Home(p: Props) {
           images={images}
           onImages={setImages}
           onError={p.onError}
+          cwd={cwd}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
