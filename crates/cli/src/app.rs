@@ -773,7 +773,11 @@ impl App {
             ide,
             unsaved_warned: None,
             voice: crate::voice::Voice::new(),
-            accounts: accounts::Accounts::new(),
+            accounts: if cfg!(test) {
+                accounts::Accounts::detached()
+            } else {
+                accounts::Accounts::new()
+            },
             account_picker: None,
             account_header: ratatui::layout::Rect::default(),
             account_hits: Vec::new(),

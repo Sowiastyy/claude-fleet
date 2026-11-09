@@ -17,6 +17,28 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --all-targets --locked -- -D warnings
 
+  gui:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: crates/gui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/gui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      # Type-checks the page and builds it into dist/, which the Rust side
+      # embeds at compile time.
+      - run: npm run build
+      - run: cargo clippy -p fleet-gui --locked -- -D warnings
+
   macos:
     runs-on: macos-latest
     steps:

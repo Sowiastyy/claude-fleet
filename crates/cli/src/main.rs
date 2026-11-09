@@ -4,27 +4,21 @@
 //! interactive. Sessions started elsewhere are listed read-only: their PTY
 //! belongs to another terminal and cannot be adopted.
 
-mod accounts;
 mod app;
 mod bigbrother;
 mod clawd;
 mod clipimg;
-mod commitmsg;
 mod config;
 mod dsr;
 mod editor;
 mod files;
-mod git;
 mod gitview;
-mod history;
 mod ide;
 mod input;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macapp;
 mod msgedit;
-mod registry;
-mod repos;
 mod session;
 mod splash;
 mod supervise;
@@ -54,6 +48,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+
+use fleet_core::{accounts, commitmsg, git, history, registry, repos};
 
 use crate::{
     app::{App, Drag, GitHit, Mode, SpawnKind},

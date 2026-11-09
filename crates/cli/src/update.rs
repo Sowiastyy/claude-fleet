@@ -112,8 +112,12 @@ pub fn dev_repo(origin: &Path) -> Option<PathBuf> {
 }
 
 fn source_repo() -> Option<PathBuf> {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    repo.join(".git").exists().then_some(repo)
+    // The crate sits under `crates/` in the workspace; the checkout is the
+    // first directory up from it that holds `.git`.
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|p| p.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 fn newer(rel: ApiRelease, current: &str) -> Option<Release> {

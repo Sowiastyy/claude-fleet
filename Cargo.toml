@@ -1,32 +1,24 @@
-[package]
-name = "claude-fleet"
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/gui"]
+# A plain `cargo build`/`test`/`clippy` covers the terminal app and the core it
+# shares; the GUI needs its web frontend built first (see crates/gui).
+default-members = ["crates/cli", "crates/core"]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
-description = "A terminal multiplexer for Claude Code sessions on Windows"
 license = "MIT"
 repository = "https://github.com/Sowiastyy/claude-fleet"
-readme = "README.md"
-keywords = ["claude", "tui", "terminal", "multiplexer", "conpty"]
-categories = ["command-line-utilities"]
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0.104"
-cpal = "0.17"
-crossterm = "0.29.0"
 dirs = "7.0.0"
-earshot = "1.2"
 portable-pty = "0.9.0"
-ratatui = "0.30.2"
-rodio = { version = "0.22", default-features = false, features = ["playback"] }
 serde = { version = "1.0", features = ["derive"] }
 # `preserve_order`: `~/.claude.json` is written back when an account is
 # switched, and it should come back in the order Claude Code wrote it.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
-toml = "0.9"
-tui-term = "0.3.4"
-unicode-width = "0.2"
-vt100 = "0.16.2"
-
-[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+fleet-core = { path = "crates/core" }

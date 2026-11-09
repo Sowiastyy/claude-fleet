@@ -1,0 +1,31 @@
+[package]
+name = "claude-fleet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A terminal multiplexer for Claude Code sessions on Windows"
+readme = "../../README.md"
+keywords = ["claude", "tui", "terminal", "multiplexer", "conpty"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+fleet-core.workspace = true
+anyhow.workspace = true
+cpal = "0.17"
+crossterm = "0.29.0"
+dirs.workspace = true
+earshot = "1.2"
+portable-pty.workspace = true
+ratatui = "0.30.2"
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
+tui-term = "0.3.4"
+unicode-width = "0.2"
+vt100 = "0.16.2"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

@@ -191,21 +191,7 @@ pub struct PtySession {
     child: Box<dyn Child + Send + Sync>,
 }
 
-/// Resolve the `claude` executable, falling back to the standard install path
-/// when it is not on PATH (common when launched from a GUI shell).
-pub fn claude_binary() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        let local = home.join(".local").join("bin").join(if cfg!(windows) {
-            "claude.exe"
-        } else {
-            "claude"
-        });
-        if local.exists() {
-            return local;
-        }
-    }
-    PathBuf::from("claude")
-}
+pub use fleet_core::claude::claude_binary;
 
 /// The shell `s` opens: `%COMSPEC%` (cmd.exe) on Windows, `$SHELL` elsewhere.
 pub fn shell_program() -> String {
