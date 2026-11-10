@@ -27,7 +27,7 @@ import { Home, type StartOpts } from './components/Home';
 import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
 import type { Ask, Intent } from './components/Workbench';
-import { AppearanceDialog } from './components/AppearanceDialog';
+import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette, type Command } from './components/CommandPalette';
 import { isCloudRef } from './commands';
 
@@ -358,7 +358,7 @@ export function App() {
             : []),
         ]
       : []),
-    { id: 'appearance', group: 'Actions', label: 'Appearance', icon: <Palette size={15} />, run: () => setBgOpen(true) },
+    { id: 'appearance', group: 'Actions', label: 'Settings', icon: <Palette size={15} />, run: () => setBgOpen(true) },
     ...THEMES.map((t) => ({
       id: `theme-${t.key}`,
       group: 'Theme',
@@ -488,7 +488,7 @@ export function App() {
       )}
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
       {bgOpen && (
-        <AppearanceDialog
+        <SettingsDialog
           settings={settings}
           custom={custom}
           onChange={saveSettings}
