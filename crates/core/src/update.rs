@@ -19,6 +19,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::repos::no_window;
+
 const LATEST: &str = "https://api.github.com/repos/Sowiastyy/claude-fleet/releases/latest";
 
 /// A release newer than this binary.
@@ -53,7 +55,7 @@ struct ApiAsset {
 /// there a release is also not offered once its commit is already in HEAD —
 /// that build has it. A release installed over the build knows its number.
 pub fn check(asset: &str, current: &str, repo: Option<&Path>) -> Result<Option<Release>> {
-    let out = Command::new("curl")
+    let out = no_window(Command::new("curl"))
         .args([
             "-fsSL",
             "--max-time",
@@ -84,7 +86,7 @@ pub fn check(asset: &str, current: &str, repo: Option<&Path>) -> Result<Option<R
 /// does not know at all has not been pulled, so it is not.
 fn in_head(repo: &Path, commit: &str) -> bool {
     !commit.is_empty()
-        && Command::new("git")
+        && no_window(Command::new("git"))
             .arg("-C")
             .arg(repo)
             .args(["merge-base", "--is-ancestor", commit, "HEAD"])
@@ -176,7 +178,7 @@ pub fn install(rel: &Release, origin: &Path, current: &str) -> Result<()> {
     let old = sibling(origin, &format!("old-{stamp}"))?;
     let _ = fs::remove_file(&part);
 
-    let status = Command::new("curl")
+    let status = no_window(Command::new("curl"))
         .args(["-fsSL", "--max-time", "300", "-o"])
         .arg(&part)
         .args(["-H", &format!("User-Agent: claude-fleet/{current}")])

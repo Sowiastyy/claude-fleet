@@ -269,8 +269,10 @@ fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Keep a console program from flashing a console window when the GUI —
+/// which has none to share — starts it.
 #[cfg(windows)]
-fn no_window(mut cmd: Command) -> Command {
+pub(crate) fn no_window(mut cmd: Command) -> Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -278,7 +280,7 @@ fn no_window(mut cmd: Command) -> Command {
 }
 
 #[cfg(not(windows))]
-fn no_window(cmd: Command) -> Command {
+pub(crate) fn no_window(cmd: Command) -> Command {
     cmd
 }
 
