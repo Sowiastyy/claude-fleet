@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Settings, Trash2 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import type { Account, Accounts, LimitWindow, Session } from '../api';
 import { accountColor, accountInitial } from '../accounts';
@@ -11,6 +11,7 @@ interface Props {
   onChoose: (a: Account) => void;
   onForget: (a: Account) => void;
   onAdd: () => void;
+  onSettings: () => void;
   onClose: () => void;
 }
 
@@ -109,6 +110,10 @@ export function AccountMenu(p: Props) {
         <button type="button" className="menu-add" onClick={p.onAdd}>
           <Plus size={16} color="var(--accent)" aria-hidden />
           Add an account
+        </button>
+        <button type="button" className="menu-add" onClick={p.onSettings}>
+          <Settings size={16} color="var(--fog-2)" aria-hidden />
+          Settings
         </button>
       </div>
     </>

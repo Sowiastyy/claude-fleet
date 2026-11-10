@@ -188,5 +188,8 @@
     }
   }
   if (q.get('click')) click(q.get('click'), 1500);
-  if (q.get('bg') === '1') click(q.get('open') ?'[aria-label=Appearance]' : '.ghost-btn', 1200);
+  if (q.get('bg') === '1') {
+    click('.account-btn', 1000);
+    click('.menu .menu-add:last-child', 1200);
+  }
 })();

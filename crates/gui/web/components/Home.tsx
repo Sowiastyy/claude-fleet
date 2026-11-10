@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { ArrowUp, Cloud, Folder, FolderOpen, History, Laptop, Palette, SquareTerminal } from 'lucide-react';
-import { api, type Accounts, type Attachment, type CloudRecent, type Recent, type Session, type SlashCommand } from '../api';
+import { ArrowUp, Cloud, Folder, FolderOpen, Laptop, SquareTerminal } from 'lucide-react';
+import { api, type Accounts, type Attachment, type CloudRecent, type Session, type SlashCommand } from '../api';
 import { accountChoices } from './AccountPicker';
 import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
 import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
@@ -48,9 +48,7 @@ interface Props {
   accounts: Accounts | null;
   sessions: Session[];
   onStart: (opts: StartOpts) => void;
-  onResume: (r: Recent) => void;
   onAttachCloud: (r: CloudRecent) => void;
-  onAppearance: () => void;
   onError: (text: string) => void;
 }
 
@@ -77,7 +75,6 @@ export function Home(p: Props) {
   const [projects, setProjects] = useState<string[]>([]);
   const [model, setModel] = useState(() => modelChoice(stored('fleet.model', '')));
   const [mode, setMode] = useState(() => stored('fleet.mode', 'default'));
-  const [recent, setRecent] = useState<Recent[]>([]);
   const [clouds, setClouds] = useState<CloudRecent[]>([]);
   const [where, setWhere] = useState(() => (stored('fleet.where', 'local') === 'cloud' ? 'cloud' : 'local'));
   const [commands, setCommands] = useState<SlashCommand[]>([]);
@@ -96,7 +93,6 @@ export function Home(p: Props) {
       else if (ps[0]) setCwd(ps[0]);
       else api.home().then(setCwd);
     });
-    api.recent().then(setRecent);
     api.cloudRecent().then(setClouds).catch(() => setClouds([]));
     box.current?.focus();
   }, []);
@@ -181,12 +177,6 @@ export function Home(p: Props) {
 
   return (
     <>
-      <div className="topbar-home">
-        <button type="button" className="ghost-btn" onClick={p.onAppearance}>
-          <Palette size={15} aria-hidden />
-          Appearance
-        </button>
-      </div>
       <div className="home">
         <h1 className="greeting">
           {greeting()}
@@ -302,20 +292,6 @@ export function Home(p: Props) {
                 <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>{r.task || r.id}</span>
                 <span className="small mist">{folderName(r.cwd)}</span>
                 <span className="small faint" style={{ width: 34, textAlign: 'right' }}>{fmtAgo(Math.max(0, (Date.now() - r.at) / 1000))}</span>
-              </button>
-            ))}
-          </section>
-        )}
-
-        {recent.length > 0 && (
-          <section className="recent" aria-label="Recent conversations">
-            <h2>Recent</h2>
-            {recent.slice(0, 6).map((r) => (
-              <button key={r.id} type="button" className="recent-row" onClick={() => p.onResume(r)}>
-                <History size={15} color="var(--mist)" aria-hidden />
-                <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>{r.summary}</span>
-                <span className="small mist">{r.project}</span>
-                <span className="small faint" style={{ width: 34, textAlign: 'right' }}>{fmtAgo(r.agoSecs)}</span>
               </button>
             ))}
           </section>

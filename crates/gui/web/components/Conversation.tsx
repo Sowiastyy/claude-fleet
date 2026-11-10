@@ -26,7 +26,6 @@ import {
   LoaderCircle,
   MessageSquare,
   MonitorDown,
-  Palette,
   Pencil,
   Sailboat,
   Search,
@@ -84,7 +83,6 @@ interface Props {
   onAllow: (rule: string) => void;
   onConfigure: (model: string | null, mode: string | null) => void;
   onToggleGit: () => void;
-  onAppearance: () => void;
   onError: (text: string) => void;
   /// `/clear`: start over on a new conversation.
   onClear: () => void;
@@ -243,9 +241,6 @@ export function Conversation(p: Props) {
         )}
         <button type="button" className="icon-btn boxed" aria-label="Git" aria-pressed={p.showGit} onClick={p.onToggleGit}>
           <GitBranch size={16} aria-hidden />
-        </button>
-        <button type="button" className="icon-btn boxed" aria-label="Appearance" title="Appearance" onClick={p.onAppearance}>
-          <Palette size={16} aria-hidden />
         </button>
       </header>
 

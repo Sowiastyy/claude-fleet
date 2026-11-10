@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Sailboat, Search, X } from 'lucide-react';
-import type { Accounts, Foreign, Limits, LimitWindow, Session, Status, UpdateState } from '../api';
+import type { Accounts, Limits, LimitWindow, Session, Status, UpdateState } from '../api';
 import { accountColor, accountInitial, accountOf } from '../accounts';
 import { fmtDuration } from '../messages';
 
@@ -18,7 +18,6 @@ export function statusLabel(s: Session): string {
 
 interface Props {
   sessions: Session[];
-  foreign: Foreign[];
   activeId: string | null;
   accounts: Accounts | null;
   accountsOpen: boolean;
@@ -73,19 +72,18 @@ export function Sidebar(p: Props) {
         aria-current={s.id === p.activeId}
         onClick={() => p.onSelect(s.id)}
       >
-        <span className={`dot ${s.status}`} aria-hidden />
         <span className="stack" style={{ gap: 1 }}>
-          <span className="ellipsis session-name" style={{ fontWeight: 500 }}>
+          <span className={`session-name ${s.status === 'working' ? 'shimmer' : ''}`}>
             {s.cloud && <Cloud size={13} aria-label="cloud" className="cloud-mark" />}
-            {s.name}
+            <span className="ellipsis" style={{ fontWeight: 500 }}>{s.name}</span>
+            <span className={`small status-text ${s.status}`}>
+              {statusLabel(s)}
+              {s.cloud ? ', cloud' : s.view === 'terminal' ? ', terminal' : ''}
+            </span>
           </span>
-          <span className="small faint ellipsis">{s.cloud && s.cloudTask ? s.cloudTask : s.cwd}</span>
-          <span className={`small status-text ${s.status}`}>
-            {statusLabel(s)}
-            {s.cloud ? ', cloud' : s.view === 'terminal' ? ', terminal' : ''}
-          </span>
+          {s.cloud && s.cloudTask && <span className="small faint ellipsis">{s.cloudTask}</span>}
         </span>
-        {i < 9 && <kbd style={{ marginTop: 2 }}>F{i + 1}</kbd>}
+        {i < 9 && <kbd>F{i + 1}</kbd>}
       </button>
       <button type="button" className="row-close" aria-label={`Close ${s.name}`} onClick={() => p.onClose(s.id)}>
         <X size={14} aria-hidden />
@@ -144,22 +142,6 @@ export function Sidebar(p: Props) {
           ))
         ) : (
           <ul className="list">{p.sessions.map((s, i) => row({ s, i }))}</ul>
-        )}
-
-        {p.foreign.length > 0 && (
-          <>
-            <div className="section-head">
-              <h2 style={{ color: 'var(--mist)' }}>Started elsewhere</h2>
-              <span className="small faint">{p.foreign.length}</span>
-            </div>
-            {p.foreign.map((f, i) => (
-              <div key={`${f.name}-${i}`} className="foreign-row" title={f.cwd}>
-                <span className="dot foreign" aria-hidden />
-                <span className="ellipsis" style={{ flex: 1 }}>{f.name}</span>
-                <span className="small">{f.status === 'busy' ? 'working' : f.status === 'waiting' ? 'needs you' : f.status}</span>
-              </div>
-            ))}
-          </>
         )}
       </div>
 

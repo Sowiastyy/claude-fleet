@@ -81,119 +81,119 @@ export function SettingsDialog(p: Props) {
           </nav>
 
           {section === 'appearance' && (
-            <div className="settings-pane" aria-label="Appearance">
-
-            <section className="field">
-              <h3>Theme</h3>
-              <div className="themes">
-                {THEMES.map((th) => {
-                  const [bg, panel, fg, accent] = th.preview;
-                  return (
-                    <button key={th.key} type="button" className="theme-tile" aria-pressed={s.theme === th.key} onClick={() => pickTheme(th.key)}>
-                      <span className="theme-preview" style={{ background: bg }} aria-hidden>
-                        <span className="tp-rail" style={{ background: panel }} />
-                        <span className="tp-lines">
-                          <span style={{ background: fg, width: '70%' }} />
-                          <span style={{ background: fg, width: '45%', opacity: 0.55 }} />
-                          <span className="tp-bubble" style={{ background: panel }} />
+            <div className="settings-pane" role="region" aria-label="Appearance">
+              <section className="field">
+                <h3>Theme</h3>
+                <div className="themes">
+                  {THEMES.map((th) => {
+                    const [bg, panel, fg, accent] = th.preview;
+                    return (
+                      <button key={th.key} type="button" className="theme-tile" aria-pressed={s.theme === th.key} onClick={() => pickTheme(th.key)}>
+                        <span className="theme-preview" style={{ background: bg }} aria-hidden>
+                          <span className="tp-rail" style={{ background: panel }} />
+                          <span className="tp-lines">
+                            <span style={{ background: fg, width: '70%' }} />
+                            <span style={{ background: fg, width: '45%', opacity: 0.55 }} />
+                            <span className="tp-bubble" style={{ background: panel }} />
+                          </span>
+                          <span className="tp-dot" style={{ background: accent }} />
                         </span>
-                        <span className="tp-dot" style={{ background: accent }} />
-                      </span>
-                      <span className="theme-label">
-                        {th.label}
-                        {s.theme === th.key && <Check size={13} strokeWidth={2.5} aria-hidden />}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
+                        <span className="theme-label">
+                          {th.label}
+                          {s.theme === th.key && <Check size={13} strokeWidth={2.5} aria-hidden />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
 
-            <section className="field">
-              <h3>Accent</h3>
-              <div className="swatches">
-                <button
-                  type="button"
-                  className="swatch"
-                  title="Theme"
-                  aria-label="Theme accent"
-                  aria-pressed={!s.accent}
-                  style={{ background: t.accent }}
-                  onClick={() => {
-                    setLow(null);
-                    p.onChange({ ...s, accent: '' });
-                  }}
-                />
-                <span className="swatch-rule" aria-hidden />
-                {ACCENTS.map((a) => (
+              <section className="field">
+                <h3>Accent</h3>
+                <div className="swatches">
                   <button
-                    key={a.key}
                     type="button"
                     className="swatch"
-                    title={a.label}
-                    aria-label={a.label}
-                    aria-pressed={s.accent === a.key}
-                    style={{ background: t.light ? a.light : a.dark }}
+                    title="Theme"
+                    aria-label="Theme accent"
+                    aria-pressed={!s.accent}
+                    style={{ background: t.accent }}
                     onClick={() => {
                       setLow(null);
-                      p.onChange({ ...s, accent: a.key });
+                      p.onChange({ ...s, accent: '' });
                     }}
                   />
-                ))}
-                <label
-                  className={`swatch swatch-custom ${isCustom ? 'set' : ''}`}
-                  title="Custom"
-                  style={isCustom ? { background: accentColor(s.theme, s.accent) } : undefined}
-                >
-                  <Pipette size={13} aria-hidden />
-                  <span className="sr-only">Custom accent</span>
-                  <input type="color" value={accentColor(s.theme, s.accent)} onChange={(e) => pickColor(e.target.value)} />
-                </label>
-                {low !== null && (
-                  <span className="small warn-text" role="status">
-                    Low contrast {low.toFixed(1)} &lt; {MIN_CONTRAST}
-                  </span>
-                )}
-              </div>
-            </section>
+                  <span className="swatch-rule" aria-hidden />
+                  {ACCENTS.map((a) => (
+                    <button
+                      key={a.key}
+                      type="button"
+                      className="swatch"
+                      title={a.label}
+                      aria-label={a.label}
+                      aria-pressed={s.accent === a.key}
+                      style={{ background: t.light ? a.light : a.dark }}
+                      onClick={() => {
+                        setLow(null);
+                        p.onChange({ ...s, accent: a.key });
+                      }}
+                    />
+                  ))}
+                  <label
+                    className={`swatch swatch-custom ${isCustom ? 'set' : ''}`}
+                    title="Custom"
+                    style={isCustom ? { background: accentColor(s.theme, s.accent) } : undefined}
+                  >
+                    <Pipette size={13} aria-hidden />
+                    <span className="sr-only">Custom accent</span>
+                    <input type="color" value={accentColor(s.theme, s.accent)} onChange={(e) => pickColor(e.target.value)} />
+                  </label>
+                  {low !== null && (
+                    <span className="small warn-text" role="status">
+                      Low contrast {low.toFixed(1)} &lt; {MIN_CONTRAST}
+                    </span>
+                  )}
+                </div>
+              </section>
 
-            <section className="field">
-              <h3>Background</h3>
-              <div className="thumbs">
-                {choices.map(([key, label, url]) => (
-                  <button key={key} type="button" className="thumb" aria-pressed={s.background === key} onClick={() => p.onChange({ ...s, background: key })}>
-                    <span className="thumb-img">{url && <img src={url} alt="" />}</span>
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <button type="button" className="ghost-btn" style={{ alignSelf: 'flex-start' }} onClick={pickImage}>
-                <FolderOpen size={15} aria-hidden />
-                Choose image
-              </button>
-            </section>
+              <section className="field">
+                <h3>Background</h3>
+                <div className="thumbs">
+                  {choices.map(([key, label, url]) => (
+                    <button key={key} type="button" className="thumb" aria-pressed={s.background === key} onClick={() => p.onChange({ ...s, background: key })}>
+                      <span className="thumb-img">{url && <img src={url} alt="" />}</span>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <button type="button" className="ghost-btn" style={{ alignSelf: 'flex-start' }} onClick={pickImage}>
+                  <FolderOpen size={15} aria-hidden />
+                  Choose image
+                </button>
+              </section>
 
-            <div className="slider">
-              <div className="slider-head">
-                <label htmlFor="dim-new">New chat darkness</label>
-                <span className="slider-value">{s.newChatDim}%</span>
+              <div className="slider">
+                <div className="slider-head">
+                  <label htmlFor="dim-new">New chat darkness</label>
+                  <span className="slider-value">{s.newChatDim}%</span>
+                </div>
+                <input id="dim-new" type="range" min={0} max={95} step={5} value={s.newChatDim} onChange={(e) => p.onChange({ ...s, newChatDim: Number(e.target.value) })} />
               </div>
-              <input id="dim-new" type="range" min={0} max={95} step={5} value={s.newChatDim} onChange={(e) => p.onChange({ ...s, newChatDim: Number(e.target.value) })} />
-            </div>
-            <div className="slider">
-              <div className="slider-head">
-                <label htmlFor="dim-chat">Conversation darkness</label>
-                <span className="slider-value">{s.chatDim}%</span>
+              <div className="slider">
+                <div className="slider-head">
+                  <label htmlFor="dim-chat">Conversation darkness</label>
+                  <span className="slider-value">{s.chatDim}%</span>
+                </div>
+                <input id="dim-chat" type="range" min={0} max={95} step={5} value={s.chatDim} onChange={(e) => p.onChange({ ...s, chatDim: Number(e.target.value) })} />
               </div>
-              <input id="dim-chat" type="range" min={0} max={95} step={5} value={s.chatDim} onChange={(e) => p.onChange({ ...s, chatDim: Number(e.target.value) })} />
             </div>
-          </div>
-            )}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button type="button" className="btn primary" onClick={p.onClose}>Done</button>
-            </div>
-          </div>
+          )}
         </div>
-      );
-    }
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" className="btn primary" onClick={p.onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}

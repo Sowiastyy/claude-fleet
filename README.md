@@ -87,7 +87,7 @@ with Tauri and React from the same core (`crates/gui`).
 - **Model and permissions** pickers under the message box (arrow keys and
   Enter work), `Shift+Tab` steps through Ask first / Accept edits / Plan only
   as in Claude Code. The chat shows the model actually running.
-- **Appearance**: Harbor, plus SmartWood Console's Dark, Light, Blue and
+- **Settings** (account menu) **> Appearance**: Harbor, plus SmartWood Console's Dark, Light, Blue and
   Graphite; an accent (the theme's, a preset, or your own, refused when it
   would not read on the background); an image behind everything, darkened
   65% on the new-chat screen and 85% in a conversation.

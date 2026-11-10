@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, Cloud, ExternalLink, FileCode2, GitBranch, History, Palette, Plus, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
+import { Check, CircleAlert, Cloud, ExternalLink, FileCode2, GitBranch, History, Plus, Settings as SettingsIcon, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
 import {
   api,
   errorText,
@@ -8,7 +8,6 @@ import {
   type Accounts,
   type CloudRecent,
   type Event,
-  type Foreign,
   type Recent,
   type GitChange,
   type GitState,
@@ -38,7 +37,6 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Record<string, Event[]>>({});
   const [accounts, setAccounts] = useState<Accounts | null>(null);
-  const [foreign, setForeign] = useState<Foreign[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [custom, setCustom] = useState<string | null>(null);
   const [git, setGit] = useState<GitState | null>(null);
@@ -47,7 +45,7 @@ export function App() {
   const [gitFor, setGitFor] = useState<string | null>(null);
   const [showGit, setShowGit] = useState(() => localStorage.getItem('fleet.git') === '1');
   const [accountsOpen, setAccountsOpen] = useState(false);
-  const [bgOpen, setBgOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [carry, setCarry] = useState(() => localStorage.getItem('fleet.carry.v2') === '1');
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -59,7 +57,6 @@ export function App() {
   const [code, setCode] = useState<Record<string, boolean>>({});
   const [intent, setIntent] = useState<{ session: string; intent: Intent } | null>(null);
   const intentSeq = useRef(0);
-  const ticks = useRef(0);
 
   const active = sessions.find((s) => s.id === activeId) ?? null;
 
@@ -78,7 +75,6 @@ export function App() {
   useEffect(() => {
     api.sessions().then(setSessions);
     api.accounts().then(setAccounts);
-    api.foreign().then(setForeign);
     api.settings().then((s) => setSettings({ ...DEFAULTS, ...s }));
     api.customBackground().then(setCustom);
     api.updateState().then(setUpdate);
@@ -92,10 +88,6 @@ export function App() {
       on<Accounts>('fleet://accounts', setAccounts),
       on<UpdateState>('fleet://update', setUpdate),
       on<string>('fleet://toast', (t) => notify(t)),
-      on<unknown>('fleet://tick', () => {
-        ticks.current += 1;
-        if (ticks.current % 3 === 0) api.foreign().then(setForeign);
-      }),
     ];
     return () => offs.forEach((p) => p.then((off) => off()));
   }, [notify]);
@@ -283,14 +275,14 @@ export function App() {
         else if (i === sessions.length) goHome();
         return;
       }
-      if (e.key === 'Escape' && (accountsOpen || bgOpen)) {
+      if (e.key === 'Escape' && (accountsOpen || settingsOpen)) {
         setAccountsOpen(false);
-        setBgOpen(false);
+        setSettingsOpen(false);
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [sessions, accountsOpen, bgOpen, select]);
+  }, [sessions, accountsOpen, settingsOpen, select]);
 
   useEffect(() => {
     if (!paletteOpen) return;
@@ -358,7 +350,7 @@ export function App() {
             : []),
         ]
       : []),
-    { id: 'appearance', group: 'Actions', label: 'Settings', icon: <Palette size={15} />, run: () => setBgOpen(true) },
+    { id: 'settings', group: 'Actions', label: 'Settings', hint: 'Appearance', icon: <SettingsIcon size={15} />, run: () => setSettingsOpen(true) },
     ...THEMES.map((t) => ({
       id: `theme-${t.key}`,
       group: 'Theme',
@@ -394,7 +386,6 @@ export function App() {
     <div className="app">
       <Sidebar
         sessions={sessions}
-        foreign={foreign}
         activeId={activeId}
         accounts={accounts}
         accountsOpen={accountsOpen}
@@ -425,7 +416,6 @@ export function App() {
               onAllow={(rule) => api.allow(active.id, rule).catch((e) => notify(errorText(e), true))}
               onConfigure={(model, mode) => api.configure(active.id, model, mode).catch((e) => notify(errorText(e), true))}
               onToggleGit={toggleGit}
-              onAppearance={() => setBgOpen(true)}
               onError={(t) => notify(t, true)}
               onClear={() => void clearSession()}
               onTerminalCommand={(t) => void runInTerminal(t)}
@@ -447,9 +437,7 @@ export function App() {
               accounts={accounts}
               sessions={sessions}
               onStart={start}
-              onResume={resume}
               onAttachCloud={(r) => void attachCloud(r)}
-              onAppearance={() => setBgOpen(true)}
               onError={(t) => notify(t, true)}
             />
           )}
@@ -483,17 +471,21 @@ export function App() {
           onChoose={chooseAccount}
           onForget={(a) => api.forgetAccount(a.uuid).catch((e) => notify(errorText(e), true))}
           onAdd={addAccount}
+          onSettings={() => {
+            setAccountsOpen(false);
+            setSettingsOpen(true);
+          }}
           onClose={() => setAccountsOpen(false)}
         />
       )}
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
-      {bgOpen && (
+      {settingsOpen && (
         <SettingsDialog
           settings={settings}
           custom={custom}
           onChange={saveSettings}
           onCustom={setCustom}
-          onClose={() => setBgOpen(false)}
+          onClose={() => setSettingsOpen(false)}
           onToast={notify}
         />
       )}
