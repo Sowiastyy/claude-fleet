@@ -1,9 +1,8 @@
 // A stand-in for the Tauri bridge, so the window's page can be opened in a
 // plain browser with made-up data: `npm run preview:ui`, then
 // http://localhost:1421/preview/ (add ?open=1 for a conversation,
-// ?open=1&git=1 for the git panel, ?accounts=1, ?bg=1, ?open=5 for the cloud
-// session's chat (&termask=1 with its terminal asking something, &cloudwait=1
-// waiting on a permission), ?open=3 for a shell, ?type=/co to type into the message box; ?open=1&code=1 for the
+// ?open=1&git=1 for the git panel, ?accounts=1, ?bg=1, ?open=4 for the cloud
+// session, ?open=5 for a shell, ?type=/co to type into the message box; ?open=1&code=1 for the
 // code view, with &find=total.ts to open a file, &ghost=1 for ghost mode,
 // &typed=1 to type a little of it, &hist=1 for the history, &diff=1 for a
 // commit's diff).
@@ -17,9 +16,9 @@
     { id: 's1', name: 'web-checkout', cwd: 'C:\\code\\smartwood-web', conversation: 'a', view: 'chat', status: 'working', waitingFor: '', model: 'claude-opus-5-5', permissionMode: 'default', startedAt: now - 840e3 },
     { id: 's2', name: 'orders-api', cwd: 'C:\\code\\smartwood-api', conversation: 'b', view: 'chat', status: 'waiting', waitingFor: 'permission', model: '', permissionMode: 'default', startedAt: now - 3720e3 },
     { id: 's3', name: 'claude-fleet', cwd: 'C:\\code\\claude-fleet', conversation: 'c', view: 'terminal', status: 'idle', waitingFor: '', model: '', permissionMode: 'acceptEdits', startedAt: now - 2280e3 },
-    { id: 's4', name: 'smartwood-web', cwd: 'C:\\code\\smartwood-web', conversation: 'd', view: 'chat', status: q.get('cloudwait') ? 'waiting' : 'working', waitingFor: q.get('cloudwait') ? 'Bash' : '', model: 'claude-opus-5-5', permissionMode: 'default', termWaiting: q.get('termask') ? 'Trust this folder?' : '', startedAt: now - 600e3, cloud: true, cloudId: 'cse_01HkV2m9', cloudUrl: 'https://claude.ai/code/cse_01HkV2m9', cloudTask: 'Upgrade the image pipeline to sharp 0.34' },
+    { id: 's4', name: 'smartwood-web', cwd: 'C:\\code\\smartwood-web', conversation: 'd', view: 'terminal', status: 'working', waitingFor: '', model: '', permissionMode: 'default', startedAt: now - 600e3, cloud: true, cloudId: 'cse_01HkV2m9', cloudUrl: 'https://claude.ai/code/cse_01HkV2m9', cloudTask: 'Upgrade the image pipeline to sharp 0.34' },
     { id: 's5', name: 'claude-fleet terminal', cwd: 'C:\\code\\claude-fleet', conversation: 'e', view: 'terminal', status: 'idle', waitingFor: '', model: '', permissionMode: '', startedAt: now - 120e3, shell: true },
-  ].map((s, i) => ({ cloud: false, cloudId: '', cloudUrl: '', cloudTask: '', shell: false, alive: true, termWaiting: '', account: q.get('one') ? 'u1' : ['u1', 'u2', 'u1', 'u2', 'u1'][i], ...s }));
+  ].map((s, i) => ({ cloud: false, cloudId: '', cloudUrl: '', cloudTask: '', shell: false, alive: true, account: q.get('one') ? 'u1' : ['u1', 'u2', 'u1', 'u2', 'u1'][i], ...s }));
   const cmd = (name, description, argumentHint = '', terminal = false, aliases = []) => ({ name, description, argumentHint, aliases, terminal });
   const log = [
     { type: 'fleet_user', text: 'The checkout total ignores the voucher when the cart has a mattress in it. Fix it and add a test.', images: ['data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300"><rect width="480" height="300" fill="#f4f1ea"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#d9d3c4"/><rect x="24" y="84" width="280" height="18" rx="4" fill="#bdb5a3"/><rect x="24" y="114" width="200" height="18" rx="4" fill="#bdb5a3"/><rect x="320" y="230" width="136" height="46" rx="8" fill="#c0403f"/></svg>')] },

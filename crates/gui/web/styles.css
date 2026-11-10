@@ -334,7 +334,7 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 /* ---------- conversation */
 .header { display: flex; align-items: center; gap: 14px; padding: 12px 18px; background: color-mix(in srgb, var(--ink) 55%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--rope-2) 60%, transparent); }
 .header .dot { margin-top: 0; }
-.chip { font-size: 12px; border: 1px solid currentColor; border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
+.chip { font-size: 12px; border: 1px solid currentColor; border-radius: 999px; padding: 1px 9px; }
 .segmented { display: flex; padding: 3px; background: var(--glass-strong); border: 1px solid var(--rope-2); border-radius: 9px; }
 .segmented button { display: flex; align-items: center; gap: 6px; padding: 5px 11px; border: none; border-radius: 6px; background: transparent; color: var(--mist); font-size: 13px; }
 .segmented button[aria-pressed='true'] { background: var(--rope); color: var(--fog); }
@@ -627,7 +627,9 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 .foot-acct { flex: none; display: flex; }
 .menu-note { margin: 2px 14px 8px; line-height: 1.45; }
 
-/* ---------- cloud session chat */
-/* Over the thread while the session, or its terminal, waits on an answer. */
-.cloud-banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 10px 18px 0; padding: 7px 8px 7px 12px; border: 1px solid var(--waiting); border-radius: 10px; background: color-mix(in srgb, var(--deck) 96%, transparent); color: var(--waiting); font-size: 13px; }
+/* ---------- cloud session preview: the app lays claude.ai over this box */
+.preview-wrap { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--well) 94%, transparent); }
+.preview-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--mist); }
+/* Over the preview while the session's terminal waits on an answer. */
+.cloud-banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 18px 10px; padding: 7px 8px 7px 12px; border: 1px solid var(--waiting); border-radius: 10px; background: color-mix(in srgb, var(--deck) 96%, transparent); color: var(--waiting); font-size: 13px; }
 .cloud-banner .btn { flex: none; padding: 5px 10px; color: var(--fog); }

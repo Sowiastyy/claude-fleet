@@ -10,6 +10,7 @@ mod cloud;
 mod code;
 mod commands;
 mod hub;
+mod preview;
 mod settings;
 mod updater;
 
@@ -43,6 +44,8 @@ struct App {
     restore_path: PathBuf,
     /// Claude Code's slash commands, per folder.
     commands: commands::Cache,
+    /// Cloud sessions' claude.ai pages, shown inside the window.
+    previews: preview::Previews,
 }
 
 // ---------- sessions
@@ -196,7 +199,7 @@ fn open_url(url: String) -> Res<()> {
 
 /// Hand a web link to the default browser, as one argument and never
 /// through a shell. Anything but http(s) is refused.
-fn open_in_browser(url: &str) -> std::io::Result<()> {
+pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     if !(url.starts_with("https://") || url.starts_with("http://")) || url.chars().any(char::is_whitespace) {
         return Err(std::io::Error::other("not a web link"));
     }
@@ -219,6 +222,28 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
         c
     };
     cmd.spawn().map(|_| ())
+}
+
+/// Show a cloud session's claude.ai page over the box at `bounds`, as
+/// `account`. `seq` orders the calls (see `preview`). Async: a webview made
+/// from the main thread would wait on the main thread.
+#[tauri::command]
+async fn cloud_view_show(
+    handle: tauri::AppHandle,
+    app: State<'_, Arc<App>>,
+    seq: u64,
+    account: String,
+    url: String,
+    bounds: preview::Bounds,
+    reload: bool,
+) -> Res<()> {
+    app.previews.show(&handle, seq, &account, &url, bounds, reload).map_err(err)
+}
+
+#[tauri::command]
+async fn cloud_view_hide(handle: tauri::AppHandle, app: State<'_, Arc<App>>, seq: u64) -> Res<()> {
+    app.previews.hide(&handle, seq);
+    Ok(())
 }
 
 // ---------- accounts and limits
@@ -704,12 +729,14 @@ fn main() {
                 updater: updater::Updater::new(),
                 restore_path: dir.join("restore.json"),
                 commands: commands::Cache::default(),
+                previews: preview::Previews::new(
+                    tauri_app
+                        .path()
+                        .app_local_data_dir()
+                        .unwrap_or_else(|_| dir.clone())
+                        .join("cloud-web"),
+                ),
             });
-            // What the claude.ai pages cloud sessions used to show kept
-            // (their logins among it); their chats read the API now.
-            if let Ok(local) = tauri_app.path().app_local_data_dir() {
-                let _ = std::fs::remove_dir_all(local.join("cloud-web"));
-            }
             tauri_app.manage(app.clone());
             updater::reopen(&app.hub, &app.restore_path);
             updater::watch(handle.clone(), app.updater.clone());
@@ -734,6 +761,8 @@ fn main() {
             cloud_recent,
             cloud_forget,
             open_url,
+            cloud_view_show,
+            cloud_view_hide,
             term_write,
             term_resize,
             foreign_sessions,

@@ -216,7 +216,7 @@ export function Home(p: Props) {
           {cloud ? (
             <span className="small mist cloud-hint">
               <Cloud size={13} aria-hidden />
-              {attaching ? 'Attach to this cloud session' : 'Runs on claude.ai; its chat follows it here'}
+              {attaching ? 'Attach to this cloud session' : 'Runs on claude.ai; its page opens here'}
             </span>
           ) : (
             <button type="button" className="icon-btn" title="Open in the terminal" aria-label="Open in the terminal" onClick={() => start(true)}>

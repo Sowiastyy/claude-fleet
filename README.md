@@ -22,10 +22,8 @@ list, the right one is the full, interactive terminal of the selected session.
 > trademarks of Anthropic.
 >
 > Fleet reads Claude Code's **undocumented** local state (`~/.claude/sessions`,
-> `~/.claude.json`, the `cc-msg` named pipes), and follows cloud sessions
-> through the same undocumented API endpoints Claude Code uses
-> (`/v1/code/sessions/…`). Any Claude Code update can change those and break
-> parts of fleet without notice.
+> `~/.claude.json`, the `cc-msg` named pipes). Any Claude Code update can
+> change those and break parts of fleet without notice.
 
 ## Requirements
 
@@ -104,15 +102,12 @@ with Tauri and React from the same core (`crates/gui`).
 - **Cloud sessions.** **Where: Cloud** under the message box starts the task
   as a Claude Code cloud session (`claude --cloud`, the ones claude.ai/code
   shows). It starts in its terminal and, once Claude Code names the session,
-  opens on its **Chat**: the conversation so far and then every step as the
-  cloud takes it, read from Anthropic's API with the account's own Claude
-  Code login (no claude.ai sign-in), and a message typed there (or `Esc`)
-  goes to the cloud session. The terminal keeps running beside it. The
-  sidebar lists it by its task with a cloud mark. Paste a claude.ai/code link
-  or a session id instead of a task to attach to an existing one: that opens
-  straight on its chat, and runs `claude --cloud <id>` only when
-  **Terminal** is clicked. If the terminal is asking something, or the cloud
-  session waits on a permission, a bar over the chat says so.
+  shows its claude.ai page inside the window (**Preview**; each account
+  signs in to claude.ai there once). The sidebar lists it by its task with a
+  cloud mark. Paste a claude.ai/code link or a session id instead of a task
+  to attach to an existing one: that opens straight on its page, and runs
+  `claude --cloud <id>` only when **Terminal** is clicked. If the terminal
+  is asking something while the page is shown, a bar over the page says so.
   **claude.ai** opens it in the browser, **Teleport** carries it on in a
   local session (`claude --teleport`), and the cloud sessions seen are
   listed on the new-chat screen (the x forgets one here) and in `Ctrl+K` to

@@ -16,8 +16,7 @@ export interface Session {
   model: string;
   permissionMode: string;
   startedAt: number;
-  /// Runs in the cloud (claude.ai/code): started in a terminal running
-  /// `claude --cloud`, its chat read from Anthropic's API.
+  /// Runs in the cloud (`claude --cloud`): terminal only.
   cloud: boolean;
   /// Its id and claude.ai/code link, once Claude Code has said them.
   cloudId: string;
@@ -29,8 +28,6 @@ export interface Session {
   alive: boolean;
   /// The account it runs as; empty for whatever `~/.claude` is signed in as.
   account: string;
-  /// What a cloud session's terminal is asking while its chat shows.
-  termWaiting: string;
 }
 
 /// A slash command Claude Code runs, as it describes it.
@@ -227,6 +224,11 @@ export const api = {
   cloudRecent: () => invoke<CloudRecent[]>('cloud_recent'),
   cloudForget: (id: string) => invoke<void>('cloud_forget', { id }),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
+  /// The cloud session's claude.ai page over the box at `bounds` (CSS
+  /// pixels), as `account`; `seq` keeps a late call from undoing a newer one.
+  cloudViewShow: (seq: number, account: string, url: string, bounds: Bounds, reload: boolean) =>
+    invoke<void>('cloud_view_show', { seq, account, url, bounds, reload }),
+  cloudViewHide: (seq: number) => invoke<void>('cloud_view_hide', { seq }),
   termWrite: (id: string, data: string) => invoke<void>('term_write', { id, data }),
   termResize: (id: string, rows: number, cols: number) => invoke<void>('term_resize', { id, rows, cols }),
   foreign: () => invoke<Foreign[]>('foreign_sessions'),
@@ -261,6 +263,13 @@ export const api = {
   updateInstall: () => invoke<UpdateState>('update_install'),
   restart: () => invoke<void>('app_restart'),
 };
+
+export interface Bounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface UpdateState {
   current: string;

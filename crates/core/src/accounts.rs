@@ -87,32 +87,6 @@ pub struct Account {
     pub needs_login: bool,
 }
 
-/// An account's claude.ai login, as [`Accounts::login_for`] found it.
-#[derive(Clone, Debug)]
-pub struct Login {
-    /// `claudeAiOauth` as Claude Code keeps it: `accessToken`,
-    /// `refreshToken`, `expiresAt` (ms), `scopes` and the plan.
-    pub creds: Value,
-    /// The organisation the login is for; empty when Claude Code has not
-    /// written it down.
-    pub org: String,
-}
-
-impl Login {
-    pub fn access_token(&self) -> &str {
-        self.creds.get("accessToken").and_then(Value::as_str).unwrap_or("")
-    }
-
-    pub fn refresh_token(&self) -> &str {
-        refresh_token(&self.creds).unwrap_or("")
-    }
-
-    /// Milliseconds since the epoch.
-    pub fn expires_at(&self) -> u64 {
-        expires_at(&self.creds)
-    }
-}
-
 /// What reading the live files came to.
 #[derive(Debug, PartialEq)]
 enum Synced {
@@ -507,89 +481,6 @@ impl Accounts {
             write_atomic(&cfg_path, serde_json::to_string_pretty(&cfg)?.as_bytes(), false)?;
         }
         Ok(home)
-    }
-
-    /// The claude.ai login `uuid` runs on, for asking Anthropic's API what
-    /// Claude Code itself would (see `remote`): its freshest tokens, wherever
-    /// they are, and its organisation. Empty `uuid`: whatever `~/.claude` is
-    /// signed in as.
-    pub fn login_for(&mut self, uuid: &str) -> Result<Login> {
-        let live = |paths: &Paths| -> Result<Option<Value>> {
-            Ok(paths
-                .read_store()?
-                .and_then(|(v, _)| v.get("claudeAiOauth").filter(|c| c.is_object()).cloned()))
-        };
-        if uuid.is_empty() {
-            let creds = live(&self.paths)?.context("Claude Code is not signed in to claude.ai")?;
-            let global = read_json(&self.paths.global)?.unwrap_or_else(|| json!({}));
-            let org = global
-                .pointer("/oauthAccount/organizationUuid")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            return Ok(Login { creds, org });
-        }
-        self.reconcile()?;
-        let path = self.paths.profile(uuid).context("not an account id")?;
-        let profile = read_json(&path)?.context("that account has no saved profile — log in to it again")?;
-        let mut creds = profile
-            .get("claudeAiOauth")
-            .filter(|v| v.is_object())
-            .cloned()
-            .context("the profile holds no tokens")?;
-        let mut newer = |other: Option<Value>| {
-            if let Some(o) = other.filter(|o| expires_at(o) > expires_at(&creds)) {
-                creds = o;
-            }
-        };
-        if let Some(home) = self.paths.home(uuid) {
-            newer(
-                read_json(&home.join(".credentials.json"))
-                    .ok()
-                    .flatten()
-                    .and_then(|s| s.get("claudeAiOauth").filter(|c| c.is_object()).cloned()),
-            );
-        }
-        if self.current.as_deref() == Some(uuid) {
-            newer(live(&self.paths)?);
-        }
-        let org = profile
-            .pointer("/oauthAccount/organizationUuid")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        Ok(Login { creds, org })
-    }
-
-    /// Keep tokens refreshed here for `uuid` (empty: `~/.claude`'s), in
-    /// every place that account's Claude Code reads them from, as its own
-    /// refresh would. The token they replace no longer signs in.
-    pub fn save_login(&mut self, uuid: &str, creds: &Value) -> Result<()> {
-        let put_live = |paths: &Paths| -> Result<()> {
-            let (mut store, kind) = paths.read_store()?.unwrap_or((json!({}), Store::default()));
-            store["claudeAiOauth"] = creds.clone();
-            paths.write_store(kind, &store)
-        };
-        if uuid.is_empty() {
-            return put_live(&self.paths);
-        }
-        let path = self.paths.profile(uuid).context("not an account id")?;
-        let mut profile = read_json(&path)?.context("that account has no saved profile")?;
-        profile["claudeAiOauth"] = creds.clone();
-        profile["savedAtMs"] = json!(now_ms());
-        write_atomic(&path, serde_json::to_string_pretty(&profile)?.as_bytes(), true)?;
-        if let Some(home) = self.paths.home(uuid) {
-            let cred_path = home.join(".credentials.json");
-            if let Some(mut store) = read_json(&cred_path).ok().flatten() {
-                store["claudeAiOauth"] = creds.clone();
-                write_atomic(&cred_path, serde_json::to_string(&store)?.as_bytes(), true)?;
-            }
-        }
-        if self.current.as_deref() == Some(uuid) {
-            put_live(&self.paths)?;
-        }
-        self.reload();
-        Ok(())
     }
 
     /// Carry tokens refreshed in an account's own home to its profile, and

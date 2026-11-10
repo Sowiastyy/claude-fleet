@@ -13,6 +13,8 @@ const STATUS: Record<Status, string> = {
 
 export function statusLabel(s: Session): string {
   if (s.shell) return s.alive ? 'shell' : 'exited';
+  // Attached without a process of its own: the cloud has it.
+  if (s.cloud && s.cloudId && !s.alive) return 'on claude.ai';
   if (s.status === 'waiting' && s.waitingFor) return `needs you: ${s.waitingFor}`;
   return STATUS[s.status];
 }
@@ -26,7 +28,7 @@ export function sessionTitle(s: Session): string {
 /// What follows the status in a session's row.
 function kindNote(s: Session): string {
   if (s.shell) return '';
-  if (s.cloud) return ', cloud';
+  if (s.cloud) return s.alive || !s.cloudId ? ', cloud' : '';
   return s.view === 'terminal' ? ', terminal' : '';
 }
 

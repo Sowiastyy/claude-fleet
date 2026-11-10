@@ -15,19 +15,15 @@
 //! instead, `--resume <old> --fork-session --session-id <new>`, and carries on
 //! as the copy.
 //!
-//! A cloud session (see `cloud`) runs on Anthropic's machines. A new one is
-//! started in a terminal running `claude --cloud "<task>"`; once Claude Code
-//! names it, its chat follows it over Anthropic's API (`fleet_core::remote`):
-//! the events so far, then each new one as the service sends it, and a
-//! message typed here is posted to it. The terminal keeps running beside the
-//! chat until it exits. A teleported one is the other way round: a cloud
-//! session pulled into a local process with `claude --teleport <id>`, which
-//! becomes an ordinary session once Claude Code reports the conversation it
-//! made for it.
+//! A cloud session (see `cloud`) runs on Anthropic's machines; here it is a
+//! terminal running `claude --cloud`, which has no chat view. A teleported
+//! one is the other way round: a cloud session pulled into a local process
+//! with `claude --teleport <id>`, which becomes an ordinary session once
+//! Claude Code reports the conversation it made for it.
 //!
-//! A cloud session the app attaches to (rather than starts) opens on its
-//! chat and runs no process until its terminal is asked for: the cloud keeps
-//! the conversation either way.
+//! A cloud session the app attaches to (rather than starts) shows its
+//! claude.ai page and runs no process until its terminal is asked for: the
+//! cloud keeps the conversation either way.
 //!
 //! A shell session is not Claude Code at all: the user's own shell in a
 //! terminal, in the session's folder, for whatever else needs running there.
@@ -38,18 +34,13 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use crate::cloud;
-use fleet_core::{
-    accounts::Accounts,
-    claude::claude_binary,
-    history, registry,
-    remote::{self, Row, Stopper, StreamEnd},
-};
+use fleet_core::{accounts::Accounts, claude::claude_binary, history, registry};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -101,18 +92,11 @@ pub struct SessionView {
     pub alive: bool,
     /// The account it runs as; empty for whatever `~/.claude` is signed in as.
     pub account: String,
-    /// What a cloud session's terminal is asking while its chat shows.
-    pub term_waiting: String,
 }
 
 struct ChatProc {
     child: Child,
     stdin: ChildStdin,
-}
-
-/// A cloud session's chat following it (see `watch_cloud`).
-struct Watch {
-    stop: Arc<Stopper>,
 }
 
 struct TermProc {
@@ -166,22 +150,6 @@ pub struct Session {
     /// own config dir (see `Accounts::config_dir_for`), so switching who is
     /// signed in leaves it alone. Empty: `~/.claude` as it is, for `/login`.
     pub account: String,
-    /// A cloud session's chat, following it over the API.
-    watch: Option<Watch>,
-    /// Bumped whenever the watch is replaced, so the old one's thread can
-    /// tell that what it reads no longer counts.
-    watch_gen: u64,
-    /// The last cloud event the log has.
-    cloud_seq: u64,
-    /// Messages posted from here, by uuid, with what the thread showed for
-    /// them when they were sent: not shown again when the cloud sends them
-    /// back.
-    cloud_sent: Vec<(String, Value)>,
-    /// What the cloud session's terminal is asking, while the chat shows.
-    term_asks: String,
-    /// The permission request a cloud session waits on, until it is
-    /// answered (on claude.ai, or in its terminal).
-    cloud_asked: String,
 }
 
 impl Session {
@@ -204,7 +172,6 @@ impl Session {
             shell: self.shell,
             alive: self.term.is_some() || self.chat.is_some(),
             account: self.account.clone(),
-            term_waiting: self.term_asks.clone(),
         }
     }
 
@@ -283,13 +250,6 @@ impl Session {
     fn stop_term(&mut self) {
         if let Some(mut t) = self.term.take() {
             let _ = t.child.kill();
-        }
-    }
-
-    fn stop_watch(&mut self) {
-        self.watch_gen += 1;
-        if let Some(w) = self.watch.take() {
-            w.stop.stop();
         }
     }
 
@@ -568,7 +528,7 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             model: req.model.clone().unwrap_or_default(),
             permission_mode: req.permission_mode.clone().unwrap_or_default(),
             allowed_tools: Vec::new(),
-            view: if req.terminal && !lazy {
+            view: if req.terminal {
                 View::Terminal
             } else {
                 View::Chat
@@ -594,21 +554,11 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             shell: req.shell,
             teleport,
             account,
-            watch: None,
-            watch_gen: 0,
-            cloud_seq: 0,
-            cloud_sent: Vec::new(),
-            term_asks: String::new(),
-            cloud_asked: String::new(),
         });
         hub.emit_sessions();
         id
     };
-    if lazy {
-        start_watch(shared, &id)?;
-        return Ok(id);
-    }
-    if req.terminal {
+    if req.terminal && !lazy {
         if let Err(e) = start_term(shared, &id, 30, 100) {
             let _ = close(shared, &id);
             return Err(e);
@@ -638,83 +588,9 @@ pub fn send(shared: &Shared, id: &str, text: &str, images: &[Image]) -> Result<(
     if s.view != View::Chat {
         bail!("the session is showing its terminal");
     }
-    if s.cloud {
-        return send_cloud(&mut hub, shared, id, text, images);
-    }
     if s.chat.is_none() {
         start_chat(shared, &accounts, s, app)?;
     }
-    let line = json!({
-        "type": "user",
-        "message": { "role": "user", "content": content_of(text, images) }
-    })
-    .to_string();
-    let chat = s.chat.as_mut().expect("just started");
-    writeln!(chat.stdin, "{line}").context("the chat process is gone")?;
-    chat.stdin.flush()?;
-    s.pending = Some(line);
-    let echo = user_echo(text, images);
-    s.log.push(echo.clone());
-    s.status = Status::Working;
-    s.waiting_for.clear();
-    let id = s.id.clone();
-    hub.emit_event(&id, &echo);
-    hub.emit_sessions();
-    Ok(())
-}
-
-/// A message for a cloud session: shown at once, posted from a thread of its
-/// own. The cloud sends it back as an event, which is then left out.
-fn send_cloud(hub: &mut Hub, shared: &Shared, id: &str, text: &str, images: &[Image]) -> Result<()> {
-    let accounts = hub.accounts.clone();
-    let s = hub.find_mut(id)?;
-    if s.cloud_id.is_empty() {
-        bail!("the cloud session has not started yet");
-    }
-    let mut content = content_of(text, images);
-    // A message of text alone goes as a string, as claude.ai sends it.
-    if images.is_empty() {
-        content = json!(text);
-    }
-    let uuid = uuid::Uuid::new_v4().to_string();
-    let event = remote::user_message(&s.cloud_id, &uuid, content);
-    let echo = user_echo(text, images);
-    s.cloud_sent.push((uuid.clone(), echo.clone()));
-    s.log.push(echo.clone());
-    s.status = Status::Working;
-    s.waiting_for.clear();
-    let (cloud_id, account) = (s.cloud_id.clone(), s.account.clone());
-    hub.emit_event(id, &echo);
-    hub.emit_sessions();
-    let shared = shared.clone();
-    let id = id.to_string();
-    thread::spawn(move || {
-        if let Err(e) = post_cloud(&accounts, &account, &cloud_id, &event) {
-            let mut hub = shared.lock().unwrap();
-            let Ok(s) = hub.find_mut(&id) else { return };
-            s.status = Status::Idle;
-            s.cloud_sent.retain(|(u, _)| *u != uuid);
-            let note = json!({ "type": "fleet_error", "text": format!("Not sent: {e:#}") });
-            s.log.push(note.clone());
-            hub.emit_event(&id, &note);
-            hub.emit_sessions();
-        }
-    });
-    Ok(())
-}
-
-/// Post an event to a cloud session, signing in again once if the token
-/// was refused.
-fn post_cloud(accounts: &Arc<Mutex<Accounts>>, account: &str, cloud_id: &str, event: &Value) -> Result<()> {
-    let client = remote::Client::for_account(accounts, account)?;
-    match client.send(cloud_id, event) {
-        Err(e) if format!("{e}").contains("HTTP 401") => remote::Client::refreshed(accounts, account)?.send(cloud_id, event),
-        r => r,
-    }
-}
-
-/// A message's content blocks: its images, then its text.
-fn content_of(text: &str, images: &[Image]) -> Value {
     let mut content: Vec<Value> = images
         .iter()
         .map(|i| {
@@ -727,12 +603,16 @@ fn content_of(text: &str, images: &[Image]) -> Value {
     if !text.is_empty() {
         content.push(json!({ "type": "text", "text": text }));
     }
-    Value::Array(content)
-}
-
-/// What the thread shows for a message sent from here.
-fn user_echo(text: &str, images: &[Image]) -> Value {
-    json!({
+    let line = json!({
+        "type": "user",
+        "message": { "role": "user", "content": content }
+    })
+    .to_string();
+    let chat = s.chat.as_mut().expect("just started");
+    writeln!(chat.stdin, "{line}").context("the chat process is gone")?;
+    chat.stdin.flush()?;
+    s.pending = Some(line);
+    let echo = json!({
         "type": "fleet_user",
         "text": text,
         "ts": now_ms(),
@@ -740,22 +620,20 @@ fn user_echo(text: &str, images: &[Image]) -> Value {
             .iter()
             .map(|i| format!("data:{};base64,{}", i.media_type, i.data))
             .collect::<Vec<_>>(),
-    })
+    });
+    s.log.push(echo.clone());
+    s.status = Status::Working;
+    s.waiting_for.clear();
+    let id = s.id.clone();
+    hub.emit_event(&id, &echo);
+    hub.emit_sessions();
+    Ok(())
 }
 
 /// Stop the turn in progress, the way Esc does.
 pub fn interrupt(shared: &Shared, id: &str) -> Result<()> {
     let mut hub = shared.lock().unwrap();
-    let accounts = hub.accounts.clone();
     let s = hub.find_mut(id)?;
-    if s.cloud && s.view == View::Chat && !s.cloud_id.is_empty() {
-        let (cloud_id, account) = (s.cloud_id.clone(), s.account.clone());
-        let event = remote::interrupt(&uuid::Uuid::new_v4().to_string());
-        thread::spawn(move || {
-            let _ = post_cloud(&accounts, &account, &cloud_id, &event);
-        });
-        return Ok(());
-    }
     if let Some(chat) = s.chat.as_mut() {
         let req = json!({
             "type": "control_request",
@@ -951,30 +829,8 @@ pub fn set_view(shared: &Shared, id: &str, view: View, rows: u16, cols: u16) -> 
         if view == View::Chat && s.shell {
             bail!("a terminal session has no chat");
         }
-        // A cloud session's terminal is only a window on it: it keeps
-        // running whichever shows, and the chat follows the cloud itself.
-        if s.cloud {
-            if view == View::Chat && s.cloud_id.is_empty() {
-                bail!("the chat opens once Claude Code has named the cloud session");
-            }
-            s.view = view;
-            let start = match view {
-                View::Chat => {
-                    s.term_asks.clear();
-                    false
-                }
-                View::Terminal => {
-                    s.stop_watch();
-                    s.term.is_none()
-                }
-            };
-            hub.emit_sessions();
-            drop(hub);
-            return match view {
-                View::Chat => start_watch(shared, id),
-                View::Terminal if start => start_term(shared, id, rows, cols),
-                View::Terminal => Ok(()),
-            };
+        if view == View::Chat && s.cloud {
+            bail!("a cloud session runs in its terminal; open it on claude.ai for the web view");
         }
         if view == View::Chat && s.teleport.is_some() {
             bail!("the teleport has not finished yet; the chat opens once Claude Code has the conversation");
@@ -1049,10 +905,8 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     s.generation += 1;
     let generation = s.generation;
     // Claude Code reports how it is doing through the registry; a shell
-    // never does, and a cloud session's chat hears it from the cloud.
-    if s.watch.is_none() {
-        s.status = if s.shell { Status::Idle } else { Status::Starting };
-    }
+    // never does.
+    s.status = if s.shell { Status::Idle } else { Status::Starting };
     s.term = Some(TermProc {
         master: pair.master,
         writer,
@@ -1104,11 +958,7 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
             return;
         }
         s.term = None;
-        s.term_asks.clear();
-        // A cloud session's chat knows better how it is doing.
-        if s.watch.is_none() {
-            s.status = Status::Idle;
-        }
+        s.status = Status::Idle;
         if ordinary && !note_sent && s.fork_from.is_none() && refused_as_busy(&String::from_utf8_lossy(&head)) {
             let note = s.fork();
             hub.emit_event(&id, &note);
@@ -1146,23 +996,6 @@ fn adopt_cloud_id(shared: &Shared, id: &str, generation: u64, cloud_id: String, 
     };
     cloud::remember(&path, entry);
     hub.emit_sessions();
-    drop(hub);
-    open_cloud_chat(shared, id);
-}
-
-/// A new cloud session has been named: show its chat, the terminal running
-/// on beside it.
-fn open_cloud_chat(shared: &Shared, id: &str) {
-    {
-        let mut hub = shared.lock().unwrap();
-        let Ok(s) = hub.find_mut(id) else { return };
-        if s.view == View::Chat || s.watch.is_some() {
-            return;
-        }
-        s.view = View::Chat;
-        hub.emit_sessions();
-    }
-    let _ = start_watch(shared, id);
 }
 
 /// How long a fresh Claude Code takes to draw its prompt: what is typed
@@ -1332,7 +1165,6 @@ pub fn close(shared: &Shared, id: &str) -> Result<()> {
         s.generation += 1;
         s.stop_chat();
         s.stop_term();
-        s.stop_watch();
     }
     hub.emit_sessions();
     Ok(())
@@ -1367,19 +1199,7 @@ pub fn set_account(shared: &Shared, id: &str, account: &str, rows: u16, cols: u1
     if restart {
         start_term(shared, id, rows, cols)?;
     }
-    rewatch(shared, id);
     Ok(())
-}
-
-/// Follow a cloud session's chat again, as the account it runs as now.
-fn rewatch(shared: &Shared, id: &str) {
-    let again = {
-        let hub = shared.lock().unwrap();
-        hub.find(id).is_some_and(|s| s.watch.is_some())
-    };
-    if again {
-        let _ = start_watch(shared, id);
-    }
 }
 
 /// "Move every session over" after a switch: each runs as `account` from
@@ -1394,10 +1214,11 @@ pub fn move_all(shared: &Shared, account: &str) -> usize {
         for s in hub.sessions.iter_mut() {
             // Mid-turn or on a question: killing it would lose that.
             let busy = matches!(s.status, Status::Working | Status::Waiting);
-            // A shell would lose whatever runs in it. A cloud session is its
-            // account's: another cannot reach it (and one whose link never
-            // showed would start a second one on the same task).
-            if s.account == account || busy || s.shell || s.cloud {
+            // A new cloud session whose link never showed would start a
+            // second one on the same task.
+            let unborn = s.cloud && s.cloud_id.is_empty();
+            // A shell would lose whatever runs in it.
+            if s.account == account || busy || unborn || s.shell {
                 continue;
             }
             moved += 1;
@@ -1423,7 +1244,6 @@ pub fn sync_registry(shared: &Shared, entries: &[registry::RegistryEntry]) {
     let mut hub = shared.lock().unwrap();
     let mut changed = false;
     let mut seen: Vec<cloud::Recent> = Vec::new();
-    let mut named: Vec<String> = Vec::new();
     for s in hub.sessions.iter_mut() {
         let Some(pid) = s.term.as_ref().and_then(|t| t.pid) else {
             continue;
@@ -1454,22 +1274,7 @@ pub fn sync_registry(shared: &Shared, entries: &[registry::RegistryEntry]) {
                 cwd: s.cwd.display().to_string(),
                 at: now_ms(),
             });
-            named.push(s.id.clone());
             changed = true;
-        }
-        // While a cloud session's chat shows, the cloud says how it is
-        // doing; its terminal only gets a word in when it asks something.
-        if s.watch.is_some() {
-            let asks = if e.status == "waiting" {
-                if e.waiting_for.is_empty() { "a question".to_string() } else { e.waiting_for.clone() }
-            } else {
-                String::new()
-            };
-            if asks != s.term_asks {
-                s.term_asks = asks;
-                changed = true;
-            }
-            continue;
         }
         let status = match e.status.as_str() {
             "busy" => Status::Working,
@@ -1487,290 +1292,6 @@ pub fn sync_registry(shared: &Shared, entries: &[registry::RegistryEntry]) {
     }
     if changed {
         hub.emit_sessions();
-    }
-    drop(hub);
-    for id in named {
-        open_cloud_chat(shared, &id);
-    }
-}
-
-/// How many of a cloud session's latest events its chat starts with.
-const CLOUD_HISTORY: usize = 3000;
-
-/// Follow a cloud session for its chat: what it holds so far, then each new
-/// event. Replaces any watch it had.
-fn start_watch(shared: &Shared, id: &str) -> Result<()> {
-    let (generation, cloud_id, account, accounts, stop) = {
-        let mut hub = shared.lock().unwrap();
-        let accounts = hub.accounts.clone();
-        let s = hub.find_mut(id)?;
-        if s.cloud_id.is_empty() {
-            bail!("the cloud session has not been named yet");
-        }
-        s.stop_watch();
-        let stop = Arc::new(Stopper::default());
-        s.watch = Some(Watch { stop: stop.clone() });
-        (s.watch_gen, s.cloud_id.clone(), s.account.clone(), accounts, stop)
-    };
-    let shared = shared.clone();
-    let id = id.to_string();
-    thread::spawn(move || watch_cloud(&shared, &id, generation, &cloud_id, &account, &accounts, &stop));
-    Ok(())
-}
-
-fn watch_cloud(
-    shared: &Shared,
-    id: &str,
-    generation: u64,
-    cloud_id: &str,
-    account: &str,
-    accounts: &Arc<Mutex<Accounts>>,
-    stop: &Stopper,
-) {
-    let current = || {
-        let hub = shared.lock().unwrap();
-        !stop.stopped() && hub.find(id).is_some_and(|s| s.watch_gen == generation)
-    };
-    let history = |client: &remote::Client| client.history(cloud_id, CLOUD_HISTORY);
-    let first = remote::Client::for_account(accounts, account).and_then(|c| {
-        let got = match history(&c) {
-            Err(e) if format!("{e}").contains("HTTP 401") => {
-                let c = remote::Client::refreshed(accounts, account)?;
-                let got = history(&c)?;
-                return Ok((c, got));
-            }
-            got => got?,
-        };
-        Ok((c, got))
-    });
-    let (mut client, (rows, older)) = match first {
-        Ok(v) => v,
-        Err(e) => return cloud_failed(shared, id, generation, &format!("{e:#}")),
-    };
-    {
-        let mut hub = shared.lock().unwrap();
-        let Ok(s) = hub.find_mut(id) else { return };
-        if s.watch_gen != generation {
-            return;
-        }
-        let mut log = Vec::new();
-        if older {
-            log.push(json!({ "type": "fleet_note", "text": "Older messages are on claude.ai" }));
-        }
-        let mut status = Status::Idle;
-        let mut asks = String::new();
-        let mut asked = String::new();
-        // What the history holds shows from it; a message sent from here
-        // that it does not hold yet keeps showing as it was sent.
-        let held: Vec<&str> = rows.iter().filter_map(|r| r.payload.get("uuid").and_then(Value::as_str)).collect();
-        s.cloud_sent.retain(|(u, _)| !held.contains(&u.as_str()));
-        for row in &rows {
-            if let Some((st, what, req)) = cloud_status(&row.payload, &asked) {
-                status = st;
-                asks = what;
-                asked = req;
-            }
-            log.extend(cloud_events(row, &mut Vec::new()));
-        }
-        log.extend(s.cloud_sent.iter().map(|(_, echo)| echo.clone()));
-        if !s.cloud_sent.is_empty() {
-            status = Status::Working;
-        }
-        s.log = log;
-        s.cloud_seq = rows.last().map_or(0, |r| r.seq);
-        s.status = status;
-        s.waiting_for = asks;
-        s.cloud_asked = asked;
-        if let Some(model) = rows.iter().rev().find_map(|r| init_model(&r.payload)) {
-            s.model = model;
-        }
-        let _ = hub.app.emit("fleet://log", json!({ "id": id }));
-        hub.emit_sessions();
-    }
-    let mut wait = Duration::from_secs(1);
-    let mut refused = false;
-    loop {
-        if !current() {
-            return;
-        }
-        let from = {
-            let hub = shared.lock().unwrap();
-            hub.find(id).map_or(0, |s| s.cloud_seq)
-        };
-        let began = Instant::now();
-        let end = client.stream(cloud_id, from, stop, |row| on_cloud_row(shared, id, generation, row));
-        if !current() {
-            return;
-        }
-        match end {
-            Ok(StreamEnd::Closed) => {
-                refused = false;
-                // One that held a while was fine; one that keeps dropping at
-                // once is waited on longer each time.
-                wait = if began.elapsed() > Duration::from_secs(30) {
-                    Duration::from_secs(1)
-                } else {
-                    (wait * 2).min(Duration::from_secs(30))
-                };
-            }
-            Ok(StreamEnd::Unauthorized) if !refused => {
-                refused = true;
-                match remote::Client::refreshed(accounts, account) {
-                    Ok(c) => client = c,
-                    Err(e) => return cloud_failed(shared, id, generation, &format!("{e:#}")),
-                }
-                continue;
-            }
-            Ok(StreamEnd::Unauthorized) => {
-                return cloud_failed(shared, id, generation, "the claude.ai login was refused (HTTP 401)");
-            }
-            Ok(StreamEnd::Gone(why)) => return cloud_failed(shared, id, generation, &why),
-            Err(e) => return cloud_failed(shared, id, generation, &format!("{e:#}")),
-        }
-        thread::sleep(wait);
-    }
-}
-
-/// One new event of a watched cloud session.
-fn on_cloud_row(shared: &Shared, id: &str, generation: u64, row: Row) {
-    let mut hub = shared.lock().unwrap();
-    let Ok(s) = hub.find_mut(id) else { return };
-    if s.watch_gen != generation || row.seq <= s.cloud_seq {
-        return;
-    }
-    s.cloud_seq = row.seq;
-    let mut moved = false;
-    if let Some((status, what, req)) = cloud_status(&row.payload, &s.cloud_asked) {
-        moved = status != s.status || what != s.waiting_for;
-        s.status = status;
-        s.waiting_for = what;
-        s.cloud_asked = req;
-    }
-    if let Some(model) = init_model(&row.payload) {
-        moved |= model != s.model;
-        s.model = model;
-    }
-    let events = cloud_events(&row, &mut s.cloud_sent);
-    s.log.extend(events.iter().cloned());
-    for e in &events {
-        hub.emit_event(id, e);
-    }
-    if moved {
-        hub.emit_sessions();
-    }
-}
-
-/// The watch stopped for good: say why in the thread.
-fn cloud_failed(shared: &Shared, id: &str, generation: u64, why: &str) {
-    let mut hub = shared.lock().unwrap();
-    let Ok(s) = hub.find_mut(id) else { return };
-    if s.watch_gen != generation {
-        return;
-    }
-    s.watch = None;
-    let note = json!({ "type": "fleet_error", "text": format!("The cloud session cannot be followed here: {why}") });
-    s.log.push(note.clone());
-    hub.emit_event(id, &note);
-    hub.emit_sessions();
-}
-
-/// How a cloud event leaves the session: its status, what it waits for and
-/// the permission request it waits on. `None` for one that changes nothing.
-/// `asked` is the request waited on so far.
-fn cloud_status(p: &Value, asked: &str) -> Option<(Status, String, String)> {
-    let str_at = |ptr: &str| p.pointer(ptr).and_then(Value::as_str).unwrap_or("");
-    match str_at("/type") {
-        "user" if p.get("parent_tool_use_id").is_none_or(Value::is_null) && said_in(p) => {
-            Some((Status::Working, String::new(), String::new()))
-        }
-        "assistant" if asked.is_empty() => Some((Status::Working, String::new(), String::new())),
-        "result" => Some((Status::Idle, String::new(), String::new())),
-        "control_request" if str_at("/request/subtype") == "can_use_tool" => {
-            let tool = str_at("/request/tool_name");
-            Some((Status::Waiting, if tool.is_empty() { "permission".into() } else { tool.into() }, str_at("/request_id").into()))
-        }
-        "control_response" if !asked.is_empty() && str_at("/response/request_id") == asked => {
-            Some((Status::Working, String::new(), String::new()))
-        }
-        _ => None,
-    }
-}
-
-/// Whether a cloud `user` event is something a person said (rather than
-/// tool results or Claude Code's own notes).
-fn said_in(p: &Value) -> bool {
-    match p.pointer("/message/content") {
-        Some(Value::String(t)) => said(t).is_some(),
-        Some(Value::Array(items)) => items.iter().any(|i| match i.get("type").and_then(Value::as_str) {
-            Some("text") => i.get("text").and_then(Value::as_str).and_then(said).is_some(),
-            Some("image") => true,
-            _ => false,
-        }),
-        _ => false,
-    }
-}
-
-fn init_model(p: &Value) -> Option<String> {
-    (p.get("type").and_then(Value::as_str) == Some("system") && p.get("subtype").and_then(Value::as_str) == Some("init"))
-        .then(|| p.get("model").and_then(Value::as_str).map(str::to_owned))
-        .flatten()
-}
-
-/// A cloud event as the chat shows it: the stream-json Claude Code prints,
-/// which the thread reads as it reads a local session, with what a person
-/// typed as `fleet_user`. Subagents' side conversations, bookkeeping and a
-/// message sent from here (shown when it was sent) are left out.
-fn cloud_events(row: &Row, sent: &mut Vec<(String, Value)>) -> Vec<Value> {
-    let p = &row.payload;
-    if !p.get("parent_tool_use_id").is_none_or(Value::is_null) {
-        return Vec::new();
-    }
-    match p.get("type").and_then(Value::as_str) {
-        Some("assistant") | Some("result") => vec![p.clone()],
-        Some("system") => match p.get("subtype").and_then(Value::as_str) {
-            Some("init") | Some("compact_boundary") => vec![p.clone()],
-            _ => Vec::new(),
-        },
-        Some("user") => {
-            if p.get("isMeta").and_then(Value::as_bool) == Some(true) {
-                return Vec::new();
-            }
-            let mine = p
-                .get("uuid")
-                .and_then(Value::as_str)
-                .and_then(|u| sent.iter().position(|(s, _)| s == u));
-            let mut out = Vec::new();
-            let content = &p["message"]["content"];
-            if let Some(text) = content.as_str() {
-                if mine.is_none()
-                    && let Some(text) = said(text)
-                {
-                    out.push(json!({ "type": "fleet_user", "text": text, "ts": row.at_ms }));
-                }
-            } else if let Some(items) = content.as_array() {
-                let results: Vec<&Value> = items
-                    .iter()
-                    .filter(|i| i.get("type").and_then(Value::as_str) == Some("tool_result"))
-                    .collect();
-                if !results.is_empty() {
-                    out.push(json!({ "type": "user", "message": { "content": results } }));
-                }
-                let texts: Vec<String> = items
-                    .iter()
-                    .filter(|i| i.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|i| i.get("text").and_then(Value::as_str).and_then(said))
-                    .collect();
-                let images: Vec<String> = items.iter().filter_map(image_url).collect();
-                if mine.is_none() && (!texts.is_empty() || !images.is_empty()) {
-                    out.push(json!({ "type": "fleet_user", "text": texts.join("\n\n"), "images": images, "ts": row.at_ms }));
-                }
-            }
-            if let Some(i) = mine {
-                sent.remove(i);
-            }
-            out
-        }
-        _ => Vec::new(),
     }
 }
 
@@ -1871,84 +1392,4 @@ fn tag(text: &str, name: &str) -> Option<String> {
     let end = text[start..].find(&close)? + start;
     let inner = text[start..end].trim();
     (!inner.is_empty()).then(|| inner.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn row(seq: u64, payload: Value) -> Row {
-        Row { seq, at_ms: 1_000, payload }
-    }
-
-    #[test]
-    fn a_cloud_prompt_reads_as_what_was_typed_and_results_as_results() {
-        let mut sent = Vec::new();
-        let typed = row(1, json!({ "type": "user", "uuid": "u1", "message": { "role": "user", "content": "fix the tests" } }));
-        assert_eq!(
-            cloud_events(&typed, &mut sent),
-            vec![json!({ "type": "fleet_user", "text": "fix the tests", "ts": 1_000 })]
-        );
-        let results = row(2, json!({
-            "type": "user",
-            "parent_tool_use_id": null,
-            "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok" }] }
-        }));
-        let out = cloud_events(&results, &mut sent);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["type"], "user");
-        assert_eq!(out[0]["message"]["content"][0]["tool_use_id"], "t1");
-        let reminder = row(3, json!({ "type": "user", "message": { "content": "<system-reminder>x</system-reminder>" } }));
-        assert!(cloud_events(&reminder, &mut sent).is_empty());
-    }
-
-    #[test]
-    fn a_message_sent_from_here_is_not_shown_twice() {
-        let mut sent = vec![("mine".to_string(), json!({}))];
-        let echo = row(5, json!({ "type": "user", "uuid": "mine", "message": { "content": "hello" } }));
-        assert!(cloud_events(&echo, &mut sent).is_empty());
-        assert!(sent.is_empty());
-        let again = row(6, json!({ "type": "user", "uuid": "mine", "message": { "content": "hello" } }));
-        assert_eq!(cloud_events(&again, &mut sent).len(), 1);
-    }
-
-    #[test]
-    fn bookkeeping_and_side_conversations_are_left_out() {
-        let mut sent = Vec::new();
-        for p in [
-            json!({ "type": "control_request", "request": { "subtype": "initialize" } }),
-            json!({ "type": "env_manager_log", "data": {} }),
-            json!({ "type": "system", "subtype": "background_tasks_changed" }),
-            json!({ "type": "assistant", "parent_tool_use_id": "toolu_1", "message": { "content": [] } }),
-        ] {
-            assert!(cloud_events(&row(1, p), &mut sent).is_empty());
-        }
-        let kept = [
-            json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "content": [] } }),
-            json!({ "type": "result", "subtype": "success" }),
-            json!({ "type": "system", "subtype": "init", "model": "claude-opus-5-5" }),
-        ];
-        for p in kept {
-            assert_eq!(cloud_events(&row(1, p.clone()), &mut sent), vec![p]);
-        }
-    }
-
-    #[test]
-    fn the_cloud_says_how_the_session_is_doing() {
-        let st = |p: Value, asked: &str| cloud_status(&p, asked);
-        assert_eq!(
-            st(json!({ "type": "user", "message": { "content": "go" } }), ""),
-            Some((Status::Working, String::new(), String::new()))
-        );
-        assert_eq!(st(json!({ "type": "user", "message": { "content": [{ "type": "tool_result" }] } }), ""), None);
-        assert_eq!(st(json!({ "type": "result" }), ""), Some((Status::Idle, String::new(), String::new())));
-        let ask = json!({ "type": "control_request", "request_id": "r1", "request": { "subtype": "can_use_tool", "tool_name": "Bash" } });
-        assert_eq!(st(ask, ""), Some((Status::Waiting, "Bash".to_string(), "r1".to_string())));
-        // Still waiting while the session streams on.
-        assert_eq!(st(json!({ "type": "assistant" }), "r1"), None);
-        let other = json!({ "type": "control_response", "response": { "request_id": "r2" } });
-        assert_eq!(st(other, "r1"), None);
-        let answer = json!({ "type": "control_response", "response": { "request_id": "r1" } });
-        assert_eq!(st(answer, "r1"), Some((Status::Working, String::new(), String::new())));
-    }
 }
