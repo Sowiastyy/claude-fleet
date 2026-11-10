@@ -9,6 +9,7 @@
 mod cloud;
 mod commands;
 mod hub;
+mod preview;
 mod settings;
 mod updater;
 
@@ -42,6 +43,8 @@ struct App {
     restore_path: PathBuf,
     /// Claude Code's slash commands, per folder.
     commands: commands::Cache,
+    /// Cloud sessions' claude.ai pages, shown inside the window.
+    previews: preview::Previews,
 }
 
 // ---------- sessions
@@ -190,25 +193,56 @@ fn open_url(url: String) -> Res<()> {
     if !safe {
         return Err("not a claude.ai link".into());
     }
+    open_in_browser(&url).map_err(err)
+}
+
+/// Hand a web link to the default browser, as one argument and never
+/// through a shell. Anything but http(s) is refused.
+pub fn open_in_browser(url: &str) -> std::io::Result<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) || url.chars().any(char::is_whitespace) {
+        return Err(std::io::Error::other("not a web link"));
+    }
     #[cfg(windows)]
     let mut cmd = {
         let mut c = std::process::Command::new("rundll32");
-        c.args(["url.dll,FileProtocolHandler", &url]);
+        c.args(["url.dll,FileProtocolHandler", url]);
         c
     };
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = std::process::Command::new("open");
-        c.arg(&url);
+        c.arg(url);
         c
     };
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = {
         let mut c = std::process::Command::new("xdg-open");
-        c.arg(&url);
+        c.arg(url);
         c
     };
-    cmd.spawn().map(|_| ()).map_err(err)
+    cmd.spawn().map(|_| ())
+}
+
+/// Show a cloud session's claude.ai page over the box at `bounds`, as
+/// `account`. `seq` orders the calls (see `preview`). Async: a webview made
+/// from the main thread would wait on the main thread.
+#[tauri::command]
+async fn cloud_view_show(
+    handle: tauri::AppHandle,
+    app: State<'_, Arc<App>>,
+    seq: u64,
+    account: String,
+    url: String,
+    bounds: preview::Bounds,
+    reload: bool,
+) -> Res<()> {
+    app.previews.show(&handle, seq, &account, &url, bounds, reload).map_err(err)
+}
+
+#[tauri::command]
+async fn cloud_view_hide(handle: tauri::AppHandle, app: State<'_, Arc<App>>, seq: u64) -> Res<()> {
+    app.previews.hide(&handle, seq);
+    Ok(())
 }
 
 // ---------- accounts and limits
@@ -694,6 +728,13 @@ fn main() {
                 updater: updater::Updater::new(),
                 restore_path: dir.join("restore.json"),
                 commands: commands::Cache::default(),
+                previews: preview::Previews::new(
+                    tauri_app
+                        .path()
+                        .app_local_data_dir()
+                        .unwrap_or_else(|_| dir.clone())
+                        .join("cloud-web"),
+                ),
             });
             tauri_app.manage(app.clone());
             updater::reopen(&app.hub, &app.restore_path);
@@ -719,6 +760,8 @@ fn main() {
             cloud_recent,
             cloud_forget,
             open_url,
+            cloud_view_show,
+            cloud_view_hide,
             term_write,
             term_resize,
             foreign_sessions,

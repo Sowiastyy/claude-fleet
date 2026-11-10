@@ -28,6 +28,8 @@ dirs.workspace = true
 portable-pty.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2", features = [] }
+# `unstable`: the cloud session preview is a second webview in the main
+# window (`Window::add_child`), see `preview`.
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
 uuid = { version = "1", features = ["v4"] }

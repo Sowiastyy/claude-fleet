@@ -97,6 +97,11 @@ export function Sidebar(p: Props) {
       <div className="brand">
         <Sailboat size={22} color="var(--accent)" aria-hidden />
         <span className="brand-name">Fleet</span>
+        {p.update?.current && (
+          <span className="brand-version" title={`Claude Fleet ${p.update.current}`}>
+            v{p.update.current}
+          </span>
+        )}
       </div>
 
       <button type="button" className="account-btn" onClick={p.onAccounts} aria-expanded={p.accountsOpen} aria-label="Switch account">

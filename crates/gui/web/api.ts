@@ -188,6 +188,11 @@ export const api = {
   cloudRecent: () => invoke<CloudRecent[]>('cloud_recent'),
   cloudForget: (id: string) => invoke<void>('cloud_forget', { id }),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
+  /// The cloud session's claude.ai page over the box at `bounds` (CSS
+  /// pixels), as `account`; `seq` keeps a late call from undoing a newer one.
+  cloudViewShow: (seq: number, account: string, url: string, bounds: Bounds, reload: boolean) =>
+    invoke<void>('cloud_view_show', { seq, account, url, bounds, reload }),
+  cloudViewHide: (seq: number) => invoke<void>('cloud_view_hide', { seq }),
   termWrite: (id: string, data: string) => invoke<void>('term_write', { id, data }),
   termResize: (id: string, rows: number, cols: number) => invoke<void>('term_resize', { id, rows, cols }),
   foreign: () => invoke<Foreign[]>('foreign_sessions'),
@@ -213,6 +218,13 @@ export const api = {
   updateInstall: () => invoke<UpdateState>('update_install'),
   restart: () => invoke<void>('app_restart'),
 };
+
+export interface Bounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface UpdateState {
   current: string;

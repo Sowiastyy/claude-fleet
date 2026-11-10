@@ -14,6 +14,7 @@ import {
   Cloud,
   Copy,
   ExternalLink,
+  RefreshCw,
   RotateCw,
   FilePlus,
   FileText,
@@ -65,6 +66,7 @@ import { accountChoices } from './AccountPicker';
 import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
 import { statusLabel } from './Sidebar';
 import { TerminalView } from './TerminalView';
+import { CloudPreview } from './CloudPreview';
 
 interface Props {
   session: Session;
@@ -93,9 +95,21 @@ interface Props {
   onRestart: () => void;
 }
 
+// Cloud sessions shown as their terminal rather than their claude.ai page.
+const asTerminal = new Set<string>();
+
 export function Conversation(p: Props) {
   const s = p.session;
   const branch = p.git?.branch;
+  const [, redraw] = useState(0);
+  const [back, setBack] = useState(0);
+  const previewing = s.cloud && !!s.cloudUrl && !asTerminal.has(s.id);
+  const preview = (on: boolean) => {
+    if (on) asTerminal.delete(s.id);
+    else asTerminal.add(s.id);
+    redraw((n) => n + 1);
+    if (!on && s.view !== 'terminal') p.onView('terminal');
+  };
   return (
     <>
       <header className="header">
@@ -137,6 +151,17 @@ export function Conversation(p: Props) {
             <RotateCw size={13} aria-hidden /> Restart
           </button>
         )}
+        {previewing && (
+          <button
+            type="button"
+            className="icon-btn boxed"
+            aria-label="Back to the session"
+            title="Back to this session's page"
+            onClick={() => setBack((n) => n + 1)}
+          >
+            <RefreshCw size={15} aria-hidden />
+          </button>
+        )}
         {s.cloud && s.cloudUrl && (
           <button type="button" className="btn btn-icon-text" onClick={() => p.onOpenUrl(s.cloudUrl)} title={s.cloudUrl}>
             <ExternalLink size={13} aria-hidden /> claude.ai
@@ -152,20 +177,31 @@ export function Conversation(p: Props) {
             <Square size={13} aria-hidden /> Stop
           </button>
         )}
-        <div className="segmented" role="group" aria-label="View">
-          <button
-            type="button"
-            aria-pressed={s.view === 'chat'}
-            disabled={s.cloud}
-            title={s.cloud ? 'A cloud session runs in its terminal' : undefined}
-            onClick={() => p.onView('chat')}
-          >
-            <MessageSquare size={14} aria-hidden /> Chat
-          </button>
-          <button type="button" aria-pressed={s.view === 'terminal'} onClick={() => p.onView('terminal')}>
-            <SquareTerminal size={14} aria-hidden /> Terminal
-          </button>
-        </div>
+        {s.cloud ? (
+          <div className="segmented" role="group" aria-label="View">
+            <button
+              type="button"
+              aria-pressed={previewing}
+              disabled={!s.cloudUrl}
+              title={s.cloudUrl ? "The session's claude.ai page, here" : 'Waiting for the cloud session link'}
+              onClick={() => preview(true)}
+            >
+              <Cloud size={14} aria-hidden /> Preview
+            </button>
+            <button type="button" aria-pressed={!previewing} onClick={() => preview(false)}>
+              <SquareTerminal size={14} aria-hidden /> Terminal
+            </button>
+          </div>
+        ) : (
+          <div className="segmented" role="group" aria-label="View">
+            <button type="button" aria-pressed={s.view === 'chat'} onClick={() => p.onView('chat')}>
+              <MessageSquare size={14} aria-hidden /> Chat
+            </button>
+            <button type="button" aria-pressed={s.view === 'terminal'} onClick={() => p.onView('terminal')}>
+              <SquareTerminal size={14} aria-hidden /> Terminal
+            </button>
+          </div>
+        )}
         <button type="button" className="icon-btn boxed" aria-label="Git" aria-pressed={p.showGit} onClick={p.onToggleGit}>
           <GitBranch size={16} aria-hidden />
         </button>
@@ -176,6 +212,8 @@ export function Conversation(p: Props) {
 
       {s.view === 'chat' ? (
         <ChatThread key={s.id} {...p} />
+      ) : previewing ? (
+        <CloudPreview key={s.id} session={s} back={back} onError={p.onError} />
       ) : (
         <div className="term-wrap">
           <TerminalView id={s.id} />

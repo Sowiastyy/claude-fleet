@@ -181,6 +181,7 @@ button { cursor: pointer; }
 .sidebar { position: relative; z-index: 3; width: 276px; flex: none; display: flex; flex-direction: column; background: var(--hull); border-right: 1px solid var(--line); min-height: 0; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 16px 18px 12px; }
 .brand-name { font-family: var(--display); font-weight: 600; font-size: 18px; letter-spacing: -0.2px; }
+.brand-version { margin-left: auto; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; user-select: text; }
 .account-btn { width: calc(100% - 24px); margin: 0 12px 12px; display: flex; align-items: center; gap: 10px; padding: 9px 10px; background: var(--deck); border: 1px solid var(--rope); border-radius: 10px; text-align: left; }
 .account-btn:hover { border-color: var(--rope-2); }
 .avatar { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--rope); color: var(--accent); display: flex; align-items: center; justify-content: center; font-weight: 600; }
@@ -559,3 +560,7 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 .session-btn.tinted::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: 2px; background: var(--acct); opacity: 0.85; }
 .header-acct { flex: none; }
 .menu-note { margin: 2px 14px 8px; line-height: 1.45; }
+
+/* ---------- cloud session preview: the app lays claude.ai over this box */
+.preview-wrap { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--well) 94%, transparent); }
+.preview-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--mist); }
