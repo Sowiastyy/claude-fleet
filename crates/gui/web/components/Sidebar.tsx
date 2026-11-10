@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
-import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Sailboat, Search, SquareTerminal, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Search, SquareTerminal, X } from 'lucide-react';
 import type { Accounts, Limits, LimitWindow, Session, Status, UpdateState } from '../api';
-import { accountColor, accountInitial, accountOf } from '../accounts';
+import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
 import { fmtDuration } from '../messages';
 
 const STATUS: Record<Status, string> = {
@@ -110,28 +110,6 @@ export function Sidebar(p: Props) {
   );
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <Sailboat size={22} color="var(--accent)" aria-hidden />
-        <span className="brand-name">Fleet</span>
-        {p.update?.current && (
-          <span className="brand-version" title={`Claude Fleet ${p.update.current}`}>
-            v{p.update.current}
-          </span>
-        )}
-      </div>
-
-      <button type="button" className="account-btn" onClick={p.onAccounts} aria-expanded={p.accountsOpen} aria-label="Switch account">
-        <span className="avatar" style={several && me ? { color: accountColor(p.accounts, me.uuid) } : undefined}>
-          {accountInitial(me)}
-        </span>
-        <span className="stack">
-          <span className="ellipsis" style={{ fontWeight: 500 }}>{label}</span>
-          <span className="small mist ellipsis">
-            {several ? `New sessions${me?.plan ? `, ${me.plan}` : ''}` : me?.plan}
-          </span>
-        </span>
-        <ChevronsUpDown size={16} color="var(--mist)" aria-hidden />
-      </button>
 
       <nav className="nav" aria-label="Fleet">
         <button type="button" className="nav-item" aria-current={p.activeId === null} onClick={p.onHome}>
@@ -171,7 +149,23 @@ export function Sidebar(p: Props) {
       {p.update && (p.update.available || p.update.installed) && (
         <UpdateBox u={p.update} running={p.sessions.length} onUpdate={p.onUpdate} onRestart={p.onRestart} />
       )}
-      {(me?.limits ?? p.accounts?.live) && <LimitsBox limits={(me?.limits ?? p.accounts?.live)!} />}
+      {several ? (
+        <AllLimits accounts={p.accounts!} />
+      ) : (
+        (me?.limits ?? p.accounts?.live) && <LimitsBox limits={(me?.limits ?? p.accounts?.live)!} />
+      )}
+      <button type="button" className="account-btn" onClick={p.onAccounts} aria-expanded={p.accountsOpen} aria-label="Switch account">
+        <span className="avatar" style={several && me ? { color: accountColor(p.accounts, me.uuid) } : undefined}>
+          {accountInitial(me)}
+        </span>
+        <span className="stack">
+          <span className="ellipsis" style={{ fontWeight: 500 }}>{label}</span>
+          <span className="small mist ellipsis">
+            {several ? `New sessions${me?.plan ? `, ${me.plan}` : ''}` : me?.plan}
+          </span>
+        </span>
+        <ChevronsUpDown size={16} color="var(--mist)" aria-hidden />
+      </button>
     </aside>
   );
 }
@@ -195,6 +189,50 @@ function AccountHead({ accounts, uuid, count }: { accounts: Accounts | null; uui
         </span>
       )}
       <span className="small faint">{count}</span>
+    </div>
+  );
+}
+
+/// Every account's 5-hour and weekly use, one row each, the signed-in one first.
+function AllLimits({ accounts }: { accounts: Accounts }) {
+  const list = [...accounts.accounts].sort((a, b) => Number(b.current) - Number(a.current));
+  const cell = (name: string, w: LimitWindow | null | undefined) => {
+    const pct = w ? (w.expired ? 0 : Math.min(100, w.pct)) : null;
+    const reset = w && !w.expired && w.resetsInSecs != null ? `, resets in ${fmtDuration(w.resetsInSecs)}` : '';
+    const hot = pct != null && pct >= 85;
+    return (
+      <span className={`use-cell ${hot ? 'hot' : ''}`} title={pct == null ? `${name}: no data` : `${name} ${pct}%${reset}`}>
+        <span className="use-pct">{pct == null ? '–' : `${pct}%`}</span>
+        <span className="bar thin">
+          <span style={{ width: `${pct ?? 0}%` }} />
+        </span>
+      </span>
+    );
+  };
+  return (
+    <div className="limits use-grid">
+      <span />
+      <span className="use-col">5h</span>
+      <span className="use-col">Week</span>
+      {list.map((a) => {
+        const l = a.current ? (a.limits ?? accounts.live) : a.limits;
+        return (
+          <div key={a.uuid} className="use-row" title={a.email} style={{ '--acct': accountColor(accounts, a.uuid) } as CSSProperties}>
+            <span className="use-who">
+              <span className="acct-chip sm">{accountInitial(a)}</span>
+              <span className="ellipsis">{accountShort(a)}</span>
+            </span>
+            {a.needsLogin ? (
+              <span className="use-expired">login expired</span>
+            ) : (
+              <>
+                {cell('5-hour', l?.session)}
+                {cell('Weekly', l?.weekly)}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

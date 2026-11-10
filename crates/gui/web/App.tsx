@@ -27,6 +27,7 @@ import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
 import type { Ask, Intent } from './components/Workbench';
 import { SettingsDialog } from './components/SettingsDialog';
+import { Titlebar } from './components/Titlebar';
 import { CommandPalette, type Command } from './components/CommandPalette';
 import { isCloudRef } from './commands';
 
@@ -405,6 +406,8 @@ export function App() {
 
   return (
     <div className="app">
+      <Titlebar title={active ? active.name : 'New session'} version={update?.current} />
+      <div className="app-row">
       <Sidebar
         sessions={sessions}
         activeId={activeId}
@@ -479,8 +482,10 @@ export function App() {
           onToast={notify}
           onOpenCommit={(hash) => openCode({ kind: 'commit', hash })}
           onOpenChange={openChange}
+          onClose={toggleGit}
         />
       )}
+      </div>
       {accountsOpen && accounts && (
         <AccountMenu
           accounts={accounts}

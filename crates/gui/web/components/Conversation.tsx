@@ -8,6 +8,7 @@ import {
   Brain,
   Check,
   ChevronRight,
+  ChevronLeft,
   Circle,
   CircleAlert,
   CircleDot,
@@ -26,6 +27,7 @@ import {
   LoaderCircle,
   MessageSquare,
   MonitorDown,
+  PanelRightOpen,
   Pencil,
   Sailboat,
   Search,
@@ -127,30 +129,9 @@ export function Conversation(p: Props) {
           <span className="ellipsis" style={{ fontWeight: 600, fontSize: 15 }} title={sessionTitle(s)}>
             {sessionTitle(s)}
           </span>
-          <span className="small mist ellipsis">
-            {s.cwd}
-            {!s.cloud && branch ? ` on ${branch}` : ''}
-          </span>
+          <span className="small mist ellipsis">{s.cwd}</span>
         </div>
         <span className={`chip status-text ${s.status}`}>{statusLabel(s)}</span>
-        {!s.shell && (p.accounts?.accounts.length ?? 0) > 1 && (
-          <div className="header-acct" title={s.status === 'working' ? 'Can move once the turn is over' : 'Run this session as another account'}>
-            <Picker
-              label="Account"
-              variant="pill"
-              placement="down"
-              value={s.account}
-              display={s.account ? accountShort(accountOf(p.accounts, s.account)) : 'Signed-in account'}
-              icon={
-                <span className="acct-chip sm" style={{ '--acct': accountColor(p.accounts, s.account) } as CSSProperties}>
-                  {accountInitial(accountOf(p.accounts, s.account))}
-                </span>
-              }
-              choices={accountChoices(p.accounts)}
-              onChange={p.onAccount}
-            />
-          </div>
-        )}
         {s.cloud && (
           <span className="chip cloud-chip" title={s.cloudId || 'Waiting for the cloud session link'}>
             <Cloud size={12} aria-hidden /> {s.cloudId ? 'cloud' : 'cloud, starting'}
@@ -245,9 +226,26 @@ export function Conversation(p: Props) {
             </button>
           </div>
         )}
-        <button type="button" className="icon-btn boxed" aria-label="Git" aria-pressed={p.showGit} onClick={p.onToggleGit}>
-          <GitBranch size={16} aria-hidden />
-        </button>
+        {!p.showGit && (
+          <button type="button" className="git-btn" aria-label={`Source control${branch ? `: ${branch}` : ''}`} onClick={p.onToggleGit}>
+            <GitBranch size={14} aria-hidden />
+            <span className="ellipsis git-btn-branch">{branch ?? 'Git'}</span>
+            {!!p.git?.changesTotal && <span className="git-btn-count">{p.git.changesTotal}</span>}
+            {!!p.git?.ahead && (
+              <span className="git-btn-sync">
+                <ArrowUp size={12} aria-hidden />
+                {p.git.ahead}
+              </span>
+            )}
+            {!!p.git?.behind && (
+              <span className="git-btn-sync">
+                <ArrowDown size={12} aria-hidden />
+                {p.git.behind}
+              </span>
+            )}
+            <PanelRightOpen size={15} aria-hidden />
+          </button>
+        )}
       </header>
 
       {p.code && !p.gitRead ? (
@@ -294,6 +292,7 @@ function ChatThread(p: Props) {
   const s = p.session;
   const items = useMemo(() => toItems(p.events), [p.events]);
   const blocks = useMemo(() => toBlocks(items), [items]);
+  const gallery = useMemo(() => items.flatMap((it) => (it.kind === 'user' ? it.images : [])), [items]);
   const todos = useMemo(() => latestTodos(items), [items]);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -433,6 +432,24 @@ function ChatThread(p: Props) {
             }
           }}
         >
+          {!s.shell && (p.accounts?.accounts.length ?? 0) > 1 && (
+            <span className="foot-acct" title={s.status === 'working' ? 'Can move once the turn is over' : undefined}>
+              <Picker
+                label="Account"
+                variant="foot"
+                placement="up"
+                value={s.account}
+                display={s.account ? accountShort(accountOf(p.accounts, s.account)) : 'Signed-in account'}
+                icon={
+                  <span className="acct-chip sm" style={{ '--acct': accountColor(p.accounts, s.account) } as CSSProperties}>
+                    {accountInitial(accountOf(p.accounts, s.account))}
+                  </span>
+                }
+                choices={accountChoices(p.accounts)}
+                onChange={p.onAccount}
+              />
+            </span>
+          )}
           <Picker
             label="Model"
             variant="foot"
@@ -463,7 +480,7 @@ function ChatThread(p: Props) {
           )}
         </Composer>
       </div>
-      {shown && <Lightbox url={shown} onClose={() => setShown(null)} />}
+      {shown && <Lightbox urls={gallery} start={Math.max(0, gallery.indexOf(shown))} onClose={() => setShown(null)} />}
     </>
   );
 }
@@ -533,20 +550,121 @@ function PlanCard({ todos, working }: { todos: Todo[]; working: boolean }) {
   );
 }
 
-function Lightbox({ url, onClose }: { url: string; onClose: () => void }) {
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 8;
+
+/// An image at full size: arrows step through the conversation's images, the
+/// wheel zooms toward the pointer, dragging pans, a double click zooms or resets.
+function Lightbox({ urls, start, onClose }: { urls: string[]; start: number; onClose: () => void }) {
+  const [at, setAt] = useState(start);
+  const [view, setView] = useState({ s: 1, x: 0, y: 0 });
+  const stage = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ x: number; y: number; vx: number; vy: number; moved: boolean } | null>(null);
+  const [panning, setPanning] = useState(false);
+  const many = urls.length > 1;
+  const go = (d: number) => {
+    if (!many) return;
+    setAt((i) => (i + d + urls.length) % urls.length);
+    setView({ s: 1, x: 0, y: 0 });
+  };
+
+  // Zoom to `to(current)`, keeping the point under (px, py) where it is.
+  const zoomAt = (to: (s: number) => number, px: number, py: number) => {
+    const r = stage.current?.getBoundingClientRect();
+    if (!r) return;
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    setView((v) => {
+      const n = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, to(v.s)));
+      if (n === ZOOM_MIN) return { s: 1, x: 0, y: 0 };
+      const k = n / v.s;
+      return { s: n, x: px - cx - (px - cx - v.x) * k, y: py - cy - (py - cy - v.y) * k };
+    });
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft') go(-1);
+      else if (e.key === 'ArrowRight') go(1);
+      else if (e.key === '0') setView({ s: 1, x: 0, y: 0 });
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+  });
+
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      zoomAt((s) => s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const zoomed = view.s > 1;
   return (
-    <div className="lightbox" role="dialog" aria-label="Image" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <img src={url} alt="" />
+    <div
+      ref={stage}
+      className={`lightbox ${zoomed ? 'zoomed' : ''} ${panning ? 'panning' : ''}`}
+      role="dialog"
+      aria-label="Image"
+      onPointerDown={(e) => {
+        if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+        drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        const dx = e.clientX - d.x;
+        const dy = e.clientY - d.y;
+        if (!d.moved && Math.hypot(dx, dy) < 4) return;
+        d.moved = true;
+        if (zoomed) setPanning(true);
+        if (zoomed) setView((v) => ({ ...v, x: d.vx + dx, y: d.vy + dy }));
+      }}
+      onPointerUp={(e) => {
+        const d = drag.current;
+        drag.current = null;
+        setPanning(false);
+        if (d && !d.moved && !zoomed && e.target === e.currentTarget) onClose();
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        setPanning(false);
+      }}
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).closest('button')) return;
+        if (zoomed) setView({ s: 1, x: 0, y: 0 });
+        else zoomAt(() => 2.5, e.clientX, e.clientY);
+      }}
+    >
+      <img
+        src={urls[at]}
+        alt=""
+        draggable={false}
+        style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})` }}
+      />
+      {many && (
+        <>
+          <button type="button" className="icon-btn boxed lightbox-nav prev" aria-label="Previous image" onClick={() => go(-1)}>
+            <ChevronLeft size={20} aria-hidden />
+          </button>
+          <button type="button" className="icon-btn boxed lightbox-nav next" aria-label="Next image" onClick={() => go(1)}>
+            <ChevronRight size={20} aria-hidden />
+          </button>
+        </>
+      )}
+      <div className="lightbox-bar small">
+        {many && <span>{at + 1} / {urls.length}</span>}
+        {zoomed && <span>{Math.round(view.s * 100)}%</span>}
+      </div>
       <button type="button" className="icon-btn boxed lightbox-x" aria-label="Close" onClick={onClose}>
         <X size={17} aria-hidden />
       </button>
