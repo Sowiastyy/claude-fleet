@@ -15,7 +15,6 @@ import {
   Cloud,
   Copy,
   ExternalLink,
-  RefreshCw,
   RotateCw,
   FilePlus,
   FileCode2,
@@ -68,7 +67,6 @@ import { accountChoices } from './AccountPicker';
 import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
 import { sessionTitle, statusLabel } from './Sidebar';
 import { TerminalView } from './TerminalView';
-import { CloudPreview } from './CloudPreview';
 import { Workbench, type Intent } from './Workbench';
 
 interface Props {
@@ -104,23 +102,11 @@ interface Props {
   onNotify: (text: string) => void;
 }
 
-// Cloud sessions shown as their terminal rather than their claude.ai page.
-const asTerminal = new Set<string>();
-
 export function Conversation(p: Props) {
   const s = p.session;
   const branch = p.git?.branch;
-  const [, redraw] = useState(0);
-  const [back, setBack] = useState(0);
-  const previewing = s.cloud && !!s.cloudUrl && !asTerminal.has(s.id);
-  const preview = (on: boolean) => {
-    if (on) asTerminal.delete(s.id);
-    else asTerminal.add(s.id);
-    redraw((n) => n + 1);
-    if (!on && s.view !== 'terminal') p.onView('terminal');
-    // An attached cloud session runs no process until its terminal is wanted.
-    else if (!on && !s.alive && s.cloudId) p.onRestart();
-  };
+  // A new cloud session's chat opens once Claude Code has named it.
+  const noChat = s.cloud && !s.cloudId;
   return (
     <>
       <header className="header">
@@ -138,20 +124,9 @@ export function Conversation(p: Props) {
           </span>
         )}
         <div style={{ flex: 1 }} />
-        {s.view === 'terminal' && !previewing && !s.alive && s.status !== 'starting' && (
+        {s.view === 'terminal' && !s.alive && s.status !== 'starting' && (
           <button type="button" className="btn btn-icon-text" onClick={p.onRestart} title="Its process has exited">
             <RotateCw size={13} aria-hidden /> Restart
-          </button>
-        )}
-        {previewing && !p.code && (
-          <button
-            type="button"
-            className="icon-btn boxed"
-            aria-label="Back to the session"
-            title="Back to this session's page"
-            onClick={() => setBack((n) => n + 1)}
-          >
-            <RefreshCw size={15} aria-hidden />
           </button>
         )}
         {s.cloud && s.cloudUrl && (
@@ -169,63 +144,35 @@ export function Conversation(p: Props) {
             <Square size={13} aria-hidden /> Stop
           </button>
         )}
-        {s.cloud ? (
-          <div className="segmented" role="group" aria-label="View">
+        <div className="segmented" role="group" aria-label="View">
+          {!s.shell && (
             <button
               type="button"
-              aria-pressed={!p.code && previewing}
-              disabled={!s.cloudUrl}
-              title={s.cloudUrl ? "The session's claude.ai page, here" : 'Waiting for the cloud session link'}
+              aria-pressed={!p.code && s.view === 'chat'}
+              disabled={noChat}
+              title={noChat ? 'Opens once Claude Code has named the cloud session' : undefined}
               onClick={() => {
                 p.onCode(false);
-                preview(true);
+                p.onView('chat');
               }}
             >
-              <Cloud size={14} aria-hidden /> Preview
+              <MessageSquare size={14} aria-hidden /> Chat
             </button>
-            <button
-              type="button"
-              aria-pressed={!p.code && !previewing}
-              onClick={() => {
-                p.onCode(false);
-                preview(false);
-              }}
-            >
-              <SquareTerminal size={14} aria-hidden /> Terminal
-            </button>
-            <button type="button" aria-pressed={p.code} aria-label="Code" title="Files, git history and ghost mode" onClick={() => p.onCode(true)}>
-              <FileCode2 size={14} aria-hidden /> Code
-            </button>
-          </div>
-        ) : (
-          <div className="segmented" role="group" aria-label="View">
-            {!s.shell && (
-              <button
-                type="button"
-                aria-pressed={!p.code && s.view === 'chat'}
-                onClick={() => {
-                  p.onCode(false);
-                  p.onView('chat');
-                }}
-              >
-                <MessageSquare size={14} aria-hidden /> Chat
-              </button>
-            )}
-            <button
-              type="button"
-              aria-pressed={!p.code && s.view === 'terminal'}
-              onClick={() => {
-                p.onCode(false);
-                p.onView('terminal');
-              }}
-            >
-              <SquareTerminal size={14} aria-hidden /> Terminal
-            </button>
-            <button type="button" aria-pressed={p.code} aria-label="Code" title="Files, git history and ghost mode" onClick={() => p.onCode(true)}>
-              <FileCode2 size={14} aria-hidden /> Code
-            </button>
-          </div>
-        )}
+          )}
+          <button
+            type="button"
+            aria-pressed={!p.code && s.view === 'terminal'}
+            onClick={() => {
+              p.onCode(false);
+              p.onView('terminal');
+            }}
+          >
+            <SquareTerminal size={14} aria-hidden /> Terminal
+          </button>
+          <button type="button" aria-pressed={p.code} aria-label="Code" title="Files, git history and ghost mode" onClick={() => p.onCode(true)}>
+            <FileCode2 size={14} aria-hidden /> Code
+          </button>
+        </div>
         {!p.showGit && (
           <button type="button" className="git-btn" aria-label={`Source control${branch ? `: ${branch}` : ''}`} onClick={p.onToggleGit}>
             <GitBranch size={14} aria-hidden />
@@ -260,21 +207,30 @@ export function Conversation(p: Props) {
           onNotify={p.onNotify}
         />
       ) : s.view === 'chat' ? (
-        <ChatThread key={s.id} {...p} />
-      ) : previewing ? (
         <>
-          {s.alive && s.status === 'waiting' && (
+          {s.cloud && s.termWaiting && (
             <div className="cloud-banner" role="status">
               <CircleAlert size={15} aria-hidden />
               <span className="ellipsis" style={{ flex: 1 }}>
-                Claude Code is asking something in this session's terminal{s.waitingFor ? `: ${s.waitingFor}` : ''}
+                Claude Code is asking something in this session's terminal: {s.termWaiting}
               </span>
-              <button type="button" className="btn btn-icon-text" onClick={() => preview(false)}>
+              <button type="button" className="btn btn-icon-text" onClick={() => p.onView('terminal')}>
                 <SquareTerminal size={13} aria-hidden /> Show terminal
               </button>
             </div>
           )}
-          <CloudPreview key={s.id} session={s} back={back} onError={p.onError} />
+          {s.cloud && s.status === 'waiting' && (
+            <div className="cloud-banner" role="status">
+              <CircleAlert size={15} aria-hidden />
+              <span className="ellipsis" style={{ flex: 1 }}>
+                The cloud session waits for your answer{s.waitingFor ? `: ${s.waitingFor}` : ''}
+              </span>
+              <button type="button" className="btn btn-icon-text" onClick={() => p.onOpenUrl(s.cloudUrl)}>
+                <ExternalLink size={13} aria-hidden /> Answer on claude.ai
+              </button>
+            </div>
+          )}
+          <ChatThread key={s.id} {...p} />
         </>
       ) : (
         <div className="term-wrap">
@@ -424,7 +380,7 @@ function ChatThread(p: Props) {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               send();
-            } else if (e.key === 'Tab' && e.shiftKey) {
+            } else if (e.key === 'Tab' && e.shiftKey && !s.cloud) {
               e.preventDefault();
               p.onConfigure(null, nextMode(mode));
             } else if (e.key === 'Escape' && working) {
@@ -432,7 +388,7 @@ function ChatThread(p: Props) {
             }
           }}
         >
-          {!s.shell && (p.accounts?.accounts.length ?? 0) > 1 && (
+          {!s.shell && !s.cloud && (p.accounts?.accounts.length ?? 0) > 1 && (
             <span className="foot-acct" title={s.status === 'working' ? 'Can move once the turn is over' : undefined}>
               <Picker
                 label="Account"
@@ -450,24 +406,33 @@ function ChatThread(p: Props) {
               />
             </span>
           )}
-          <Picker
-            label="Model"
-            variant="foot"
-            placement="up"
-            value={modelChoice(s.model)}
-            display={s.model ? modelName(s.model) : 'Default'}
-            choices={MODELS}
-            onChange={(v) => p.onConfigure(v, null)}
-          />
-          <Picker
-            label="Permissions"
-            variant="foot"
-            placement="up"
-            value={mode}
-            choices={MODES}
-            onChange={(v) => p.onConfigure(null, v)}
-            foot={<><kbd>Shift</kbd>+<kbd>Tab</kbd></>}
-          />
+          {s.cloud ? (
+            // The cloud session runs with what it was started with.
+            <span className="small mist cloud-hint" title={s.cloudId}>
+              <Cloud size={13} aria-hidden /> {s.model ? `${modelName(s.model)}, ` : ''}on claude.ai
+            </span>
+          ) : (
+            <>
+              <Picker
+                label="Model"
+                variant="foot"
+                placement="up"
+                value={modelChoice(s.model)}
+                display={s.model ? modelName(s.model) : 'Default'}
+                choices={MODELS}
+                onChange={(v) => p.onConfigure(v, null)}
+              />
+              <Picker
+                label="Permissions"
+                variant="foot"
+                placement="up"
+                value={mode}
+                choices={MODES}
+                onChange={(v) => p.onConfigure(null, v)}
+                foot={<><kbd>Shift</kbd>+<kbd>Tab</kbd></>}
+              />
+            </>
+          )}
           <div style={{ flex: 1 }} />
           {working && !ready ? (
             <button type="button" className="send-btn stop-btn" aria-label="Stop" onClick={p.onStop}>

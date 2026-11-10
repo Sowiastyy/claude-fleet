@@ -84,6 +84,8 @@ export function App() {
       on<{ id: string; event: Event }>('fleet://event', ({ id, event }) =>
         setLogs((l) => ({ ...l, [id]: [...(l[id] ?? []), event] })),
       ),
+      // A cloud session's chat has its history in: read the log again.
+      on<{ id: string }>('fleet://log', ({ id }) => void loadLog(id)),
       on<{ id: string; data: string }>('fleet://term', ({ id, data }) => termBuffer.push(id, data)),
       on<{ id: string }>('fleet://term-reset', ({ id }) => termBuffer.reset(id)),
       on<Accounts>('fleet://accounts', setAccounts),
@@ -91,7 +93,7 @@ export function App() {
       on<string>('fleet://toast', (t) => notify(t)),
     ];
     return () => offs.forEach((p) => p.then((off) => off()));
-  }, [notify]);
+  }, [notify, loadLog]);
 
   useEffect(() => {
     applyTheme(settings.theme, settings.accent);
@@ -207,7 +209,9 @@ export function App() {
 
   const setView = async (v: View) => {
     if (!active || active.view === v) return;
-    if (v === 'terminal') termBuffer.reset(active.id);
+    // A cloud session's terminal runs on while its chat shows: what it drew
+    // is still the screen.
+    if (v === 'terminal' && !(active.cloud && active.alive)) termBuffer.reset(active.id);
     try {
       await api.setView(active.id, v, 30, 100);
       if (v === 'chat') await loadLog(active.id);

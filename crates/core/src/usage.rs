@@ -194,7 +194,7 @@ fn window(v: Option<&Value>) -> Option<(u8, Option<i64>)> {
 ///
 /// Only what this one field can hold: a fixed numeric offset or `Z`. Pulling in
 /// a date crate to read one field of one cache would be the larger cost.
-fn parse_rfc3339(s: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339(s: &str) -> Option<i64> {
     let bytes = s.as_bytes();
     if bytes.len() < 19 || bytes[10] != b'T' {
         return None;
