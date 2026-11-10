@@ -64,6 +64,23 @@ with Tauri and React from the same core (`crates/gui`).
   as the new account.
 - **Limits** at the foot of the sidebar, **git panel** (commit, push, pull,
   generate a message) and **resume** from the new-chat screen.
+- **Code** in the header, beside Chat and Terminal, opens the project:
+  - **Files** — the tree (changed files coloured as in the git panel),
+    `Ctrl+P` to find one, and an editor with syntax colouring, search
+    (`Ctrl+F`) and `Ctrl+S`. A file a session changes while it is open is
+    reloaded when nothing here is unsaved, and flagged when something is;
+    saving over a newer version asks first.
+  - **History** — every commit, or only the ones that touched the open file
+    (followed across renames). A commit opens to its message and the files it
+    changed; a file opens to exactly what that commit did to it. Uncommitted
+    changes are listed above. Clicking a commit or a change in the git panel
+    opens it here.
+  - **Ghost mode** — the **Ghost** button on a file (or a selection) or on a
+    diff shows the code faint, and you type it over, key by key: wrong keys
+    flash and are counted, Enter ends a line and the indentation fills
+    itself in (or type it too, **Indent**), with speed and accuracy as you
+    go. On a diff only the added lines are typed; the lines around them are
+    there to read.
 - **Images** in a message: the image button, paste (`Ctrl+V`) or drop them on
   the message box. Large ones are scaled down to what Claude uses; the thread
   shows them, click for full size.

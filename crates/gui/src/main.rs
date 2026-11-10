@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cloud;
+mod code;
 mod commands;
 mod hub;
 mod preview;
@@ -778,6 +779,12 @@ fn main() {
             git_generate,
             git_push,
             git_pull,
+            code::file_read,
+            code::file_stamp,
+            code::file_write,
+            code::git_history,
+            code::git_commit_info,
+            code::git_diff,
             settings_get,
             settings_set,
             background_import,

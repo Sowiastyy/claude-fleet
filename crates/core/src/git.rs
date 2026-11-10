@@ -292,6 +292,71 @@ pub fn commit_detail(root: &Path, hash: &str) -> Option<CommitDetail> {
     })
 }
 
+/// Commits from HEAD back, newest first: `limit` of them after passing over
+/// `skip`, for a history that loads more as it is scrolled.
+pub fn history(root: &Path, skip: usize, limit: usize) -> Vec<Commit> {
+    let format = format!("--format=%h{SEP}%s{SEP}%ct{SEP}%an");
+    let skip = format!("--skip={skip}");
+    let limit = format!("-n{limit}");
+    git(root, &["log", &limit, &skip, &format])
+        .ok()
+        .flatten()
+        .map(|out| parse_log(&out))
+        .unwrap_or_default()
+}
+
+/// The commits that touched one file, newest first and followed across
+/// renames, each with the path the file had in that commit — a commit from
+/// before a rename only has a diff under the old name.
+pub fn file_history(root: &Path, path: &str, skip: usize, limit: usize) -> Vec<(Commit, String)> {
+    let format = format!("--format={SEP}%h{SEP}%s{SEP}%ct{SEP}%an");
+    let skip = format!("--skip={skip}");
+    let limit = format!("-n{limit}");
+    let out = git(
+        root,
+        &[
+            "log",
+            &limit,
+            &skip,
+            &format,
+            "--follow",
+            "--name-only",
+            "--",
+            path,
+        ],
+    )
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+    parse_file_log(&out, path)
+}
+
+/// `--format=SEP…` with `--name-only`: a commit line that starts with the
+/// separator, then a blank line and the file's name in that commit.
+fn parse_file_log(out: &str, path: &str) -> Vec<(Commit, String)> {
+    let mut found: Vec<(Commit, String)> = Vec::new();
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix(SEP) {
+            if let Some(c) = parse_log(rest).pop() {
+                found.push((c, path.to_string()));
+            }
+        } else if !line.is_empty()
+            && let Some(last) = found.last_mut()
+        {
+            last.1 = line.to_string();
+        }
+    }
+    found
+}
+
+/// Whether HEAD names a commit; a fresh repository has none yet.
+pub fn has_head(root: &Path) -> bool {
+    matches!(
+        git(root, &["rev-parse", "--verify", "-q", "HEAD"]),
+        Ok(Some(_))
+    )
+}
+
 /// The diff behind one row of the panel, as plain lines.
 pub fn diff(root: &Path, src: &DiffSource) -> Vec<String> {
     let out = match src {
@@ -1208,5 +1273,47 @@ error: failed to push some refs to 'github.com:a/b.git'",
         assert_eq!((s[0].added, s[0].removed), (Some(3), Some(1)));
         assert_eq!((s[1].added, s[1].removed), (None, None));
         assert_eq!(s[2].path, "new.rs");
+    }
+
+    #[test]
+    fn a_file_history_follows_renames_and_pages() {
+        let dir = std::env::temp_dir().join(format!("fleet-file-history-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ok = |args: &[&str]| assert!(run(&dir, args).is_ok(), "git {args:?}");
+        ok(&["init", "-q"]);
+        ok(&["config", "user.name", "t"]);
+        ok(&["config", "user.email", "t@t"]);
+        assert!(!has_head(&dir));
+        fs::write(dir.join("old.txt"), "one\ntwo\nthree\n").unwrap();
+        commit(&dir, "Add old").unwrap();
+        fs::write(dir.join("other.txt"), "x\n").unwrap();
+        commit(&dir, "Add other").unwrap();
+        ok(&["mv", "old.txt", "new.txt"]);
+        commit(&dir, "Rename").unwrap();
+        fs::write(dir.join("new.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        commit(&dir, "Add four").unwrap();
+        assert!(has_head(&dir));
+
+        let all = history(&dir, 0, 10);
+        assert_eq!(all.len(), 4);
+        assert_eq!(history(&dir, 1, 2)[0].subject, "Rename");
+
+        let file = file_history(&dir, "new.txt", 0, 10);
+        let subjects: Vec<&str> = file.iter().map(|(c, _)| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["Add four", "Rename", "Add old"]);
+        assert_eq!(file[0].1, "new.txt");
+        assert_eq!(file[2].1, "old.txt");
+        // Each commit's diff is there under the name the file had then.
+        let (c, path) = &file[2];
+        let lines = diff(
+            &dir,
+            &DiffSource::Commit {
+                hash: c.hash.clone(),
+                path: path.clone(),
+            },
+        );
+        assert!(lines.iter().any(|l| l == "+three"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -17,6 +17,7 @@ import {
   RefreshCw,
   RotateCw,
   FilePlus,
+  FileCode2,
   FileText,
   GitBranch,
   GitFork,
@@ -67,6 +68,7 @@ import { accountColor, accountInitial, accountOf, accountShort } from '../accoun
 import { statusLabel } from './Sidebar';
 import { TerminalView } from './TerminalView';
 import { CloudPreview } from './CloudPreview';
+import { Workbench, type Intent } from './Workbench';
 
 interface Props {
   session: Session;
@@ -93,6 +95,13 @@ interface Props {
   onTeleport: () => void;
   /// Start the terminal again after it exited.
   onRestart: () => void;
+  /// The code view (files, history, ghost mode) shows instead of the session.
+  code: boolean;
+  /// `git` has been read for this session's folder.
+  gitRead: boolean;
+  onCode: (open: boolean) => void;
+  codeIntent: Intent | null;
+  onNotify: (text: string) => void;
 }
 
 // Cloud sessions shown as their terminal rather than their claude.ai page.
@@ -151,7 +160,7 @@ export function Conversation(p: Props) {
             <RotateCw size={13} aria-hidden /> Restart
           </button>
         )}
-        {previewing && (
+        {previewing && !p.code && (
           <button
             type="button"
             className="icon-btn boxed"
@@ -181,24 +190,54 @@ export function Conversation(p: Props) {
           <div className="segmented" role="group" aria-label="View">
             <button
               type="button"
-              aria-pressed={previewing}
+              aria-pressed={!p.code && previewing}
               disabled={!s.cloudUrl}
               title={s.cloudUrl ? "The session's claude.ai page, here" : 'Waiting for the cloud session link'}
-              onClick={() => preview(true)}
+              onClick={() => {
+                p.onCode(false);
+                preview(true);
+              }}
             >
               <Cloud size={14} aria-hidden /> Preview
             </button>
-            <button type="button" aria-pressed={!previewing} onClick={() => preview(false)}>
+            <button
+              type="button"
+              aria-pressed={!p.code && !previewing}
+              onClick={() => {
+                p.onCode(false);
+                preview(false);
+              }}
+            >
               <SquareTerminal size={14} aria-hidden /> Terminal
+            </button>
+            <button type="button" aria-pressed={p.code} aria-label="Code" title="Files, git history and ghost mode" onClick={() => p.onCode(true)}>
+              <FileCode2 size={14} aria-hidden /> Code
             </button>
           </div>
         ) : (
           <div className="segmented" role="group" aria-label="View">
-            <button type="button" aria-pressed={s.view === 'chat'} onClick={() => p.onView('chat')}>
+            <button
+              type="button"
+              aria-pressed={!p.code && s.view === 'chat'}
+              onClick={() => {
+                p.onCode(false);
+                p.onView('chat');
+              }}
+            >
               <MessageSquare size={14} aria-hidden /> Chat
             </button>
-            <button type="button" aria-pressed={s.view === 'terminal'} onClick={() => p.onView('terminal')}>
+            <button
+              type="button"
+              aria-pressed={!p.code && s.view === 'terminal'}
+              onClick={() => {
+                p.onCode(false);
+                p.onView('terminal');
+              }}
+            >
               <SquareTerminal size={14} aria-hidden /> Terminal
+            </button>
+            <button type="button" aria-pressed={p.code} aria-label="Code" title="Files, git history and ghost mode" onClick={() => p.onCode(true)}>
+              <FileCode2 size={14} aria-hidden /> Code
             </button>
           </div>
         )}
@@ -210,7 +249,18 @@ export function Conversation(p: Props) {
         </button>
       </header>
 
-      {s.view === 'chat' ? (
+      {p.code && !p.gitRead ? (
+        <div className="bench-empty mist">Reading the project…</div>
+      ) : p.code ? (
+        <Workbench
+          key={p.git?.root ?? s.cwd}
+          base={p.git?.root ?? s.cwd}
+          git={p.git}
+          intent={p.codeIntent}
+          onError={p.onError}
+          onNotify={p.onNotify}
+        />
+      ) : s.view === 'chat' ? (
         <ChatThread key={s.id} {...p} />
       ) : previewing ? (
         <CloudPreview key={s.id} session={s} back={back} onError={p.onError} />

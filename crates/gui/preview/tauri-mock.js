@@ -2,7 +2,10 @@
 // plain browser with made-up data: `npm run preview:ui`, then
 // http://localhost:1421/preview/ (add ?open=1 for a conversation,
 // ?open=1&git=1 for the git panel, ?accounts=1, ?bg=1, ?open=4 for the cloud
-// session, ?type=/co to type into the message box).
+// session, ?type=/co to type into the message box; ?open=1&code=1 for the
+// code view, with &find=total.ts to open a file, &ghost=1 for ghost mode,
+// &typed=1 to type a little of it, &hist=1 for the history, &diff=1 for a
+// commit's diff).
 (() => {
   const q = new URLSearchParams(location.search);
   if (q.get('git') === '1') localStorage.setItem('fleet.git', '1');
@@ -52,6 +55,35 @@
       { hash: 'e93f04acc', subject: 'Merge branch main into feat/checkout', agoSecs: 7200, author: 'me' },
     ],
   };
+  const totalTs = [
+    "import { applyVoucher } from './voucher';",
+    "import { surcharges } from './surcharges';",
+    '',
+    '/// What the customer pays: every surcharge first, then the voucher.',
+    'export function total(lines: Line[], voucher?: Voucher): number {',
+    '  const subtotal = lines.reduce((sum, l) => sum + l.price * l.qty, 0);',
+    '  const priced = subtotal + surcharges(lines);',
+    '  return applyVoucher(priced, voucher);',
+    '}',
+    '',
+  ].join('\n');
+  const commitDiff = [
+    'diff --git a/src/checkout/total.ts b/src/checkout/total.ts',
+    'index 3f1c2aa..9b04e1d 100644',
+    '--- a/src/checkout/total.ts',
+    '+++ b/src/checkout/total.ts',
+    "@@ -3,8 +3,9 @@ import { surcharges } from './surcharges';",
+    ' ',
+    '-/// What the customer pays.',
+    '+/// What the customer pays: every surcharge first, then the voucher.',
+    ' export function total(lines: Line[], voucher?: Voucher): number {',
+    '   const subtotal = lines.reduce((sum, l) => sum + l.price * l.qty, 0);',
+    '-  const discounted = applyVoucher(subtotal, voucher);',
+    '-  return discounted + surcharges(lines);',
+    '+  const priced = subtotal + surcharges(lines);',
+    '+  return applyVoucher(priced, voucher);',
+    ' }',
+  ];
   const answers = {
     sessions_list: sessions,
     session_log: log,
@@ -87,6 +119,21 @@
       { id: 'cse_01HkV2m9', url: 'https://claude.ai/code/cse_01HkV2m9', task: 'Upgrade the image pipeline to sharp 0.34', cwd: 'C:\\code\\smartwood-web', at: now - 600e3 },
       { id: 'session_011CUx9', url: 'https://claude.ai/code/session_011CUx9', task: 'Translate the invoice templates to Czech', cwd: 'C:\\code\\billing-api', at: now - 90000e3 },
     ],
+    file_read: { text: totalTs, stamp: 1, binary: false, lossy: false },
+    file_stamp: 1,
+    file_write: 1,
+    git_history: [
+      { hash: 'a41c9e2aa', subject: 'Apply vouchers after mattress surcharges', agoSecs: 180, author: 'me', path: null },
+      { hash: '7d0b113bb', subject: 'Show the size surcharge on the cart line', agoSecs: 1500, author: 'me', path: null },
+      { hash: 'e93f04acc', subject: 'Merge branch main into feat/checkout', agoSecs: 7200, author: 'me', path: null },
+      { hash: '51c0d7edd', subject: 'Add the voucher field to checkout', agoSecs: 90000, author: 'Ola', path: null },
+    ],
+    git_commit_info: {
+      author: 'me', email: 'me@example.com', date: '2026-11-10 14:02',
+      message: 'Apply vouchers after mattress surcharges\n\nA mattress adds a size surcharge after the voucher was taken off,\nso the voucher never covered it.',
+      files: [{ path: 'src/checkout/total.ts', added: 3, removed: 3 }, { path: 'src/checkout/total.test.ts', added: 48, removed: 0 }],
+    },
+    git_diff: commitDiff,
     update_state: { current: '0.2.0', available: q.get('update') ? 'v0.2.9' : null, installing: false, installed: q.get('update') === 'ready', checking: false },
   };
   let next = 1;
@@ -110,6 +157,36 @@
     }, 1800);
   }
   if (q.get('accounts') === '1') click('.account-btn', 800);
+  if (q.get('code')) {
+    click('[aria-label=Code]', 1300);
+    const setValue = (el, v) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    if (q.get('find')) {
+      setTimeout(() => {
+        const el = document.querySelector('.side-search input');
+        if (!el) return;
+        setValue(el, q.get('find'));
+        setTimeout(() => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })), 150);
+      }, 1900);
+    }
+    if (q.get('ghost')) click('.bench-bar button[title^="Ghost mode"]', q.get('diff') ? 3600 : 2700);
+    if (q.get('typed')) {
+      setTimeout(() => {
+        const el = document.querySelector('.ghost-input');
+        if (!el) return;
+        el.focus();
+        for (const ch of "import { applyVoucher } from './voucher';\nimport { surx") setValue(el, ch);
+      }, 3300);
+    }
+    if (q.get('hist') || q.get('diff')) click('.bench-side-tabs button:nth-child(2)', 1900);
+    if (q.get('diff')) {
+      click('.hist-commit-main', 2400);
+      click('.hist-detail .hist-file-main', 3000);
+    }
+  }
   if (q.get('click')) click(q.get('click'), 1500);
   if (q.get('bg') === '1') click(q.get('open') ?'[aria-label=Appearance]' : '.ghost-btn', 1200);
 })();

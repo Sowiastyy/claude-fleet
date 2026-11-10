@@ -7,6 +7,7 @@ import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource-variable/bricolage-grotesque';
 import './styles.css';
+import './code.css';
 import { App } from './App';
 import { applyStoredTheme } from './themes';
 

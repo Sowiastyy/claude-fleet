@@ -117,6 +117,38 @@ export interface GitState {
   log: GitCommit[];
 }
 
+/// A file opened in the code view.
+export interface OpenedFile {
+  text: string;
+  /// When it last changed on disk, handed back on save.
+  stamp: number;
+  binary: boolean;
+  /// Not UTF-8: shown, but saving would break it.
+  lossy: boolean;
+}
+
+export interface HistoryEntry {
+  hash: string;
+  subject: string;
+  agoSecs: number;
+  author: string;
+  /// In a file's own history, the name it had in this commit.
+  path: string | null;
+}
+
+export interface CommitInfo {
+  author: string;
+  email: string;
+  date: string;
+  message: string;
+  files: Array<{ path: string; added: number | null; removed: number | null }>;
+}
+
+/// What a diff is of.
+export type DiffOf =
+  | { kind: 'worktree'; path: string; untracked: boolean }
+  | { kind: 'commit'; hash: string; path: string };
+
 export interface Settings {
   background: string;
   customImage: string | null;
@@ -209,6 +241,15 @@ export const api = {
   generate: (cwd: string) => invoke<string>('git_generate', { cwd }),
   push: (cwd: string) => invoke<void>('git_push', { cwd }),
   pull: (cwd: string) => invoke<void>('git_pull', { cwd }),
+  fileRead: (base: string, path: string) => invoke<OpenedFile>('file_read', { base, path }),
+  fileStamp: (base: string, path: string) => invoke<number>('file_stamp', { base, path }),
+  /// Refused with "changed on disk" when `expected` no longer matches.
+  fileWrite: (base: string, path: string, text: string, expected: number | null) =>
+    invoke<number>('file_write', { base, path, text, expected }),
+  history: (base: string, path: string | null, skip: number, limit: number) =>
+    invoke<HistoryEntry[]>('git_history', { base, path, skip, limit }),
+  commitInfo: (base: string, hash: string) => invoke<CommitInfo>('git_commit_info', { base, hash }),
+  diff: (base: string, of: DiffOf) => invoke<string[]>('git_diff', { base, of }),
   settings: () => invoke<Settings>('settings_get'),
   saveSettings: (settings: Settings) => invoke<void>('settings_set', { settings }),
   importBackground: (path: string) => invoke<string>('background_import', { path }),

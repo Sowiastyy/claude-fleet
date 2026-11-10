@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowDownToLine, ArrowUpFromLine, GitBranch, GitCommitHorizontal, Sparkles } from 'lucide-react';
-import { api, errorText, type GitState } from '../api';
+import { api, errorText, type GitChange, type GitState } from '../api';
 import { fmtAgo } from '../messages';
 
 const CODE_COLOR: Record<string, string> = {
@@ -22,9 +22,12 @@ interface Props {
   git: GitState | null;
   onRefresh: () => void;
   onToast: (text: string, bad?: boolean) => void;
+  /// Open in the code view: a commit's files, or an uncommitted file's diff.
+  onOpenCommit: (hash: string) => void;
+  onOpenChange: (change: GitChange) => void;
 }
 
-export function GitPanel({ cwd, git, onRefresh, onToast }: Props) {
+export function GitPanel({ cwd, git, onRefresh, onToast, onOpenCommit, onOpenChange }: Props) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -112,19 +115,19 @@ export function GitPanel({ cwd, git, onRefresh, onToast }: Props) {
       {git.changes.map((c) => {
         const m = mark(c.code);
         return (
-          <div className="change" key={c.path}>
+          <button type="button" className="change" key={c.path} title={`${c.path} — show the diff`} onClick={() => onOpenChange(c)}>
             <span className="code" style={{ color: CODE_COLOR[m] ?? 'var(--mist)' }}>{m}</span>
             <span className="path" title={c.path}>{c.path}</span>
             {c.added != null && <span style={{ color: 'var(--idle)' }}>+{c.added}</span>}
             {c.removed != null && c.removed > 0 && <span style={{ color: 'var(--danger)' }}>−{c.removed}</span>}
-          </div>
+          </button>
         );
       })}
       <div className="git-sub">
         <h3>History</h3>
       </div>
       {git.log.map((k, i) => (
-        <div className="commit" key={k.hash}>
+        <button type="button" className="commit" key={k.hash} title="Show what this commit changed" onClick={() => onOpenCommit(k.hash)}>
           <span className={`dot ${i < ahead ? 'ahead' : ''}`} aria-hidden />
           <span className="stack">
             <span className="ellipsis">{k.subject}</span>
@@ -132,7 +135,7 @@ export function GitPanel({ cwd, git, onRefresh, onToast }: Props) {
               {k.hash.slice(0, 7)} <span className="faint">{fmtAgo(k.agoSecs)}</span>
             </span>
           </span>
-        </div>
+        </button>
       ))}
     </aside>
   );

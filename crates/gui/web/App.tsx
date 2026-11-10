@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, Cloud, ExternalLink, GitBranch, History, Palette, Plus, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
+import { Check, CircleAlert, Cloud, ExternalLink, FileCode2, GitBranch, History, Palette, Plus, SquareTerminal, MessageSquare, Sun } from 'lucide-react';
 import {
   api,
   errorText,
@@ -10,6 +10,7 @@ import {
   type Event,
   type Foreign,
   type Recent,
+  type GitChange,
   type GitState,
   type NewSession,
   type Session,
@@ -25,6 +26,7 @@ import { AccountMenu } from './components/AccountMenu';
 import { Home, type StartOpts } from './components/Home';
 import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
+import type { Ask, Intent } from './components/Workbench';
 import { AppearanceDialog } from './components/AppearanceDialog';
 import { CommandPalette, type Command } from './components/CommandPalette';
 import { isCloudRef } from './commands';
@@ -40,6 +42,9 @@ export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [custom, setCustom] = useState<string | null>(null);
   const [git, setGit] = useState<GitState | null>(null);
+  // The folder `git` was last read for: until it is the active one, no git
+  // state means not read yet rather than not a repository.
+  const [gitFor, setGitFor] = useState<string | null>(null);
   const [showGit, setShowGit] = useState(() => localStorage.getItem('fleet.git') === '1');
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [bgOpen, setBgOpen] = useState(false);
@@ -50,6 +55,10 @@ export function App() {
   const [clouds, setClouds] = useState<CloudRecent[]>([]);
   const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+  // Sessions showing the code view instead of their chat or terminal.
+  const [code, setCode] = useState<Record<string, boolean>>({});
+  const [intent, setIntent] = useState<{ session: string; intent: Intent } | null>(null);
+  const intentSeq = useRef(0);
   const ticks = useRef(0);
 
   const active = sessions.find((s) => s.id === activeId) ?? null;
@@ -98,10 +107,16 @@ export function App() {
   // ----- git, for the header and the panel
   const refreshGit = useCallback(() => {
     if (!active) return;
-    api.git(active.cwd).then(setGit).catch(() => setGit(null));
+    const cwd = active.cwd;
+    api
+      .git(cwd)
+      .then(setGit)
+      .catch(() => setGit(null))
+      .finally(() => setGitFor(cwd));
   }, [active?.cwd]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     setGit(null);
+    setGitFor(null);
     if (!active) return;
     refreshGit();
     const t = window.setInterval(refreshGit, 4000);
@@ -291,6 +306,17 @@ export function App() {
     }
   };
 
+  /// Show the code view for the active session, and what to open in it.
+  const openCode = (ask?: Ask) => {
+    if (!active) return;
+    setCode((c) => ({ ...c, [active.id]: true }));
+    if (ask) setIntent({ session: active.id, intent: { ...ask, seq: ++intentSeq.current } });
+  };
+  const setCodeFor = (id: string, open: boolean) => setCode((c) => ({ ...c, [id]: open }));
+
+  const openChange = (c: GitChange) =>
+    openCode({ kind: 'diff', of: { kind: 'worktree', path: c.path, untracked: c.code === '??' }, label: `${c.path} (uncommitted)` });
+
   const toggleGit = () => {
     localStorage.setItem('fleet.git', showGit ? '0' : '1');
     setShowGit(!showGit);
@@ -320,6 +346,13 @@ export function App() {
                 },
               ]),
           { id: 'git', group: 'Actions', label: showGit ? 'Hide git panel' : 'Show git panel', icon: <GitBranch size={15} />, run: toggleGit },
+          {
+            id: 'code',
+            group: 'Actions',
+            label: code[active.id] ? 'Close the code view' : 'Code view: files, git history, ghost mode',
+            icon: <FileCode2 size={15} />,
+            run: () => setCodeFor(active.id, !code[active.id]),
+          },
           ...(active.cloud && active.cloudUrl
             ? [{ id: 'cloud-open', group: 'Actions', label: 'Open on claude.ai', icon: <ExternalLink size={15} />, run: () => void openUrl(active.cloudUrl) }]
             : []),
@@ -402,6 +435,11 @@ export function App() {
                 termBuffer.reset(active.id);
                 api.restartTerm(active.id, 30, 100).catch((e) => notify(errorText(e), true));
               }}
+              code={!!code[active.id]}
+              gitRead={gitFor === active.cwd}
+              onCode={(open) => setCodeFor(active.id, open)}
+              codeIntent={intent?.session === active.id ? intent.intent : null}
+              onNotify={(t) => notify(t)}
             />
           ) : (
             <Home
@@ -423,7 +461,16 @@ export function App() {
           </div>
         )}
       </main>
-      {active && showGit && <GitPanel cwd={active.cwd} git={git} onRefresh={refreshGit} onToast={notify} />}
+      {active && showGit && (
+        <GitPanel
+          cwd={active.cwd}
+          git={git}
+          onRefresh={refreshGit}
+          onToast={notify}
+          onOpenCommit={(hash) => openCode({ kind: 'commit', hash })}
+          onOpenChange={openChange}
+        />
+      )}
       {accountsOpen && accounts && (
         <AccountMenu
           accounts={accounts}
