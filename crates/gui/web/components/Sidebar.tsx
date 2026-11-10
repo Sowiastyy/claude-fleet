@@ -212,6 +212,7 @@ function AllLimits({ accounts }: { accounts: Accounts }) {
   return (
     <div className="limits use-grid">
       <span />
+      <span className="use-col use-col-profile">Profile</span>
       <span className="use-col">5h</span>
       <span className="use-col">Week</span>
       {list.map((a) => {
@@ -222,6 +223,7 @@ function AllLimits({ accounts }: { accounts: Accounts }) {
               <span className="acct-chip sm">{accountInitial(a)}</span>
               <span className="ellipsis">{accountShort(a)}</span>
             </span>
+            <span className="use-profile ellipsis">{a.plan ? a.plan[0].toUpperCase() + a.plan.slice(1) : '–'}</span>
             {a.needsLogin ? (
               <span className="use-expired">login expired</span>
             ) : (
