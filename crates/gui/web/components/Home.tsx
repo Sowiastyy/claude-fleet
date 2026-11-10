@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { ArrowUp, Cloud, Folder, FolderOpen, History, Laptop, Palette, SquareTerminal } from 'lucide-react';
-import { api, type Attachment, type CloudRecent, type Recent, type Session, type SlashCommand } from '../api';
+import { api, type Accounts, type Attachment, type CloudRecent, type Recent, type Session, type SlashCommand } from '../api';
+import { accountChoices } from './AccountPicker';
+import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
 import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
 import { commandsFor, isCloudRef, routeSlash } from '../commands';
 import { fmtAgo } from '../messages';
@@ -32,6 +34,8 @@ export interface StartOpts {
   cloud: boolean;
   /// Typed into the terminal once it is up: a terminal-only command.
   typeIn?: string;
+  /// The account to run as; the signed-in one when left out.
+  account?: string;
 }
 
 const WHERE: Choice[] = [
@@ -41,6 +45,7 @@ const WHERE: Choice[] = [
 
 interface Props {
   name: string;
+  accounts: Accounts | null;
   sessions: Session[];
   onStart: (opts: StartOpts) => void;
   onResume: (r: Recent) => void;
@@ -76,8 +81,12 @@ export function Home(p: Props) {
   const [clouds, setClouds] = useState<CloudRecent[]>([]);
   const [where, setWhere] = useState(() => (stored('fleet.where', 'local') === 'cloud' ? 'cloud' : 'local'));
   const [commands, setCommands] = useState<SlashCommand[]>([]);
+  // The account this one session starts as; the signed-in one until picked.
+  const [picked, setPicked] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const cloud = where === 'cloud';
+  const account = picked && accountOf(p.accounts, picked) ? picked : (p.accounts?.current ?? undefined);
+  const several = (p.accounts?.accounts.length ?? 0) > 1;
 
   useEffect(() => {
     api.projects().then((ps) => {
@@ -121,13 +130,14 @@ export function Home(p: Props) {
       setDraft('');
       setImages([]);
     };
+    const account = picked && accountOf(p.accounts, picked) ? picked : undefined;
     if (cloud) {
       if (!prompt) return;
       if (images.length) {
         p.onError('A cloud session takes the task as text only');
         return;
       }
-      p.onStart({ cwd, prompt, images: [], model, mode, terminal: true, cloud: true });
+      p.onStart({ cwd, prompt, images: [], model, mode, terminal: true, cloud: true, account });
       done();
       return;
     }
@@ -142,11 +152,11 @@ export function Home(p: Props) {
         done();
         return;
       case 'terminal':
-        p.onStart({ cwd, prompt: '', images: [], model, mode, terminal: true, cloud: false, typeIn: prompt });
+        p.onStart({ cwd, prompt: '', images: [], model, mode, terminal: true, cloud: false, typeIn: prompt, account });
         done();
         return;
     }
-    p.onStart({ cwd, prompt, images, model, mode, terminal, cloud: false });
+    p.onStart({ cwd, prompt, images, model, mode, terminal, cloud: false, account });
     done();
   };
   const chooseWhere = (v: string) => {
@@ -225,6 +235,22 @@ export function Home(p: Props) {
         </Composer>
 
         <div className="pills">
+          {several && account && (
+            <Picker
+              label="Account"
+              variant="pill"
+              placement="down"
+              value={account}
+              display={accountShort(accountOf(p.accounts, account))}
+              icon={
+                <span className="acct-chip sm" style={{ '--acct': accountColor(p.accounts, account) } as CSSProperties}>
+                  {accountInitial(accountOf(p.accounts, account))}
+                </span>
+              }
+              choices={accountChoices(p.accounts)}
+              onChange={(v) => setPicked(v === p.accounts?.current ? null : v)}
+            />
+          )}
           <Picker
             label="Where"
             variant="pill"

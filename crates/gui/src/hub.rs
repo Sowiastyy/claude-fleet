@@ -33,7 +33,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use crate::cloud;
-use fleet_core::{claude::claude_binary, history, registry};
+use fleet_core::{accounts::Accounts, claude::claude_binary, history, registry};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -81,6 +81,8 @@ pub struct SessionView {
     /// Whether its terminal process is running (a chat starts its own with
     /// the next message).
     pub alive: bool,
+    /// The account it runs as; empty for whatever `~/.claude` is signed in as.
+    pub account: String,
 }
 
 struct ChatProc {
@@ -133,6 +135,10 @@ pub struct Session {
     /// The cloud session a local process is pulling in with `--teleport`,
     /// until the registry tells which conversation it became.
     teleport: Option<String>,
+    /// The account every process of this session runs as, in that account's
+    /// own config dir (see `Accounts::config_dir_for`), so switching who is
+    /// signed in leaves it alone. Empty: `~/.claude` as it is, for `/login`.
+    pub account: String,
 }
 
 impl Session {
@@ -153,6 +159,7 @@ impl Session {
             cloud_url: self.cloud_url.clone(),
             cloud_task: self.cloud_task.clone(),
             alive: self.term.is_some() || self.chat.is_some(),
+            account: self.account.clone(),
         }
     }
 
@@ -273,6 +280,10 @@ pub struct NewSession {
     /// Pull this cloud session into a local terminal session.
     #[serde(default)]
     pub teleport: Option<String>,
+    /// The account to run as: the one signed in when left out, and
+    /// `~/.claude` as it is when empty.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 pub struct Hub {
@@ -281,16 +292,24 @@ pub struct Hub {
     app: AppHandle,
     /// Where the cloud sessions seen are kept (see `cloud::remember`).
     pub cloud_path: PathBuf,
+    /// Locked after the hub, never before it.
+    accounts: Arc<Mutex<Accounts>>,
 }
 
 impl Hub {
-    pub fn new(app: AppHandle, cloud_path: PathBuf) -> Shared {
+    pub fn new(app: AppHandle, cloud_path: PathBuf, accounts: Arc<Mutex<Accounts>>) -> Shared {
         Arc::new(Mutex::new(Self {
             sessions: Vec::new(),
             next: 1,
             app,
             cloud_path,
+            accounts,
         }))
+    }
+
+    /// How many sessions run as `uuid`.
+    pub fn on_account(&self, uuid: &str) -> usize {
+        self.sessions.iter().filter(|s| s.account == uuid).count()
     }
 
     pub fn list(&self) -> Vec<SessionView> {
@@ -370,6 +389,24 @@ fn held_elsewhere(conversation: &str, ours: &[u32]) -> bool {
 /// What Claude Code says when the conversation is someone else's to resume.
 fn refused_as_busy(text: &str) -> bool {
     text.contains("running in the background") || text.contains("--fork-session")
+}
+
+/// The config dir a process of a session on `account` runs in, if not
+/// `~/.claude`.
+fn config_dir(accounts: &Arc<Mutex<Accounts>>, account: &str) -> Result<Option<PathBuf>> {
+    if account.is_empty() {
+        return Ok(None);
+    }
+    let mut a = accounts.lock().unwrap();
+    let email = a
+        .list
+        .iter()
+        .find(|x| x.uuid == account)
+        .map(|x| x.email.clone())
+        .unwrap_or_else(|| "a forgotten account".to_string());
+    a.config_dir_for(account)
+        .map(Some)
+        .with_context(|| format!("could not start as {email}"))
 }
 
 fn emit_to(app: &AppHandle, id: &str, event: &Value) {
@@ -452,6 +489,10 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             cloud::url_of(&cloud_id)
         };
         let name = hub.free_name(&cwd);
+        let account = match req.account.take() {
+            Some(a) => a,
+            None => hub.accounts.lock().unwrap().current.clone().unwrap_or_default(),
+        };
         hub.sessions.push(Session {
             id: id.clone(),
             name,
@@ -485,6 +526,7 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             cloud_url,
             cloud_task,
             teleport,
+            account,
         });
         hub.emit_sessions();
         id
@@ -514,12 +556,13 @@ pub fn send(shared: &Shared, id: &str, text: &str, images: &[Image]) -> Result<(
     }
     let mut hub = shared.lock().unwrap();
     let app = hub.app.clone();
+    let accounts = hub.accounts.clone();
     let s = hub.find_mut(id)?;
     if s.view != View::Chat {
         bail!("the session is showing its terminal");
     }
     if s.chat.is_none() {
-        start_chat(shared, s, app)?;
+        start_chat(shared, &accounts, s, app)?;
     }
     let mut content: Vec<Value> = images
         .iter()
@@ -576,7 +619,8 @@ pub fn interrupt(shared: &Shared, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
+fn start_chat(shared: &Shared, accounts: &Arc<Mutex<Accounts>>, s: &mut Session, app: AppHandle) -> Result<()> {
+    let home = config_dir(accounts, &s.account)?;
     let (args, note) = s.claude_args();
     if let Some(note) = &note {
         emit_to(&app, &s.id, note);
@@ -595,6 +639,9 @@ fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(home) = &home {
+        cmd.env("CLAUDE_CONFIG_DIR", home);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -652,8 +699,9 @@ fn start_chat(shared: &Shared, s: &mut Session, app: AppHandle) -> Result<()> {
         {
             let note = s.fork();
             hub.emit_event(&id, &note);
+            let accounts = hub.accounts.clone();
             let s = hub.find_mut(&id).expect("still there");
-            let retried = start_chat(&shared, s, app.clone()).and_then(|()| {
+            let retried = start_chat(&shared, &accounts, s, app.clone()).and_then(|()| {
                 let chat = s.chat.as_mut().context("no chat")?;
                 writeln!(chat.stdin, "{line}")?;
                 chat.stdin.flush()?;
@@ -783,8 +831,10 @@ pub fn set_view(shared: &Shared, id: &str, view: View, rows: u16, cols: u16) -> 
 fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     let mut hub = shared.lock().unwrap();
     let app = hub.app.clone();
+    let accounts = hub.accounts.clone();
     let s = hub.find_mut(id)?;
     s.stop_term();
+    let home = config_dir(&accounts, &s.account)?;
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: rows.max(4),
@@ -801,6 +851,9 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     cmd.args(args);
     cmd.cwd(&s.cwd);
     cmd.env("TERM", "xterm-256color");
+    if let Some(home) = &home {
+        cmd.env("CLAUDE_CONFIG_DIR", home);
+    }
     let child = pair.slave.spawn_command(cmd).context("could not start claude")?;
     drop(pair.slave);
     let pid = child.process_id();
@@ -1042,37 +1095,72 @@ pub fn close(shared: &Shared, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// After an account switch: every process holds the old account's tokens,
-/// so each goes. A chat comes back with the next message; a terminal comes
-/// back at once, on the same conversation. Returns how many were running.
-pub fn restart_all(shared: &Shared) -> usize {
+/// Run the session as another account from now on. Its process is replaced
+/// on the same conversation: a chat's with the next message, a terminal's at
+/// once. Not in the middle of a turn, which would be lost.
+pub fn set_account(shared: &Shared, id: &str, account: &str, rows: u16, cols: u16) -> Result<()> {
+    let restart = {
+        let mut hub = shared.lock().unwrap();
+        let s = hub.find_mut(id)?;
+        if s.account == account {
+            return Ok(());
+        }
+        if s.status == Status::Working {
+            bail!("{} is working; move it once the turn is over", s.name);
+        }
+        if s.cloud && s.cloud_id.is_empty() {
+            bail!("the cloud session has not started yet");
+        }
+        s.account = account.to_string();
+        s.generation += 1;
+        s.stop_chat();
+        let restart = s.term.is_some();
+        if restart {
+            s.stop_term();
+        }
+        hub.emit_sessions();
+        restart
+    };
+    if restart {
+        start_term(shared, id, rows, cols)?;
+    }
+    Ok(())
+}
+
+/// "Move every session over" after a switch: each runs as `account` from
+/// now on, its process replaced on the same conversation (see
+/// `set_account`). A session in the middle of a turn is left where it is.
+/// Returns how many moved.
+pub fn move_all(shared: &Shared, account: &str) -> usize {
+    let mut moved = 0;
     let terminals: Vec<String> = {
         let mut hub = shared.lock().unwrap();
         let mut terms = Vec::new();
         for s in hub.sessions.iter_mut() {
+            // Mid-turn or on a question: killing it would lose that.
+            let busy = matches!(s.status, Status::Working | Status::Waiting);
+            // A new cloud session whose link never showed would start a
+            // second one on the same task.
+            let unborn = s.cloud && s.cloud_id.is_empty();
+            if s.account == account || busy || unborn {
+                continue;
+            }
+            moved += 1;
+            s.account = account.to_string();
             s.generation += 1;
             s.stop_chat();
             if s.term.is_some() {
                 s.stop_term();
-                // A new cloud session whose link never showed would start a
-                // second one on the same task: it stays stopped instead.
-                if s.cloud && s.cloud_id.is_empty() {
-                    s.status = Status::Idle;
-                } else {
-                    terms.push(s.id.clone());
-                }
-            } else if s.status == Status::Working {
-                s.status = Status::Idle;
+                terms.push(s.id.clone());
             }
         }
         hub.emit_sessions();
         terms
     };
-    let n = shared.lock().unwrap().sessions.len();
     for id in terminals {
         let _ = start_term(shared, &id, 30, 100);
     }
-    n
+    moved
 }
 
 /// Keep terminal sessions' status in step with what Claude Code reports.

@@ -543,3 +543,19 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 .segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
 /* The new-chat box sits high: its menus open below it. */
 .home .mentions { top: calc(100% + 6px); bottom: auto; }
+
+/* ---------- several accounts at once */
+.acct-group { margin-top: 4px; }
+.acct-head { display: flex; align-items: center; gap: 8px; margin: 8px 12px 2px; padding: 5px 10px; font-size: 12px; color: var(--fog-2); border-radius: 8px; background: color-mix(in srgb, var(--acct) 8%, transparent); }
+.acct-head-name { flex: 1; min-width: 0; font-weight: 500; }
+.acct-default { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--acct); }
+.acct-chip { width: 18px; height: 18px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; color: var(--ink); background: var(--acct, var(--faint)); }
+.acct-chip.sm { width: 16px; height: 16px; font-size: 9.5px; }
+.acct-meter { width: 34px; height: 4px; flex: none; border-radius: 2px; background: var(--line); overflow: hidden; }
+.acct-meter > span { display: block; height: 100%; background: var(--idle); }
+.acct-meter.warm > span { background: var(--warn); }
+.acct-meter.hot > span { background: var(--danger); }
+.session-btn.tinted { position: relative; }
+.session-btn.tinted::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: 2px; background: var(--acct); opacity: 0.85; }
+.header-acct { flex: none; }
+.menu-note { margin: 2px 14px 8px; line-height: 1.45; }

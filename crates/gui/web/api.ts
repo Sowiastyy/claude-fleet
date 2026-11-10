@@ -24,6 +24,8 @@ export interface Session {
   cloudTask: string;
   /// Its terminal process is running.
   alive: boolean;
+  /// The account it runs as; empty for whatever `~/.claude` is signed in as.
+  account: string;
 }
 
 /// A slash command Claude Code runs, as it describes it.
@@ -150,6 +152,8 @@ export interface NewSession {
   teleport?: string;
   /// Typed into the terminal once Claude Code is up.
   typeIn?: string;
+  /// The account to run as; the signed-in one when left out.
+  account?: string;
 }
 
 // The stream-json objects Claude Code prints, plus the fleet's own
@@ -170,6 +174,8 @@ export const api = {
   interrupt: (id: string) => invoke<void>('session_interrupt', { id }),
   setView: (id: string, view: View, rows: number, cols: number) =>
     invoke<void>('session_set_view', { id, view, rows, cols }),
+  setAccount: (id: string, account: string, rows: number, cols: number) =>
+    invoke<void>('session_account', { id, account, rows, cols }),
   allow: (id: string, tool: string) => invoke<void>('session_allow', { id, tool }),
   configure: (id: string, model: string | null, permissionMode: string | null) =>
     invoke<void>('session_configure', { id, model, permissionMode }),

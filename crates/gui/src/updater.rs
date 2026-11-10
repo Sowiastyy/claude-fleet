@@ -145,6 +145,9 @@ struct Reopen {
     cloud: bool,
     #[serde(default)]
     cloud_id: String,
+    /// The account it ran as; left out by builds from before there was one.
+    #[serde(default)]
+    account: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -176,6 +179,7 @@ pub fn restart(app: &AppHandle, up: &SharedUpdater, shared: &Shared, restore_pat
                 permission_mode: s.permission_mode,
                 cloud: s.cloud,
                 cloud_id: s.cloud_id,
+                account: Some(s.account),
             })
             .collect()
     };
@@ -219,6 +223,7 @@ pub fn reopen(shared: &Shared, restore_path: &Path) {
                         cwd: s.cwd,
                         cloud: true,
                         resume: Some(s.cloud_id),
+                        account: s.account,
                         ..Default::default()
                     },
                 );
@@ -236,6 +241,7 @@ pub fn reopen(shared: &Shared, restore_path: &Path) {
                 model: (!s.model.is_empty()).then_some(s.model),
                 permission_mode: (!s.permission_mode.is_empty()).then_some(s.permission_mode),
                 terminal: s.view == View::Terminal,
+                account: s.account,
                 ..Default::default()
             },
         );

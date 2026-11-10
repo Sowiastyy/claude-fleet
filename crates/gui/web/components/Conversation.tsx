@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -35,7 +35,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import type { Attachment, Event, GitState, Session, SlashCommand, View } from '../api';
+import type { Accounts, Attachment, Event, GitState, Session, SlashCommand, View } from '../api';
 import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
 import { commandsFor, routeSlash } from '../commands';
 import { copyText } from '../clipboard';
@@ -61,11 +61,16 @@ import {
 } from '../messages';
 import { Composer } from './Composer';
 import { Picker } from './Picker';
+import { accountChoices } from './AccountPicker';
+import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
 import { statusLabel } from './Sidebar';
 import { TerminalView } from './TerminalView';
 
 interface Props {
   session: Session;
+  accounts: Accounts | null;
+  /// Run the session as another account.
+  onAccount: (uuid: string) => void;
   events: Event[];
   git: GitState | null;
   showGit: boolean;
@@ -103,6 +108,24 @@ export function Conversation(p: Props) {
           </span>
         </div>
         <span className={`chip status-text ${s.status}`}>{statusLabel(s)}</span>
+        {(p.accounts?.accounts.length ?? 0) > 1 && (
+          <div className="header-acct" title={s.status === 'working' ? 'Can move once the turn is over' : 'Run this session as another account'}>
+            <Picker
+              label="Account"
+              variant="pill"
+              placement="down"
+              value={s.account}
+              display={s.account ? accountShort(accountOf(p.accounts, s.account)) : 'Signed-in account'}
+              icon={
+                <span className="acct-chip sm" style={{ '--acct': accountColor(p.accounts, s.account) } as CSSProperties}>
+                  {accountInitial(accountOf(p.accounts, s.account))}
+                </span>
+              }
+              choices={accountChoices(p.accounts)}
+              onChange={p.onAccount}
+            />
+          </div>
+        )}
         {s.cloud && (
           <span className="chip cloud-chip" title={s.cloudId || 'Waiting for the cloud session link'}>
             <Cloud size={12} aria-hidden /> {s.cloudId ? 'cloud' : 'cloud, starting'}

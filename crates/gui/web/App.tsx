@@ -43,7 +43,7 @@ export function App() {
   const [showGit, setShowGit] = useState(() => localStorage.getItem('fleet.git') === '1');
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [bgOpen, setBgOpen] = useState(false);
-  const [carry, setCarry] = useState(() => localStorage.getItem('fleet.carry') !== '0');
+  const [carry, setCarry] = useState(() => localStorage.getItem('fleet.carry.v2') === '1');
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [recent, setRecent] = useState<Recent[]>([]);
@@ -137,6 +137,7 @@ export function App() {
           terminal: o.terminal,
           typeIn: o.typeIn,
         };
+    if (o.account) req.account = o.account;
     try {
       select(await api.create(req));
     } catch (e) {
@@ -203,8 +204,22 @@ export function App() {
     setAccountsOpen(false);
     if (a.current) return;
     try {
-      if (carry) sessions.filter((s) => s.view === 'terminal').forEach((s) => termBuffer.reset(s.id));
+      if (carry)
+        sessions
+          .filter((s) => s.view === 'terminal' && s.account !== a.uuid && s.status !== 'working' && s.status !== 'waiting')
+          .forEach((s) => termBuffer.reset(s.id));
       notify(await api.switchAccount(a.uuid, carry));
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const moveSession = async (s: Session, uuid: string) => {
+    try {
+      if (s.view === 'terminal' && s.status !== 'working') termBuffer.reset(s.id);
+      await api.setAccount(s.id, uuid, 30, 100);
+      const a = accounts?.accounts.find((x) => x.uuid === uuid);
+      notify(`${s.name} now runs as ${a?.email ?? 'that account'}`);
     } catch (e) {
       notify(errorText(e), true);
     }
@@ -366,6 +381,8 @@ export function App() {
           {active ? (
             <Conversation
               session={active}
+              accounts={accounts}
+              onAccount={(uuid) => void moveSession(active, uuid)}
               events={logs[active.id] ?? []}
               git={git}
               showGit={showGit}
@@ -389,6 +406,7 @@ export function App() {
           ) : (
             <Home
               name={firstName}
+              accounts={accounts}
               sessions={sessions}
               onStart={start}
               onResume={resume}
@@ -409,9 +427,10 @@ export function App() {
       {accountsOpen && accounts && (
         <AccountMenu
           accounts={accounts}
+          sessions={sessions}
           carry={carry}
           onCarry={(c) => {
-            localStorage.setItem('fleet.carry', c ? '1' : '0');
+            localStorage.setItem('fleet.carry.v2', c ? '1' : '0');
             setCarry(c);
           }}
           onChoose={chooseAccount}

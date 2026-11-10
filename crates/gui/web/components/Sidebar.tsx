@@ -1,5 +1,7 @@
+import type { CSSProperties } from 'react';
 import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Sailboat, Search, X } from 'lucide-react';
-import type { Accounts, Foreign, Limits, Session, Status, UpdateState } from '../api';
+import type { Accounts, Foreign, Limits, LimitWindow, Session, Status, UpdateState } from '../api';
+import { accountColor, accountInitial, accountOf } from '../accounts';
 import { fmtDuration } from '../messages';
 
 const STATUS: Record<Status, string> = {
@@ -30,9 +32,66 @@ interface Props {
   onPalette: () => void;
 }
 
+interface Group {
+  account: string;
+  rows: Array<{ s: Session; i: number }>;
+}
+
+/// The sessions by the account they run as: the signed-in one first, then
+/// the others in the dropdown's order, `~/.claude`'s own (a login) last.
+function byAccount(sessions: Session[], accounts: Accounts | null): Group[] {
+  const order = (uuid: string) => {
+    if (!uuid) return 1e6;
+    if (uuid === accounts?.current) return -1;
+    const i = accounts?.accounts.findIndex((a) => a.uuid === uuid) ?? -1;
+    return i < 0 ? 1e5 : i;
+  };
+  const groups = new Map<string, Group>();
+  sessions.forEach((s, i) => {
+    const g = groups.get(s.account) ?? { account: s.account, rows: [] };
+    g.rows.push({ s, i });
+    groups.set(s.account, g);
+  });
+  return [...groups.values()].sort((a, b) => order(a.account) - order(b.account));
+}
+
 export function Sidebar(p: Props) {
   const me = p.accounts?.accounts.find((a) => a.current);
   const label = me?.email ?? (p.accounts?.current ? 'Signing in' : 'Not signed in');
+  const several = (p.accounts?.accounts.length ?? 0) > 1;
+  const groups = byAccount(p.sessions, p.accounts);
+  const grouped = groups.length > 1 || (several && groups.length === 1 && groups[0].account !== p.accounts?.current);
+  const row = ({ s, i }: { s: Session; i: number }) => (
+    <li
+      key={s.id}
+      className="session-row"
+      style={several ? ({ '--acct': accountColor(p.accounts, s.account) } as CSSProperties) : undefined}
+    >
+      <button
+        type="button"
+        className={`session-btn ${several ? 'tinted' : ''}`}
+        aria-current={s.id === p.activeId}
+        onClick={() => p.onSelect(s.id)}
+      >
+        <span className={`dot ${s.status}`} aria-hidden />
+        <span className="stack" style={{ gap: 1 }}>
+          <span className="ellipsis session-name" style={{ fontWeight: 500 }}>
+            {s.cloud && <Cloud size={13} aria-label="cloud" className="cloud-mark" />}
+            {s.name}
+          </span>
+          <span className="small faint ellipsis">{s.cloud && s.cloudTask ? s.cloudTask : s.cwd}</span>
+          <span className={`small status-text ${s.status}`}>
+            {statusLabel(s)}
+            {s.cloud ? ', cloud' : s.view === 'terminal' ? ', terminal' : ''}
+          </span>
+        </span>
+        {i < 9 && <kbd style={{ marginTop: 2 }}>F{i + 1}</kbd>}
+      </button>
+      <button type="button" className="row-close" aria-label={`Close ${s.name}`} onClick={() => p.onClose(s.id)}>
+        <X size={14} aria-hidden />
+      </button>
+    </li>
+  );
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -41,10 +100,14 @@ export function Sidebar(p: Props) {
       </div>
 
       <button type="button" className="account-btn" onClick={p.onAccounts} aria-expanded={p.accountsOpen} aria-label="Switch account">
-        <span className="avatar">{(me?.email ?? '?')[0].toUpperCase()}</span>
+        <span className="avatar" style={several && me ? { color: accountColor(p.accounts, me.uuid) } : undefined}>
+          {accountInitial(me)}
+        </span>
         <span className="stack">
           <span className="ellipsis" style={{ fontWeight: 500 }}>{label}</span>
-          {me?.plan && <span className="small mist">{me.plan}</span>}
+          <span className="small mist ellipsis">
+            {several ? `New sessions${me?.plan ? `, ${me.plan}` : ''}` : me?.plan}
+          </span>
         </span>
         <ChevronsUpDown size={16} color="var(--mist)" aria-hidden />
       </button>
@@ -67,35 +130,16 @@ export function Sidebar(p: Props) {
           <h2>Sessions</h2>
           <span className="small faint">{p.sessions.length}</span>
         </div>
-        <ul className="list">
-          {p.sessions.map((s, i) => (
-            <li key={s.id} className="session-row">
-              <button
-                type="button"
-                className="session-btn"
-                aria-current={s.id === p.activeId}
-                onClick={() => p.onSelect(s.id)}
-              >
-                <span className={`dot ${s.status}`} aria-hidden />
-                <span className="stack" style={{ gap: 1 }}>
-                  <span className="ellipsis session-name" style={{ fontWeight: 500 }}>
-                    {s.cloud && <Cloud size={13} aria-label="cloud" className="cloud-mark" />}
-                    {s.name}
-                  </span>
-                  <span className="small faint ellipsis">{s.cloud && s.cloudTask ? s.cloudTask : s.cwd}</span>
-                  <span className={`small status-text ${s.status}`}>
-                    {statusLabel(s)}
-                    {s.cloud ? ', cloud' : s.view === 'terminal' ? ', terminal' : ''}
-                  </span>
-                </span>
-                {i < 9 && <kbd style={{ marginTop: 2 }}>F{i + 1}</kbd>}
-              </button>
-              <button type="button" className="row-close" aria-label={`Close ${s.name}`} onClick={() => p.onClose(s.id)}>
-                <X size={14} aria-hidden />
-              </button>
-            </li>
-          ))}
-        </ul>
+        {grouped ? (
+          groups.map((g) => (
+            <section key={g.account || 'login'} className="acct-group" aria-label={accountOf(p.accounts, g.account)?.email ?? 'Signed-in account'}>
+              <AccountHead accounts={p.accounts} uuid={g.account} count={g.rows.length} />
+              <ul className="list">{g.rows.map(row)}</ul>
+            </section>
+          ))
+        ) : (
+          <ul className="list">{p.sessions.map((s, i) => row({ s, i }))}</ul>
+        )}
 
         {p.foreign.length > 0 && (
           <>
@@ -117,8 +161,31 @@ export function Sidebar(p: Props) {
       {p.update && (p.update.available || p.update.installed) && (
         <UpdateBox u={p.update} running={p.sessions.length} onUpdate={p.onUpdate} onRestart={p.onRestart} />
       )}
-      {p.accounts?.live && <LimitsBox limits={p.accounts.live} />}
+      {(me?.limits ?? p.accounts?.live) && <LimitsBox limits={(me?.limits ?? p.accounts?.live)!} />}
     </aside>
+  );
+}
+
+/// A group's header: whose sessions these are, and how much of its limits
+/// is left, at a glance.
+function AccountHead({ accounts, uuid, count }: { accounts: Accounts | null; uuid: string; count: number }) {
+  const a = accountOf(accounts, uuid);
+  const color = accountColor(accounts, uuid);
+  const pct = (w: LimitWindow | null | undefined) => (w && !w.expired ? w.pct : w ? 0 : null);
+  const five = pct(a?.limits?.session);
+  const week = pct(a?.limits?.weekly);
+  return (
+    <div className="acct-head" style={{ '--acct': color } as CSSProperties} title={a?.email}>
+      <span className="acct-chip">{accountInitial(a)}</span>
+      <span className="ellipsis acct-head-name">{a ? a.email : uuid ? 'Forgotten account' : 'Signed-in account'}</span>
+      {a?.current && <span className="acct-default">default</span>}
+      {five != null && (
+        <span className={`acct-meter ${five >= 85 ? 'hot' : five >= 50 ? 'warm' : ''}`} title={`5-hour limit ${five}%${week != null ? `, weekly ${week}%` : ''}`}>
+          <span style={{ width: `${Math.min(100, five)}%` }} />
+        </span>
+      )}
+      <span className="small faint">{count}</span>
+    </div>
   );
 }
 

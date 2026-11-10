@@ -16,3 +16,8 @@ serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+# A directory junction links a folder without the admin rights or developer
+# mode a Windows symlink needs.
+[target.'cfg(windows)'.dependencies]
+junction = "1"

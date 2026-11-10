@@ -20,6 +20,16 @@
 //!
 //! An account is added by logging in to it — `/login` in any session. The
 //! fleet notices a new `accountUuid` and makes it a profile like the others.
+//!
+//! Several accounts at once: a `claude` started with `CLAUDE_CONFIG_DIR`
+//! pointing at an account's own home (`~/.claude/fleet-accounts/<uuid>/`, see
+//! [`Accounts::config_dir_for`]) is that account whoever is signed in. The
+//! home holds its own `.credentials.json` and `.claude.json`; everything else
+//! in it is a link back to `~/.claude` (a symlink, or on Windows a junction
+//! for a folder and a hard link for a file), so transcripts, the session
+//! registry, settings and history stay the machine's. A token one home's
+//! `claude` refreshes is carried to the profile and the other places the
+//! account lives by [`Accounts::poll`], before anyone else needs it.
 
 use std::{
     fs,
@@ -175,6 +185,9 @@ impl Accounts {
     /// Look at the files and copy a settled change into its profile. Returns
     /// the email of an account that showed up for the first time.
     pub fn poll(&mut self) -> Option<String> {
+        if let Err(e) = self.reconcile() {
+            self.problem = Some(format!("{e:#}"));
+        }
         let now = self.paths.stamps();
         if now != self.stamp {
             self.stamp = now;
@@ -239,6 +252,19 @@ impl Accounts {
 
         let path = self.paths.profile(&uuid).context("not an account id")?;
         let old = read_json(&path)?;
+        // The account's own home refreshed its token since: the live one is
+        // the stale copy, and gets the new one rather than replace it.
+        if let Some(saved) = old.as_ref().and_then(|o| o.get("claudeAiOauth"))
+            && refresh_token(saved) != refresh_token(creds)
+            && expires_at(saved) > expires_at(creds)
+        {
+            let (mut store, kind) = self.paths.read_store()?.unwrap_or((json!({}), Store::default()));
+            store["claudeAiOauth"] = saved.clone();
+            self.paths.write_store(kind, &store)?;
+            self.stamp = self.paths.stamps();
+            self.reload();
+            return Ok(Synced::Done(None));
+        }
         if !force
             && decide(
                 old.as_ref().and_then(|o| o.get("claudeAiOauth")),
@@ -295,6 +321,8 @@ impl Accounts {
     /// account from here on; the running ones hold their tokens in memory and
     /// have to be started again to follow (see `App::choose_account`).
     pub fn switch(&mut self, uuid: &str) -> Result<String> {
+        // The account's own home may hold a newer token than its profile.
+        self.reconcile()?;
         // What is signed in now is about to be overwritten: keep it first,
         // tokens refreshed a moment ago included.
         if let Err(e) = self.sync(true) {
@@ -351,8 +379,254 @@ impl Accounts {
         }
         let path = self.paths.profile(uuid).context("not an account id")?;
         fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        // Its home goes too. Removing a directory does not follow the links
+        // in it, so `~/.claude` itself is untouched.
+        if let Some(home) = self.paths.home(uuid)
+            && home.is_dir()
+        {
+            let _ = fs::remove_dir_all(&home);
+        }
         self.reload();
         Ok(())
+    }
+
+    /// A Claude Code config dir that is `uuid`'s whoever is signed in: run
+    /// `claude` with `CLAUDE_CONFIG_DIR` set to it. Made, or brought up to
+    /// date, on every call: the links to `~/.claude`, the account's freshest
+    /// tokens, and `~/.claude.json` as it is now under the account's name.
+    pub fn config_dir_for(&mut self, uuid: &str) -> Result<PathBuf> {
+        self.reconcile()?;
+        let path = self.paths.profile(uuid).context("not an account id")?;
+        let profile = read_json(&path)?.context("that account has no saved profile — log in to it again")?;
+        let creds = profile
+            .get("claudeAiOauth")
+            .filter(|v| v.is_object())
+            .context("the profile holds no tokens")?;
+        let account = profile
+            .get("oauthAccount")
+            .filter(|v| v.is_object())
+            .context("the profile holds no account")?;
+        let home = self.paths.home(uuid).context("not an account id")?;
+        fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
+        link_shared(&self.paths.claude, &home)?;
+
+        // The tokens: the profile's or the home's own, whichever is newer,
+        // next to the machine's MCP logins.
+        let cred_path = home.join(".credentials.json");
+        let old = read_json(&cred_path).ok().flatten();
+        let global = self.paths.read_store()?.map(|(v, _)| v).unwrap_or_else(|| json!({}));
+        let mut store = old.clone().unwrap_or_else(|| json!({}));
+        if let (Some(dst), Some(src)) = (store.as_object_mut(), global.as_object()) {
+            for (k, v) in src {
+                if k == "claudeAiOauth" {
+                    continue;
+                }
+                match (dst.get_mut(k), v) {
+                    // Per MCP server: a login the home made itself stays.
+                    (Some(Value::Object(mine)), Value::Object(theirs)) => {
+                        for (server, login) in theirs {
+                            mine.entry(server.clone()).or_insert_with(|| login.clone());
+                        }
+                    }
+                    (Some(_), _) => {}
+                    (None, _) => {
+                        dst.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        let fresh = match old.as_ref().and_then(|o| o.get("claudeAiOauth")) {
+            Some(own) if expires_at(own) > expires_at(creds) => own.clone(),
+            _ => creds.clone(),
+        };
+        store["claudeAiOauth"] = fresh;
+        if old.as_ref() != Some(&store) {
+            write_atomic(&cred_path, serde_json::to_string(&store)?.as_bytes(), true)?;
+        }
+
+        // `.claude.json`: the machine's, under this account's name, keeping
+        // what only the home knows (its limits, folders trusted there).
+        let cfg_path = home.join(".claude.json");
+        let old = read_json(&cfg_path).ok().flatten();
+        let mut cfg = read_json(&self.paths.global)?.unwrap_or_else(|| json!({}));
+        cfg["oauthAccount"] = account.clone();
+        let mine = |c: &Value| c.get("accountUuid").and_then(Value::as_str) == Some(uuid);
+        if cfg.get("cachedUsageUtilization").is_some_and(|c| !mine(c))
+            && let Some(o) = cfg.as_object_mut()
+        {
+            o.remove("cachedUsageUtilization");
+        }
+        if let Some(old) = &old {
+            if let Some(c) = old.get("cachedUsageUtilization").filter(|c| mine(c)) {
+                cfg["cachedUsageUtilization"] = c.clone();
+            }
+            if let Some(projects) = old.get("projects").and_then(Value::as_object) {
+                for (dir, p) in projects {
+                    if p.get("hasTrustDialogAccepted") != Some(&Value::Bool(true)) {
+                        continue;
+                    }
+                    if !cfg.get("projects").is_some_and(Value::is_object) {
+                        cfg["projects"] = json!({});
+                    }
+                    let all = &mut cfg["projects"];
+                    if all.get(dir).is_some_and(Value::is_object) {
+                        all[dir]["hasTrustDialogAccepted"] = Value::Bool(true);
+                    } else {
+                        all[dir] = p.clone();
+                    }
+                }
+            }
+        }
+        if old.as_ref() != Some(&cfg) {
+            write_atomic(&cfg_path, serde_json::to_string_pretty(&cfg)?.as_bytes(), false)?;
+        }
+        Ok(home)
+    }
+
+    /// Carry tokens refreshed in an account's own home to its profile, and
+    /// the other way; and the limits the home's sessions fetched. An account
+    /// that is also the one signed in gets them in `~/.claude` too, by
+    /// [`Self::sync`].
+    fn reconcile(&mut self) -> Result<()> {
+        let mut moved = false;
+        let homes = fs::read_dir(self.paths.profiles()).into_iter().flatten().flatten();
+        for entry in homes {
+            let home = entry.path();
+            if !home.is_dir() {
+                continue;
+            }
+            let uuid = entry.file_name().to_string_lossy().into_owned();
+            let Some(path) = self.paths.profile(&uuid) else { continue };
+            let Some(mut profile) = read_json(&path).ok().flatten() else { continue };
+            let cfg = read_json(&home.join(".claude.json")).ok().flatten();
+            // A `/login` to another account inside the home: none of ours.
+            let named = cfg
+                .as_ref()
+                .and_then(|c| c.pointer("/oauthAccount/accountUuid"))
+                .and_then(Value::as_str);
+            if named.is_some_and(|n| n != uuid) {
+                continue;
+            }
+            let before = profile.clone();
+            let cred_path = home.join(".credentials.json");
+            let store = read_json(&cred_path).ok().flatten();
+            let own = store.as_ref().and_then(|s| s.get("claudeAiOauth")).filter(|v| v.is_object());
+            let saved = profile.get("claudeAiOauth").filter(|v| v.is_object()).cloned();
+            match (own, saved) {
+                (Some(own), Some(saved)) if refresh_token(own) != refresh_token(&saved) => {
+                    if expires_at(own) > expires_at(&saved) {
+                        profile["claudeAiOauth"] = own.clone();
+                    } else if expires_at(&saved) > expires_at(own) {
+                        let mut s = store.clone().unwrap_or_else(|| json!({}));
+                        s["claudeAiOauth"] = saved;
+                        write_atomic(&cred_path, serde_json::to_string(&s)?.as_bytes(), true)?;
+                    }
+                }
+                _ => {}
+            }
+            if let Some(c) = cfg
+                .as_ref()
+                .and_then(|c| c.get("cachedUsageUtilization"))
+                .filter(|c| c.get("accountUuid").and_then(Value::as_str) == Some(uuid.as_str()))
+            {
+                let newer = |v: &Value| v.get("fetchedAt").and_then(Value::as_u64).unwrap_or(0);
+                if profile.get("usage").is_none_or(|u| newer(c) >= newer(u)) {
+                    profile["usage"] = c.clone();
+                }
+            }
+            if profile != before {
+                profile["savedAtMs"] = json!(now_ms());
+                write_atomic(&path, serde_json::to_string_pretty(&profile)?.as_bytes(), true)?;
+                moved = true;
+            }
+        }
+        if moved {
+            self.reload();
+        }
+        Ok(())
+    }
+}
+
+fn refresh_token(creds: &Value) -> Option<&str> {
+    creds.get("refreshToken").and_then(Value::as_str)
+}
+
+fn expires_at(creds: &Value) -> u64 {
+    creds.get("expiresAt").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Folders Claude Code fills that have to be the machine's for the fleet to
+/// see sessions started in an account's home. Made in `~/.claude` before
+/// they are linked, so a home never starts one of its own.
+const SHARED_DIRS: &[&str] = &[
+    "projects",
+    "sessions",
+    "todos",
+    "shell-snapshots",
+    "plans",
+    "file-history",
+    "session-env",
+];
+
+/// What an account's home keeps for itself.
+fn own_to_home(name: &str) -> bool {
+    name == ".credentials.json" || name == ".claude.json" || name == PROFILES || name.ends_with(".tmp")
+}
+
+/// Link everything in `~/.claude` into `home`, but what the home keeps.
+fn link_shared(claude: &Path, home: &Path) -> Result<()> {
+    for d in SHARED_DIRS {
+        let _ = fs::create_dir_all(claude.join(d));
+    }
+    for entry in fs::read_dir(claude).with_context(|| format!("reading {}", claude.display()))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if own_to_home(&name.to_string_lossy()) {
+            continue;
+        }
+        let target = entry.path();
+        let at = home.join(&name);
+        let is_dir = target.is_dir();
+        if let Ok(meta) = fs::symlink_metadata(&at) {
+            if !is_dir && stale_copy(&target, &at, &meta) {
+                let _ = fs::remove_file(&at);
+            } else {
+                continue;
+            }
+        }
+        if let Err(e) = link(&target, &at, is_dir) {
+            // One file that would not link is not worth refusing to start.
+            if is_dir {
+                return Err(e).with_context(|| format!("linking {} to {}", at.display(), target.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A file in the home that is a hard link or a copy (Windows) and no longer
+/// the file in `~/.claude`: that one was replaced since.
+fn stale_copy(target: &Path, at: &Path, meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return false;
+    }
+    let (Ok(t), Ok(a)) = (fs::metadata(target), fs::metadata(at)) else {
+        return false;
+    };
+    t.len() != a.len() || t.modified().ok() != a.modified().ok()
+}
+
+#[cfg(unix)]
+fn link(target: &Path, at: &Path, _dir: bool) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, at)
+}
+
+#[cfg(windows)]
+fn link(target: &Path, at: &Path, dir: bool) -> std::io::Result<()> {
+    if dir {
+        junction::create(target, at)
+    } else {
+        fs::hard_link(target, at).or_else(|_| fs::copy(target, at).map(|_| ()))
     }
 }
 
@@ -434,6 +708,11 @@ impl Paths {
             return None;
         }
         Some(self.profiles().join(format!("{uuid}.json")))
+    }
+
+    /// The account's own Claude Code config dir, next to its profile.
+    fn home(&self, uuid: &str) -> Option<PathBuf> {
+        self.profile(uuid).map(|p| p.with_extension(""))
     }
 
     fn stamps(&self) -> (Option<SystemTime>, Option<SystemTime>) {
@@ -784,6 +1063,65 @@ mod tests {
         accounts.switch("bbbb-2").unwrap();
         let a = read_json(&p.profile("aaaa-1").unwrap()).unwrap().unwrap();
         assert_eq!(a["claudeAiOauth"]["refreshToken"], "rt-a2");
+    }
+
+    #[test]
+    fn an_account_home_is_that_account_and_shares_the_rest() {
+        let home = Scratch::new("home");
+        home.sign_in("aaaa-1", "a@example.com", "a1");
+        let mut accounts = Accounts::with(home.paths());
+        home.sign_in("bbbb-2", "b@example.com", "b1");
+        accounts.sync(true).unwrap();
+        let p = home.paths();
+        fs::write(p.claude.join("settings.json"), "{\"model\":\"x\"}").unwrap();
+
+        // B is signed in; a session for A gets A's home.
+        let dir = accounts.config_dir_for("aaaa-1").unwrap();
+        let creds = read_json(&dir.join(".credentials.json")).unwrap().unwrap();
+        assert_eq!(creds["claudeAiOauth"]["refreshToken"], "rt-a1");
+        assert_eq!(creds["mcpOAuth"]["server"]["accessToken"], "mcp");
+        let cfg = read_json(&dir.join(".claude.json")).unwrap().unwrap();
+        assert_eq!(cfg["oauthAccount"]["accountUuid"], "aaaa-1");
+        assert_eq!(cfg["numStartups"], 3);
+        // The machine's state is shared, not copied.
+        assert!(p.claude.join("projects").is_dir());
+        fs::write(p.claude.join("projects").join("t.jsonl"), "x").unwrap();
+        assert!(dir.join("projects").join("t.jsonl").exists());
+        assert_eq!(fs::read_to_string(dir.join("settings.json")).unwrap(), "{\"model\":\"x\"}");
+        // And `~/.claude` is still B.
+        let live = read_json(&p.credentials()).unwrap().unwrap();
+        assert_eq!(live["claudeAiOauth"]["refreshToken"], "rt-b1");
+
+        // A's session refreshes its token: the profile gets it.
+        let mut own = creds.clone();
+        own["claudeAiOauth"]["refreshToken"] = json!("rt-a2");
+        own["claudeAiOauth"]["expiresAt"] = json!(now_ms() + 9 * 3_600_000);
+        fs::write(dir.join(".credentials.json"), own.to_string()).unwrap();
+        accounts.reconcile().unwrap();
+        let a = read_json(&p.profile("aaaa-1").unwrap()).unwrap().unwrap();
+        assert_eq!(a["claudeAiOauth"]["refreshToken"], "rt-a2");
+
+        // Signing A in uses the refreshed token, and then `~/.claude` and
+        // A's home stay in step.
+        accounts.switch("aaaa-1").unwrap();
+        let live = read_json(&p.credentials()).unwrap().unwrap();
+        assert_eq!(live["claudeAiOauth"]["refreshToken"], "rt-a2");
+        own["claudeAiOauth"]["refreshToken"] = json!("rt-a3");
+        own["claudeAiOauth"]["expiresAt"] = json!(now_ms() + 10 * 3_600_000);
+        fs::write(dir.join(".credentials.json"), own.to_string()).unwrap();
+        accounts.reconcile().unwrap();
+        accounts.sync(false).unwrap();
+        let live = read_json(&p.credentials()).unwrap().unwrap();
+        assert_eq!(
+            live["claudeAiOauth"]["refreshToken"], "rt-a3",
+            "a refresh in the home reaches the signed-in copy"
+        );
+
+        // Forgetting B removes its home but not what it linked to.
+        let b_dir = accounts.config_dir_for("bbbb-2").unwrap();
+        accounts.forget("bbbb-2").unwrap();
+        assert!(!b_dir.exists());
+        assert!(p.claude.join("projects").join("t.jsonl").exists());
     }
 
     #[test]

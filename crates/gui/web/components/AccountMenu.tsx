@@ -1,8 +1,11 @@
 import { Plus, Trash2 } from 'lucide-react';
-import type { Account, Accounts, LimitWindow } from '../api';
+import type { CSSProperties } from 'react';
+import type { Account, Accounts, LimitWindow, Session } from '../api';
+import { accountColor, accountInitial } from '../accounts';
 
 interface Props {
   accounts: Accounts;
+  sessions: Session[];
   carry: boolean;
   onCarry: (carry: boolean) => void;
   onChoose: (a: Account) => void;
@@ -33,25 +36,49 @@ function Window({ name, w }: { name: string; w: LimitWindow | null }) {
 }
 
 export function AccountMenu(p: Props) {
+  const several = p.accounts.accounts.length > 1;
+  const running = (uuid: string) => p.sessions.filter((s) => s.account === uuid);
   return (
     <>
       <button type="button" className="scrim" aria-label="Close accounts" onClick={p.onClose} />
       <div className="menu" role="dialog" aria-label="Accounts">
         <div style={{ height: 6 }} />
-        {p.accounts.accounts.map((a) => (
+        {several && (
+          <p className="menu-note small mist">
+            Each session keeps the account it started with, so several can run side by side. Picking one here makes it the
+            default for new sessions.
+          </p>
+        )}
+        {p.accounts.accounts.map((a) => {
+          const on = running(a.uuid);
+          const busy = on.filter((s) => s.status === 'working').length;
+          return (
           <div key={a.uuid} className="acct">
             <button type="button" className="acct-btn" aria-current={a.current} onClick={() => p.onChoose(a)}>
-              <span className="avatar" style={{ color: a.current ? 'var(--accent)' : 'var(--fog-2)' }}>
-                {a.email[0]?.toUpperCase()}
+              <span
+                className="avatar"
+                style={
+                  several
+                    ? ({ color: 'var(--ink)', background: accountColor(p.accounts, a.uuid) } as CSSProperties)
+                    : { color: a.current ? 'var(--accent)' : 'var(--fog-2)' }
+                }
+              >
+                {accountInitial(a)}
               </span>
               <span className="stack">
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span className="ellipsis" style={{ fontWeight: 500 }}>{a.email}</span>
                   <span className="small" style={{ marginLeft: 'auto', color: a.current ? 'var(--idle)' : 'var(--mist)' }}>
-                    {a.current ? 'Signed in' : a.plan}
+                    {a.current ? (several ? 'Default' : 'Signed in') : a.plan}
                   </span>
                 </span>
                 {a.org && <span className="small faint ellipsis">{a.org}</span>}
+                {on.length > 0 && (
+                  <span className="small mist">
+                    {on.length} session{on.length === 1 ? '' : 's'}
+                    {busy > 0 ? `, ${busy} working` : ''}
+                  </span>
+                )}
                 {a.needsLogin ? (
                   <span className="small" style={{ color: 'var(--danger)' }}>Login expired</span>
                 ) : a.limits ? (
@@ -62,18 +89,21 @@ export function AccountMenu(p: Props) {
                 ) : null}
               </span>
             </button>
-            {!a.current && (
+            {!a.current && on.length === 0 && (
               <button type="button" className="acct-forget" aria-label={`Forget ${a.email}`} onClick={() => p.onForget(a)}>
                 <Trash2 size={14} aria-hidden />
               </button>
             )}
           </div>
-        ))}
+          );
+        })}
         <div className="menu-foot">
-          <span className="small mist">Running sessions</span>
-          <div className="segmented" role="group" aria-label="Running sessions">
-            <button type="button" aria-pressed={p.carry} onClick={() => p.onCarry(true)}>Move over</button>
-            <button type="button" aria-pressed={!p.carry} onClick={() => p.onCarry(false)}>Stay as they are</button>
+          <span className="small mist" title="Sessions in the middle of a turn, or waiting on you, always stay">
+            On switch, sessions
+          </span>
+          <div className="segmented" role="group" aria-label="On switch, running sessions">
+            <button type="button" aria-pressed={!p.carry} onClick={() => p.onCarry(false)}>Keep theirs</button>
+            <button type="button" aria-pressed={p.carry} onClick={() => p.onCarry(true)}>Move idle over</button>
           </div>
         </div>
         <button type="button" className="menu-add" onClick={p.onAdd}>

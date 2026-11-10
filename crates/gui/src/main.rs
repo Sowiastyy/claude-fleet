@@ -34,7 +34,7 @@ fn err(e: impl std::fmt::Display) -> String {
 
 struct App {
     hub: Shared,
-    accounts: Mutex<Accounts>,
+    accounts: Arc<Mutex<Accounts>>,
     limits: Mutex<usage::Watch>,
     settings_path: PathBuf,
     updater: updater::SharedUpdater,
@@ -89,6 +89,12 @@ fn session_configure(
     permission_mode: Option<String>,
 ) -> Res<()> {
     hub::configure(&app.hub, &id, model, permission_mode).map_err(err)
+}
+
+/// Run the session as another saved account.
+#[tauri::command]
+fn session_account(app: State<'_, Arc<App>>, id: String, account: String, rows: u16, cols: u16) -> Res<()> {
+    hub::set_account(&app.hub, &id, &account, rows, cols).map_err(err)
 }
 
 #[tauri::command]
@@ -280,10 +286,13 @@ fn accounts_view(app: &App) -> AccountsView {
                     plan: a.plan.clone(),
                     needs_login: a.needs_login,
                     current,
-                    limits: if current {
-                        live.clone().or_else(|| a.usage.as_ref().map(limits_view))
-                    } else {
-                        a.usage.as_ref().map(limits_view)
+                    // The signed-in account's limits are in `~/.claude.json`
+                    // and in its profile (from its own home's sessions):
+                    // whichever was fetched last.
+                    limits: match (current.then(|| limits.current.as_ref()).flatten(), a.usage.as_ref()) {
+                        (Some(l), Some(u)) if u.fetched_ago < l.fetched_ago => Some(limits_view(u)),
+                        (Some(l), _) => Some(limits_view(l)),
+                        (None, u) => u.map(limits_view),
                     },
                 }
             })
@@ -297,12 +306,14 @@ fn accounts_state(app: State<'_, Arc<App>>) -> AccountsView {
     accounts_view(&app)
 }
 
-/// Sign in as another saved account. With `carry`, every running session
-/// restarts as it on its own conversation.
+/// Sign in as another saved account: what new sessions start as, and what
+/// `claude` outside the app is. Running sessions keep their own account and
+/// keep running; with `carry`, the ones not in the middle of something move
+/// over, each on its own conversation.
 #[tauri::command]
 fn accounts_switch(handle: tauri::AppHandle, app: State<'_, Arc<App>>, uuid: String, carry: bool) -> Res<String> {
     let email = app.accounts.lock().unwrap().switch(&uuid).map_err(err)?;
-    let moved = if carry { hub::restart_all(&app.hub) } else { 0 };
+    let moved = if carry { hub::move_all(&app.hub, &uuid) } else { 0 };
     let _ = handle.emit("fleet://accounts", accounts_view(&app));
     Ok(match moved {
         0 => format!("Signed in as {email}"),
@@ -313,6 +324,15 @@ fn accounts_switch(handle: tauri::AppHandle, app: State<'_, Arc<App>>, uuid: Str
 
 #[tauri::command]
 fn accounts_forget(handle: tauri::AppHandle, app: State<'_, Arc<App>>, uuid: String) -> Res<()> {
+    let using = app.hub.lock().unwrap().on_account(&uuid);
+    if using > 0 {
+        return Err(format!(
+            "{using} session{} still run{} as that account — move or close {} first",
+            if using == 1 { "" } else { "s" },
+            if using == 1 { "s" } else { "" },
+            if using == 1 { "it" } else { "them" },
+        ));
+    }
     app.accounts.lock().unwrap().forget(&uuid).map_err(err)?;
     let _ = handle.emit("fleet://accounts", accounts_view(&app));
     Ok(())
@@ -327,6 +347,8 @@ fn accounts_add(app: State<'_, Arc<App>>, cwd: String) -> Res<String> {
             cwd,
             terminal: true,
             type_in: Some("/login".to_string()),
+            // In `~/.claude` itself, where the fleet looks for new logins.
+            account: Some(String::new()),
             ..Default::default()
         },
     )
@@ -663,9 +685,10 @@ fn main() {
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("claude-fleet-gui"));
+            let accounts = Arc::new(Mutex::new(Accounts::new()));
             let app = Arc::new(App {
-                hub: hub::Hub::new(handle.clone(), dir.join("cloud.json")),
-                accounts: Mutex::new(Accounts::new()),
+                hub: hub::Hub::new(handle.clone(), dir.join("cloud.json"), accounts.clone()),
+                accounts,
                 limits: Mutex::new(usage::Watch::new()),
                 settings_path: dir.join("settings.json"),
                 updater: updater::Updater::new(),
@@ -688,6 +711,7 @@ fn main() {
             session_allow,
             session_configure,
             session_close,
+            session_account,
             session_terminal_command,
             session_clear,
             session_restart,
