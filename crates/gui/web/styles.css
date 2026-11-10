@@ -554,6 +554,11 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .session-name.shimmer > :not(.cloud-mark) { animation: none; color: var(--working); } }
 .cloud-mark { flex: none; color: var(--accent); }
+.shell-mark { flex: none; color: var(--mist); }
+.status-text.exited { color: var(--faint); }
+.recent-item { position: relative; }
+.recent-item .row-close { top: 50%; transform: translateY(-50%); }
+.recent-item:hover .row-close, .recent-item .row-close:focus-visible { display: flex; }
 .segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
 /* The new-chat box sits high: its menus open below it. */
 .home .mentions { top: calc(100% + 6px); bottom: auto; }
@@ -577,3 +582,6 @@ kbd { font-family: inherit; font-size: 11px; color: var(--mist); border: 1px sol
 /* ---------- cloud session preview: the app lays claude.ai over this box */
 .preview-wrap { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--well) 94%, transparent); }
 .preview-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--mist); }
+/* Over the preview while the session's terminal waits on an answer. */
+.cloud-banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 18px 10px; padding: 7px 8px 7px 12px; border: 1px solid var(--waiting); border-radius: 10px; background: color-mix(in srgb, var(--deck) 96%, transparent); color: var(--waiting); font-size: 13px; }
+.cloud-banner .btn { flex: none; padding: 5px 10px; color: var(--fog); }

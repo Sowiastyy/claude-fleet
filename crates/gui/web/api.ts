@@ -22,6 +22,8 @@ export interface Session {
   cloudId: string;
   cloudUrl: string;
   cloudTask: string;
+  /// A plain shell in a terminal rather than Claude Code.
+  shell: boolean;
   /// Its terminal process is running.
   alive: boolean;
   /// The account it runs as; empty for whatever `~/.claude` is signed in as.
@@ -182,6 +184,8 @@ export interface NewSession {
   cloud?: boolean;
   /// Pull this cloud session into a local terminal session.
   teleport?: string;
+  /// A plain shell in the folder instead of Claude Code.
+  shell?: boolean;
   /// Typed into the terminal once Claude Code is up.
   typeIn?: string;
   /// The account to run as; the signed-in one when left out.

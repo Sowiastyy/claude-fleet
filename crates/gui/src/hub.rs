@@ -20,6 +20,13 @@
 //! one is the other way round: a cloud session pulled into a local process
 //! with `claude --teleport <id>`, which becomes an ordinary session once
 //! Claude Code reports the conversation it made for it.
+//!
+//! A cloud session the app attaches to (rather than starts) shows its
+//! claude.ai page and runs no process until its terminal is asked for: the
+//! cloud keeps the conversation either way.
+//!
+//! A shell session is not Claude Code at all: the user's own shell in a
+//! terminal, in the session's folder, for whatever else needs running there.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -78,6 +85,8 @@ pub struct SessionView {
     pub cloud_url: String,
     /// What the cloud session was started to do.
     pub cloud_task: String,
+    /// A plain shell rather than Claude Code.
+    pub shell: bool,
     /// Whether its terminal process is running (a chat starts its own with
     /// the next message).
     pub alive: bool,
@@ -132,6 +141,8 @@ pub struct Session {
     pub cloud_id: String,
     pub cloud_url: String,
     pub cloud_task: String,
+    /// A plain shell in a terminal, not Claude Code.
+    pub shell: bool,
     /// The cloud session a local process is pulling in with `--teleport`,
     /// until the registry tells which conversation it became.
     teleport: Option<String>,
@@ -158,6 +169,7 @@ impl Session {
             cloud_id: self.cloud_id.clone(),
             cloud_url: self.cloud_url.clone(),
             cloud_task: self.cloud_task.clone(),
+            shell: self.shell,
             alive: self.term.is_some() || self.chat.is_some(),
             account: self.account.clone(),
         }
@@ -280,6 +292,9 @@ pub struct NewSession {
     /// Pull this cloud session into a local terminal session.
     #[serde(default)]
     pub teleport: Option<String>,
+    /// A plain shell in the folder instead of Claude Code.
+    #[serde(default)]
+    pub shell: bool,
     /// The account to run as: the one signed in when left out, and
     /// `~/.claude` as it is when empty.
     #[serde(default)]
@@ -345,11 +360,12 @@ impl Hub {
             .emit("fleet://event", json!({ "id": id, "event": event }));
     }
 
-    fn free_name(&self, cwd: &Path) -> String {
-        let base = cwd
+    fn free_name(&self, cwd: &Path, shell: bool) -> String {
+        let folder = cwd
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "session".to_string());
+        let base = if shell { format!("{folder} terminal") } else { folder };
         let taken = |n: &str| self.sessions.iter().any(|s| s.name == n);
         if !taken(&base) {
             return base;
@@ -453,6 +469,16 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
         req.terminal = true;
         req.resume = None;
     }
+    if req.shell {
+        if req.cloud || teleport.is_some() {
+            bail!("a terminal runs on this computer");
+        }
+        req.terminal = true;
+        req.resume = None;
+        req.prompt = None;
+    }
+    // Attaching to a cloud session needs no process yet: its page shows it.
+    let lazy = req.cloud && !cloud_id.is_empty();
     let id = {
         let mut hub = shared.lock().unwrap();
         let id = format!("s{}", hub.next);
@@ -488,7 +514,7 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
         } else {
             cloud::url_of(&cloud_id)
         };
-        let name = hub.free_name(&cwd);
+        let name = hub.free_name(&cwd, req.shell);
         let account = match req.account.take() {
             Some(a) => a,
             None => hub.accounts.lock().unwrap().current.clone().unwrap_or_default(),
@@ -507,7 +533,7 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             } else {
                 View::Chat
             },
-            status: if req.terminal {
+            status: if req.terminal && !lazy && !req.shell {
                 Status::Starting
             } else {
                 Status::Idle
@@ -525,13 +551,14 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             cloud_id,
             cloud_url,
             cloud_task,
+            shell: req.shell,
             teleport,
             account,
         });
         hub.emit_sessions();
         id
     };
-    if req.terminal {
+    if req.terminal && !lazy {
         if let Err(e) = start_term(shared, &id, 30, 100) {
             let _ = close(shared, &id);
             return Err(e);
@@ -799,6 +826,9 @@ pub fn set_view(shared: &Shared, id: &str, view: View, rows: u16, cols: u16) -> 
         if s.view == view {
             return Ok(());
         }
+        if view == View::Chat && s.shell {
+            bail!("a terminal session has no chat");
+        }
         if view == View::Chat && s.cloud {
             bail!("a cloud session runs in its terminal; open it on claude.ai for the web view");
         }
@@ -843,18 +873,30 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
             pixel_height: 0,
         })
         .context("no pseudoterminal")?;
-    let (args, note) = s.claude_args();
+    let (program, args, note) = if s.shell {
+        let (program, args) = shell_command();
+        (program, args, None)
+    } else {
+        let (args, note) = s.claude_args();
+        (claude_binary(), args, note)
+    };
     if let Some(note) = &note {
         emit_to(&app, id, note);
     }
-    let mut cmd = CommandBuilder::new(claude_binary());
+    let mut cmd = CommandBuilder::new(program);
     cmd.args(args);
     cmd.cwd(&s.cwd);
     cmd.env("TERM", "xterm-256color");
+    // In a shell too, so the `claude` typed there runs as the session's
+    // account.
     if let Some(home) = &home {
         cmd.env("CLAUDE_CONFIG_DIR", home);
     }
-    let child = pair.slave.spawn_command(cmd).context("could not start claude")?;
+    let what = if s.shell { "the shell" } else { "claude" };
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .with_context(|| format!("could not start {what}"))?;
     drop(pair.slave);
     let pid = child.process_id();
     s.last_pids = pid.into_iter().collect();
@@ -862,7 +904,9 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     let writer = pair.master.take_writer()?;
     s.generation += 1;
     let generation = s.generation;
-    s.status = Status::Starting;
+    // Claude Code reports how it is doing through the registry; a shell
+    // never does.
+    s.status = if s.shell { Status::Idle } else { Status::Starting };
     s.term = Some(TermProc {
         master: pair.master,
         writer,
@@ -872,7 +916,7 @@ fn start_term(shared: &Shared, id: &str, rows: u16, cols: u16) -> Result<()> {
     let id = id.to_string();
     let shared = shared.clone();
     let note_sent = note.is_some();
-    let ordinary = !s.cloud && s.teleport.is_none();
+    let ordinary = !s.cloud && s.teleport.is_none() && !s.shell;
     let mut watch_link = s.cloud && s.cloud_id.is_empty();
     thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
@@ -958,6 +1002,34 @@ fn adopt_cloud_id(shared: &Shared, id: &str, generation: u64, cloud_id: String, 
 /// before that is dropped.
 const STARTUP_WAIT_MS: u64 = 3500;
 
+/// The shell a terminal session runs: PowerShell 7 when it is installed and
+/// Windows PowerShell otherwise; elsewhere `$SHELL` as a login shell, so it
+/// has the PATH the user's profile sets up even when the app was started
+/// from the desktop.
+fn shell_command() -> (PathBuf, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let shell = on_path("pwsh.exe").unwrap_or_else(|| PathBuf::from("powershell.exe"));
+        (shell, vec!["-NoLogo".to_string()])
+    }
+    #[cfg(not(windows))]
+    {
+        let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/bash" };
+        let shell = std::env::var_os("SHELL")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(fallback));
+        (shell, vec!["-l".to_string()])
+    }
+}
+
+#[cfg(windows)]
+fn on_path(exe: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(exe))
+        .find(|p| p.is_file())
+}
+
 /// Type `text` and Enter into a terminal after `wait_ms`.
 fn type_when_ready(shared: Shared, id: String, text: String, wait_ms: u64) {
     thread::spawn(move || {
@@ -1013,6 +1085,9 @@ pub fn clear(shared: &Shared, id: &str) -> Result<()> {
     let s = hub.find_mut(id)?;
     if s.cloud {
         bail!("a cloud session cannot be cleared from here");
+    }
+    if s.shell {
+        bail!("a terminal session has no conversation to clear");
     }
     s.generation += 1;
     s.stop_chat();
@@ -1142,7 +1217,8 @@ pub fn move_all(shared: &Shared, account: &str) -> usize {
             // A new cloud session whose link never showed would start a
             // second one on the same task.
             let unborn = s.cloud && s.cloud_id.is_empty();
-            if s.account == account || busy || unborn {
+            // A shell would lose whatever runs in it.
+            if s.account == account || busy || unborn || s.shell {
                 continue;
             }
             moved += 1;

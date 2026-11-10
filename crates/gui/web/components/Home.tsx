@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { ArrowUp, Cloud, Folder, FolderOpen, Laptop, SquareTerminal } from 'lucide-react';
+import { ArrowUp, Cloud, Folder, FolderOpen, Laptop, SquareTerminal, X } from 'lucide-react';
 import { api, type Accounts, type Attachment, type CloudRecent, type Session, type SlashCommand } from '../api';
 import { accountChoices } from './AccountPicker';
 import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
@@ -160,6 +160,11 @@ export function Home(p: Props) {
     store('fleet.where', v);
   };
   const attaching = cloud && isCloudRef(draft);
+  const forgetCloud = (id: string) =>
+    api
+      .cloudForget(id)
+      .then(() => setClouds((c) => c.filter((r) => r.id !== id)))
+      .catch(() => p.onError('Could not forget that cloud session'));
 
   const waiting = p.sessions.filter((s) => s.status === 'waiting');
   const working = p.sessions.filter((s) => s.status === 'working').length;
@@ -211,7 +216,7 @@ export function Home(p: Props) {
           {cloud ? (
             <span className="small mist cloud-hint">
               <Cloud size={13} aria-hidden />
-              {attaching ? 'Attach to this cloud session' : 'Runs on claude.ai, in its terminal here'}
+              {attaching ? 'Attach to this cloud session' : 'Runs on claude.ai; its page opens here'}
             </span>
           ) : (
             <button type="button" className="icon-btn" title="Open in the terminal" aria-label="Open in the terminal" onClick={() => start(true)}>
@@ -287,12 +292,23 @@ export function Home(p: Props) {
           <section className="recent" aria-label="Cloud sessions">
             <h2>Cloud sessions</h2>
             {clouds.slice(0, 4).map((r) => (
-              <button key={r.id} type="button" className="recent-row" onClick={() => p.onAttachCloud(r)} title={r.url}>
-                <Cloud size={15} color="var(--mist)" aria-hidden />
-                <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>{r.task || r.id}</span>
-                <span className="small mist">{folderName(r.cwd)}</span>
-                <span className="small faint" style={{ width: 34, textAlign: 'right' }}>{fmtAgo(Math.max(0, (Date.now() - r.at) / 1000))}</span>
-              </button>
+              <div key={r.id} className="recent-item">
+                <button type="button" className="recent-row" onClick={() => p.onAttachCloud(r)} title={r.url}>
+                  <Cloud size={15} color="var(--mist)" aria-hidden />
+                  <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>{r.task || r.id}</span>
+                  <span className="small mist">{folderName(r.cwd)}</span>
+                  <span className="small faint" style={{ width: 34, textAlign: 'right' }}>{fmtAgo(Math.max(0, (Date.now() - r.at) / 1000))}</span>
+                </button>
+                <button
+                  type="button"
+                  className="row-close"
+                  aria-label="Forget this cloud session"
+                  title="Forget it here; it stays on claude.ai"
+                  onClick={() => forgetCloud(r.id)}
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
             ))}
           </section>
         )}

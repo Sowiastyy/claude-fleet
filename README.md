@@ -101,11 +101,23 @@ with Tauri and React from the same core (`crates/gui`).
   switches the model.
 - **Cloud sessions.** **Where: Cloud** under the message box starts the task
   as a Claude Code cloud session (`claude --cloud`, the ones claude.ai/code
-  shows), shown in its terminal here with a cloud mark. Paste a
-  claude.ai/code link or a session id instead of a task to attach to an
-  existing one. **claude.ai** opens it in the browser, **Teleport** carries
-  it on in a local session (`claude --teleport`), and the cloud sessions
-  seen are listed on the new-chat screen and in `Ctrl+K` to attach again.
+  shows). It starts in its terminal and, once Claude Code names the session,
+  shows its claude.ai page inside the window (**Preview**; each account
+  signs in to claude.ai there once). The sidebar lists it by its task with a
+  cloud mark. Paste a claude.ai/code link or a session id instead of a task
+  to attach to an existing one: that opens straight on its page, and runs
+  `claude --cloud <id>` only when **Terminal** is clicked. If the terminal
+  is asking something while the page is shown, a bar over the page says so.
+  **claude.ai** opens it in the browser, **Teleport** carries it on in a
+  local session (`claude --teleport`), and the cloud sessions seen are
+  listed on the new-chat screen (the x forgets one here) and in `Ctrl+K` to
+  attach again.
+- **Terminals.** **New terminal** in the sidebar (or in `Ctrl+K`, or
+  `` Ctrl+Shift+` ``) opens your own shell (PowerShell 7 if
+  installed, else Windows PowerShell; `$SHELL` on macOS) in the session's
+  folder, as a session of its own beside the Claude ones, with the same
+  Code view and git panel. It runs as the open session's account, so a
+  `claude` typed in it does too.
 - **Busy conversations fork.** Resuming a conversation that another live
   Claude Code process holds (a background job, another window) starts a copy
   with `--fork-session` instead of failing with "That session is running in

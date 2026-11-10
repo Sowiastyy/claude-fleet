@@ -64,7 +64,7 @@ import { Composer } from './Composer';
 import { Picker } from './Picker';
 import { accountChoices } from './AccountPicker';
 import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
-import { statusLabel } from './Sidebar';
+import { sessionTitle, statusLabel } from './Sidebar';
 import { TerminalView } from './TerminalView';
 import { CloudPreview } from './CloudPreview';
 import { Workbench, type Intent } from './Workbench';
@@ -116,20 +116,24 @@ export function Conversation(p: Props) {
     else asTerminal.add(s.id);
     redraw((n) => n + 1);
     if (!on && s.view !== 'terminal') p.onView('terminal');
+    // An attached cloud session runs no process until its terminal is wanted.
+    else if (!on && !s.alive && s.cloudId) p.onRestart();
   };
   return (
     <>
       <header className="header">
         <span className={`dot ${s.status}`} aria-hidden />
         <div className="stack" style={{ flex: 'none', maxWidth: '40%' }}>
-          <span className="ellipsis" style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</span>
-          <span className="small mist ellipsis" title={s.cloud ? s.cloudTask : undefined}>
-            {s.cloud && s.cloudTask ? s.cloudTask : s.cwd}
+          <span className="ellipsis" style={{ fontWeight: 600, fontSize: 15 }} title={sessionTitle(s)}>
+            {sessionTitle(s)}
+          </span>
+          <span className="small mist ellipsis">
+            {s.cwd}
             {!s.cloud && branch ? ` on ${branch}` : ''}
           </span>
         </div>
         <span className={`chip status-text ${s.status}`}>{statusLabel(s)}</span>
-        {(p.accounts?.accounts.length ?? 0) > 1 && (
+        {!s.shell && (p.accounts?.accounts.length ?? 0) > 1 && (
           <div className="header-acct" title={s.status === 'working' ? 'Can move once the turn is over' : 'Run this session as another account'}>
             <Picker
               label="Account"
@@ -153,7 +157,7 @@ export function Conversation(p: Props) {
           </span>
         )}
         <div style={{ flex: 1 }} />
-        {s.view === 'terminal' && !s.alive && s.status !== 'starting' && (
+        {s.view === 'terminal' && !previewing && !s.alive && s.status !== 'starting' && (
           <button type="button" className="btn btn-icon-text" onClick={p.onRestart} title="Its process has exited">
             <RotateCw size={13} aria-hidden /> Restart
           </button>
@@ -214,16 +218,18 @@ export function Conversation(p: Props) {
           </div>
         ) : (
           <div className="segmented" role="group" aria-label="View">
-            <button
-              type="button"
-              aria-pressed={!p.code && s.view === 'chat'}
-              onClick={() => {
-                p.onCode(false);
-                p.onView('chat');
-              }}
-            >
-              <MessageSquare size={14} aria-hidden /> Chat
-            </button>
+            {!s.shell && (
+              <button
+                type="button"
+                aria-pressed={!p.code && s.view === 'chat'}
+                onClick={() => {
+                  p.onCode(false);
+                  p.onView('chat');
+                }}
+              >
+                <MessageSquare size={14} aria-hidden /> Chat
+              </button>
+            )}
             <button
               type="button"
               aria-pressed={!p.code && s.view === 'terminal'}
@@ -258,7 +264,20 @@ export function Conversation(p: Props) {
       ) : s.view === 'chat' ? (
         <ChatThread key={s.id} {...p} />
       ) : previewing ? (
-        <CloudPreview key={s.id} session={s} back={back} onError={p.onError} />
+        <>
+          {s.alive && s.status === 'waiting' && (
+            <div className="cloud-banner" role="status">
+              <CircleAlert size={15} aria-hidden />
+              <span className="ellipsis" style={{ flex: 1 }}>
+                Claude Code is asking something in this session's terminal{s.waitingFor ? `: ${s.waitingFor}` : ''}
+              </span>
+              <button type="button" className="btn btn-icon-text" onClick={() => preview(false)}>
+                <SquareTerminal size={13} aria-hidden /> Show terminal
+              </button>
+            </div>
+          )}
+          <CloudPreview key={s.id} session={s} back={back} onError={p.onError} />
+        </>
       ) : (
         <div className="term-wrap">
           <TerminalView id={s.id} />

@@ -20,7 +20,7 @@ import {
 import { backgroundUrl } from './backgrounds';
 import { THEMES, applyTheme } from './themes';
 import { termBuffer } from './termstore';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, sessionTitle } from './components/Sidebar';
 import { AccountMenu } from './components/AccountMenu';
 import { Home, type StartOpts } from './components/Home';
 import { Conversation } from './components/Conversation';
@@ -168,6 +168,20 @@ export function App() {
     }
   };
 
+  /// A shell in `cwd`: the given folder, else the open session's, else the
+  /// one the new-session page last used. It runs as the open session's
+  /// account, so the `claude` typed in it does too.
+  const openShell = async (cwd?: string) => {
+    const dir = cwd ?? active?.cwd ?? localStorage.getItem('fleet.cwd') ?? (await api.home());
+    const req: NewSession = { cwd: dir, shell: true };
+    if (!cwd && active?.account) req.account = active.account;
+    try {
+      select(await api.create(req));
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
   const openUrl = (url: string) => api.openUrl(url).catch((e) => notify(errorText(e), true));
 
   const runInTerminal = async (text: string) => {
@@ -213,7 +227,7 @@ export function App() {
     try {
       if (carry)
         sessions
-          .filter((s) => s.view === 'terminal' && s.account !== a.uuid && s.status !== 'working' && s.status !== 'waiting')
+          .filter((s) => s.view === 'terminal' && !s.shell && s.account !== a.uuid && s.status !== 'working' && s.status !== 'waiting')
           .forEach((s) => termBuffer.reset(s.id));
       notify(await api.switchAccount(a.uuid, carry));
     } catch (e) {
@@ -266,6 +280,12 @@ export function App() {
         setPaletteOpen((o) => !o);
         return;
       }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'Backquote') {
+        e.preventDefault();
+        e.stopPropagation();
+        void openShell();
+        return;
+      }
       const m = /^F([1-9])$/.exec(e.key);
       if (m) {
         const i = Number(m[1]) - 1;
@@ -282,7 +302,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [sessions, accountsOpen, settingsOpen, select]);
+  }, [sessions, accountsOpen, settingsOpen, select, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!paletteOpen) return;
@@ -318,15 +338,16 @@ export function App() {
     ...sessions.map((s, i) => ({
       id: `s-${s.id}`,
       group: 'Sessions',
-      label: s.name,
+      label: sessionTitle(s),
       hint: i < 9 ? `F${i + 1}` : s.cwd,
       icon: <span className={`dot ${s.status}`} style={{ marginTop: 0 }} />,
       run: () => select(s.id),
     })),
     { id: 'new', group: 'Actions', label: 'New session', hint: `F${Math.min(sessions.length + 1, 9)}`, icon: <Plus size={15} />, run: goHome },
+    { id: 'shell', group: 'Actions', label: 'New terminal', hint: 'Ctrl+Shift+`', icon: <SquareTerminal size={15} />, run: () => void openShell() },
     ...(active
       ? [
-          ...(active.cloud
+          ...(active.cloud || active.shell
             ? []
             : [
                 {
@@ -397,6 +418,7 @@ export function App() {
         onUpdate={installUpdate}
         onRestart={restart}
         onPalette={() => setPaletteOpen(true)}
+        onShell={() => void openShell()}
       />
       <main className="main">
         {bg && <img className="bg-image" src={bg} alt="" aria-hidden />}

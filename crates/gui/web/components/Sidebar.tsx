@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Sailboat, Search, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronsUpDown, Cloud, LoaderCircle, Plus, RotateCw, Sailboat, Search, SquareTerminal, X } from 'lucide-react';
 import type { Accounts, Limits, LimitWindow, Session, Status, UpdateState } from '../api';
 import { accountColor, accountInitial, accountOf } from '../accounts';
 import { fmtDuration } from '../messages';
@@ -12,8 +12,24 @@ const STATUS: Record<Status, string> = {
 };
 
 export function statusLabel(s: Session): string {
+  if (s.shell) return s.alive ? 'shell' : 'exited';
+  // Attached without a process of its own: the cloud has it.
+  if (s.cloud && s.cloudId && !s.alive) return 'on claude.ai';
   if (s.status === 'waiting' && s.waitingFor) return `needs you: ${s.waitingFor}`;
   return STATUS[s.status];
+}
+
+/// What a session is called in lists: a cloud session by its task, which
+/// says more than the folder it was started from.
+export function sessionTitle(s: Session): string {
+  return s.cloud && s.cloudTask ? s.cloudTask : s.name;
+}
+
+/// What follows the status in a session's row.
+function kindNote(s: Session): string {
+  if (s.shell) return '';
+  if (s.cloud) return s.alive || !s.cloudId ? ', cloud' : '';
+  return s.view === 'terminal' ? ', terminal' : '';
 }
 
 interface Props {
@@ -29,6 +45,7 @@ interface Props {
   onUpdate: () => void;
   onRestart: () => void;
   onPalette: () => void;
+  onShell: () => void;
 }
 
 interface Group {
@@ -73,19 +90,20 @@ export function Sidebar(p: Props) {
         onClick={() => p.onSelect(s.id)}
       >
         <span className="stack" style={{ gap: 1 }}>
-          <span className={`session-name ${s.status === 'working' ? 'shimmer' : ''}`}>
+          <span className={`session-name ${s.status === 'working' ? 'shimmer' : ''}`} title={sessionTitle(s)}>
             {s.cloud && <Cloud size={13} aria-label="cloud" className="cloud-mark" />}
+            {s.shell && <SquareTerminal size={13} aria-label="terminal" className="shell-mark" />}
             <span className="ellipsis" style={{ fontWeight: 500 }}>{s.name}</span>
-            <span className={`small status-text ${s.status}`}>
+            <span className={`small status-text ${s.status} ${s.shell && !s.alive ? 'exited' : ''}`}>
               {statusLabel(s)}
-              {s.cloud ? ', cloud' : s.view === 'terminal' ? ', terminal' : ''}
+              {kindNote(s)}
             </span>
           </span>
           {s.cloud && s.cloudTask && <span className="small faint ellipsis">{s.cloudTask}</span>}
         </span>
         {i < 9 && <kbd>F{i + 1}</kbd>}
       </button>
-      <button type="button" className="row-close" aria-label={`Close ${s.name}`} onClick={() => p.onClose(s.id)}>
+      <button type="button" className="row-close" aria-label={`Close ${sessionTitle(s)}`} onClick={() => p.onClose(s.id)}>
         <X size={14} aria-hidden />
       </button>
     </li>
@@ -120,6 +138,11 @@ export function Sidebar(p: Props) {
           <Plus size={16} aria-hidden />
           <span style={{ flex: 1 }}>New session</span>
           {p.sessions.length < 9 && <kbd>F{p.sessions.length + 1}</kbd>}
+        </button>
+        <button type="button" className="nav-item" onClick={p.onShell} title="A shell in the current session's folder">
+          <SquareTerminal size={16} aria-hidden />
+          <span style={{ flex: 1 }}>New terminal</span>
+          <kbd>Ctrl Shift `</kbd>
         </button>
         <button type="button" className="nav-item" onClick={p.onPalette}>
           <Search size={16} aria-hidden />
