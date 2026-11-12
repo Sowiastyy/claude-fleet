@@ -711,10 +711,55 @@ fn poll(handle: tauri::AppHandle, app: Arc<App>) {
     }
 }
 
+/// The window from `tauri.conf.json`, kept on the app's own page: a link
+/// clicked anywhere in it (a chat message's, say) goes to the default
+/// browser instead of replacing the app, which has no browser controls to
+/// come back with and, without decorations, no title bar to close it by.
+fn open_main_window(tauri_app: &tauri::App) -> tauri::Result<()> {
+    let config = tauri_app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .cloned()
+        .expect("tauri.conf.json has the main window");
+    let dev = tauri_app.config().build.dev_url.clone().filter(|_| tauri::is_dev());
+    tauri::WebviewWindowBuilder::from_config(tauri_app.handle(), &config)?
+        .on_navigation(move |to| {
+            if is_app_page(to, dev.as_ref()) {
+                return true;
+            }
+            let _ = open_in_browser(to.as_str());
+            false
+        })
+        .on_new_window(|to, _| {
+            let _ = open_in_browser(to.as_str());
+            tauri::webview::NewWindowResponse::Deny
+        })
+        .build()?;
+    Ok(())
+}
+
+/// The app's own page: the dev server while developing, else the page built
+/// into the binary; and whatever is not a web link at all (`about:blank`,
+/// `blob:`, `data:`), which the page makes itself.
+fn is_app_page(url: &tauri::Url, dev: Option<&tauri::Url>) -> bool {
+    match url.scheme() {
+        "http" | "https" => {}
+        _ => return true,
+    }
+    if url.host_str() == Some("tauri.localhost") {
+        return true;
+    }
+    dev.is_some_and(|d| d.origin() == url.origin())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|tauri_app| {
+            open_main_window(tauri_app)?;
             let handle = tauri_app.handle().clone();
             let dir = tauri_app
                 .path()
@@ -796,4 +841,22 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("the window could not be opened");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_app_page_stays_in_the_window() {
+        let u = |s: &str| tauri::Url::parse(s).unwrap();
+        let dev = u("http://localhost:1420");
+        assert!(is_app_page(&u("http://tauri.localhost/index.html"), None));
+        assert!(is_app_page(&u("http://localhost:1420/?x=1"), Some(&dev)));
+        assert!(is_app_page(&u("about:blank"), None));
+        assert!(!is_app_page(&u("http://localhost:1420/"), None));
+        assert!(!is_app_page(&u("http://localhost:3000/"), Some(&dev)));
+        assert!(!is_app_page(&u("https://github.com/o/r"), Some(&dev)));
+        assert!(!is_app_page(&u("https://tauri.localhost.evil.com/"), None));
+    }
 }
