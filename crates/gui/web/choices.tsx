@@ -8,7 +8,7 @@ const I = 14;
 /// The current models by their full ids, so the name on each option is the
 /// model that runs, not whatever an alias points at today.
 const MODEL_IDS: Array<[string, ReactNode]> = [
-  ['claude-fable-5-1', <Gem size={I} aria-hidden />],
+  ['claude-fable-5-2', <Gem size={I} aria-hidden />],
   ['claude-opus-5-5', <Wand2 size={I} aria-hidden />],
   ['claude-opus-5-5[1m]', <Wand2 size={I} aria-hidden />],
   ['claude-sonnet-5-5', <Feather size={I} aria-hidden />],
@@ -30,7 +30,7 @@ export const MODELS: Choice[] = [
 /// What the options used to be, and what a session started with an alias
 /// reports before its first turn.
 const ALIASES: Record<string, string> = {
-  fable: 'claude-fable-5-1',
+  fable: 'claude-fable-5-2',
   opus: 'claude-opus-5-5',
   'opus[1m]': 'claude-opus-5-5[1m]',
   sonnet: 'claude-sonnet-5-5',
