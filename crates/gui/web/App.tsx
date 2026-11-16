@@ -25,6 +25,7 @@ import { AccountMenu } from './components/AccountMenu';
 import { Home, type StartOpts } from './components/Home';
 import { Conversation } from './components/Conversation';
 import { GitPanel } from './components/GitPanel';
+import { keepTerminals } from './components/TerminalView';
 import type { Ask, Intent } from './components/Workbench';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Titlebar } from './components/Titlebar';
@@ -92,6 +93,8 @@ export function App() {
     ];
     return () => offs.forEach((p) => p.then((off) => off()));
   }, [notify]);
+
+  useEffect(() => keepTerminals(new Set(sessions.map((s) => s.id))), [sessions]);
 
   useEffect(() => {
     applyTheme(settings.theme, settings.accent);
