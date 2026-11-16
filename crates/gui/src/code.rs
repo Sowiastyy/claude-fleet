@@ -107,6 +107,26 @@ pub async fn file_write(base: String, path: String, text: String, expected: Opti
     Ok(stamp(&full))
 }
 
+/// One folder's entries, for a folder the file list leaves closed until it
+/// is opened (an ignored one, such as `node_modules`): `path/name`, and
+/// `path/name/` for a folder.
+#[tauri::command]
+pub async fn dir_list(base: String, path: String) -> Res<Vec<String>> {
+    const MAX: usize = 5_000;
+    let path = path.trim_end_matches('/');
+    let full = resolve(&base, path)?;
+    let entries = fs::read_dir(&full).map_err(|e| format!("{path}: {e}"))?;
+    Ok(entries
+        .flatten()
+        .take(MAX)
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let dir = e.path().is_dir();
+            format!("{path}/{name}{}", if dir { "/" } else { "" })
+        })
+        .collect())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
@@ -222,5 +242,19 @@ mod tests {
         assert!(resolve("C:/p", "../secret").is_err());
         assert!(resolve("C:/p", "src/../../x").is_err());
         assert!(resolve("/p", "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn lists_one_folder_with_folders_marked() {
+        let base = std::env::temp_dir().join(format!("fleet-dir-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("node_modules/react")).unwrap();
+        fs::write(base.join("node_modules/.package-lock.json"), "{}").unwrap();
+        let base_s = base.display().to_string();
+        let mut got = tauri::async_runtime::block_on(dir_list(base_s.clone(), "node_modules/".into())).unwrap();
+        got.sort();
+        assert_eq!(got, ["node_modules/.package-lock.json", "node_modules/react/"]);
+        assert!(tauri::async_runtime::block_on(dir_list(base_s, "../".into())).is_err());
+        let _ = fs::remove_dir_all(base);
     }
 }

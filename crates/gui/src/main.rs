@@ -437,12 +437,45 @@ fn home_dir() -> String {
 /// shallow walk otherwise.
 #[tauri::command]
 async fn files_list(cwd: String) -> Vec<String> {
-    const MAX: usize = 20_000;
     let dir = PathBuf::from(&cwd);
+    if let Some(files) = git_lines(&dir, &["ls-files", "-co", "--exclude-standard"]) {
+        return files;
+    }
+    let mut found = Vec::new();
+    walk(&dir, &dir, 0, &mut found, &mut Vec::new(), 5_000);
+    found
+}
+
+/// The code view's file list: what `files_list` gives, plus what it leaves
+/// out — ignored files such as `.env`, and ignored or skipped folders
+/// (`node_modules/`, `target/`) as one entry ending in `/` each, listed only
+/// when opened (see `code::dir_list`).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectFiles {
+    files: Vec<String>,
+    ignored: Vec<String>,
+}
+
+#[tauri::command]
+async fn files_tree(cwd: String) -> ProjectFiles {
+    let dir = PathBuf::from(&cwd);
+    if let Some(files) = git_lines(&dir, &["ls-files", "-co", "--exclude-standard"]) {
+        let ignored = git_lines(&dir, &["ls-files", "-oi", "--exclude-standard", "--directory"]).unwrap_or_default();
+        return ProjectFiles { files, ignored };
+    }
+    let (mut files, mut ignored) = (Vec::new(), Vec::new());
+    walk(&dir, &dir, 0, &mut files, &mut ignored, 5_000);
+    ProjectFiles { files, ignored }
+}
+
+/// `git <args>` in `dir`, line by line; `None` outside a work tree.
+fn git_lines(dir: &Path, args: &[&str]) -> Option<Vec<String>> {
+    const MAX: usize = 20_000;
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C")
-        .arg(&dir)
-        .args(["ls-files", "-co", "--exclude-standard"])
+        .arg(dir)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
@@ -450,22 +483,20 @@ async fn files_list(cwd: String) -> Vec<String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    if let Ok(out) = cmd.output()
-        && out.status.success()
-    {
-        return String::from_utf8_lossy(&out.stdout)
+    let out = cmd.output().ok().filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| !l.is_empty())
             .take(MAX)
             .map(str::to_string)
-            .collect();
-    }
-    let mut found = Vec::new();
-    walk(&dir, &dir, 0, &mut found, 5_000);
-    found
+            .collect(),
+    )
 }
 
-fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>, max: usize) {
+/// Files under `dir` into `out`; the folders it does not go into (but
+/// `.git`) into `skipped`, as `path/`.
+fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>, skipped: &mut Vec<String>, max: usize) {
     const SKIP: [&str; 8] = [".git", "node_modules", "target", "dist", "build", ".next", ".venv", "__pycache__"];
     if depth > 6 || out.len() >= max {
         return;
@@ -477,12 +508,16 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>, max: usize
         }
         let path = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(rel) = path.strip_prefix(root) else { continue };
+        let rel = rel.to_string_lossy().replace('\\', "/");
         if path.is_dir() {
             if !SKIP.contains(&name.as_str()) {
-                walk(root, &path, depth + 1, out, max);
+                walk(root, &path, depth + 1, out, skipped, max);
+            } else if name != ".git" {
+                skipped.push(format!("{rel}/"));
             }
-        } else if let Ok(rel) = path.strip_prefix(root) {
-            out.push(rel.to_string_lossy().replace('\\', "/"));
+        } else {
+            out.push(rel);
         }
     }
 }
@@ -819,6 +854,8 @@ fn main() {
             recent_projects,
             home_dir,
             files_list,
+            files_tree,
+            code::dir_list,
             git_state,
             git_commit,
             git_generate,

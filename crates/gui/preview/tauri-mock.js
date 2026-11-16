@@ -98,6 +98,11 @@
     recent_projects: ['C:\\code\\claude-fleet', 'C:\\code\\smartwood-web', 'C:\\code\\smartwood-api'],
     home_dir: 'C:\\Users\\me',
     files_list: ['src/checkout/total.ts', 'src/checkout/total.test.ts', 'src/checkout/surcharges.ts', 'src/cart/Cart.tsx', 'src/cart/voucher.ts', 'package.json', 'README.md'],
+    files_tree: {
+      files: ['src/checkout/total.ts', 'src/checkout/total.test.ts', 'src/checkout/surcharges.ts', 'src/cart/Cart.tsx', 'src/cart/voucher.ts', 'package.json', 'README.md'],
+      ignored: ['.env', 'node_modules/', 'dist/'],
+    },
+    dir_list: ['node_modules/react/', 'node_modules/.package-lock.json'],
     git_state: git,
     settings_get: { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: q.get('theme') || 'harbor', accent: '' },
     background_custom: null,

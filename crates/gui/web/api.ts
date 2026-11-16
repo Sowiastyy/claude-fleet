@@ -120,6 +120,11 @@ export interface GitState {
 }
 
 /// A file opened in the code view.
+export interface ProjectFiles {
+  files: string[];
+  ignored: string[];
+}
+
 export interface OpenedFile {
   text: string;
   /// When it last changed on disk, handed back on save.
@@ -240,6 +245,10 @@ export const api = {
   projects: () => invoke<string[]>('recent_projects'),
   home: () => invoke<string>('home_dir'),
   files: (cwd: string) => invoke<string[]>('files_list', { cwd }),
+  /// The code view's list: `files` plus ignored files and folders, a folder
+  /// as one entry ending in `/` until `dirList` reads it.
+  fileTree: (cwd: string) => invoke<ProjectFiles>('files_tree', { cwd }),
+  dirList: (base: string, path: string) => invoke<string[]>('dir_list', { base, path }),
   git: (cwd: string) => invoke<GitState | null>('git_state', { cwd }),
   commit: (cwd: string, message: string) => invoke<string>('git_commit', { cwd, message }),
   generate: (cwd: string) => invoke<string>('git_generate', { cwd }),

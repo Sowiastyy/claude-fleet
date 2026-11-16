@@ -44,7 +44,17 @@ interface FileMeta {
 // switching sessions, comes back to the same tabs and unsaved edits.
 const benches = new Map<string, Bench>();
 const stores = new Map<string, DocStore & { meta: Map<string, FileMeta> }>();
-const fileLists = new Map<string, string[]>();
+const fileLists = new Map<string, Listing>();
+
+/// The file list: every path, ignored ones too (shown dimmed). An ignored
+/// folder comes as one `dir/` entry and is read when first opened.
+interface Listing {
+  paths: string[];
+  ignored: Set<string>;
+  /// Ignored folders read so far.
+  read: Set<string>;
+}
+const NOTHING: Listing = { paths: [], ignored: new Set(), read: new Set() };
 // Ctrl+S in an editor state made by an earlier mount of the view still has
 // to reach the one showing now.
 const savers = new Map<string, (id: string) => void>();
@@ -74,7 +84,7 @@ export function Workbench({ base, git, intent, onError, onNotify }: Props) {
     }
     return s;
   }, [base]);
-  const [files, setFiles] = useState<string[] | null>(() => fileLists.get(base) ?? null);
+  const [listing, setListing] = useState<Listing | null>(() => fileLists.get(base) ?? null);
   const [reveal, setReveal] = useState<{ hash: string; seq: number } | null>(null);
   const filter = useRef<HTMLInputElement>(null);
   const apply = useRef<((id: string, spec: TransactionSpec) => void) | null>(null);
@@ -103,16 +113,45 @@ export function Workbench({ base, git, intent, onError, onNotify }: Props) {
   // ----- the file list
   const loadFiles = useCallback(() => {
     api
-      .files(base)
+      .fileTree(base)
       .then((f) => {
-        fileLists.set(base, f);
-        setFiles(f);
+        const l: Listing = { paths: [...f.files, ...f.ignored], ignored: new Set(f.ignored), read: new Set() };
+        fileLists.set(base, l);
+        setListing(l);
       })
-      .catch(() => setFiles([]));
+      .catch(() => setListing(NOTHING));
   }, [base]);
   useEffect(() => {
     if (!fileLists.has(base)) loadFiles();
   }, [base, loadFiles]);
+
+  // An open ignored folder not read yet — just opened, or open when the list
+  // was read again — is read now; what is in it is ignored too.
+  const reading = useRef(new Set<string>());
+  useEffect(() => {
+    if (!listing) return;
+    for (const dir of bench.openDirs) {
+      if (!listing.ignored.has(`${dir}/`) || listing.read.has(dir) || reading.current.has(dir)) continue;
+      reading.current.add(dir);
+      api
+        .dirList(base, dir)
+        .catch(() => [] as string[])
+        .then((entries) => {
+          reading.current.delete(dir);
+          setListing((l) => {
+            if (!l || l.read.has(dir)) return l;
+            const fresh = entries.filter((e) => !l.ignored.has(e));
+            const n: Listing = {
+              paths: [...l.paths, ...fresh],
+              ignored: new Set([...l.ignored, ...fresh]),
+              read: new Set(l.read).add(dir),
+            };
+            fileLists.set(base, n);
+            return n;
+          });
+        });
+    }
+  }, [base, listing, bench.openDirs]);
 
   // ----- tabs
   const show = useCallback(
@@ -381,7 +420,8 @@ export function Workbench({ base, git, intent, onError, onNotify }: Props) {
         </div>
         {bench.side === 'files' ? (
           <FileTree
-            files={files}
+            files={listing?.paths ?? null}
+            ignored={listing?.ignored ?? NOTHING.ignored}
             changes={changes}
             active={activePath}
             open={bench.openDirs}

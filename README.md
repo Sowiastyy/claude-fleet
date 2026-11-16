@@ -65,8 +65,9 @@ with Tauri and React from the same core (`crates/gui`).
 - **Limits** at the foot of the sidebar, **git panel** (commit, push, pull,
   generate a message) and **resume** from the new-chat screen.
 - **Code** in the header, beside Chat and Terminal, opens the project:
-  - **Files** — the tree (changed files coloured as in the git panel),
-    `Ctrl+P` to find one, and an editor with syntax colouring, search
+  - **Files** — the tree (changed files coloured as in the git panel;
+    git-ignored ones such as `.env` dimmed, and an ignored folder such as
+    `node_modules` read only when opened), `Ctrl+P` to find one, and an editor with syntax colouring, search
     (`Ctrl+F`) and `Ctrl+S`. A file a session changes while it is open is
     reloaded when nothing here is unsaved, and flagged when something is;
     saving over a newer version asks first.

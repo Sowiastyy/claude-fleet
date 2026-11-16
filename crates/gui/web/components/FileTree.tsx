@@ -22,13 +22,15 @@ interface Dir {
   files: string[];
 }
 
+/// A path ending in `/` is a folder whose files are not listed (yet).
 function tree(paths: string[]): Dir {
   const root: Dir = { name: '', path: '', dirs: [], files: [] };
   const index = new Map<string, Dir>([['', root]]);
   for (const p of paths) {
-    const parts = p.split('/');
+    const folder = p.endsWith('/');
+    const parts = (folder ? p.slice(0, -1) : p).split('/');
     let dir = root;
-    for (let i = 0; i < parts.length - 1; i++) {
+    for (let i = 0; i < parts.length - (folder ? 0 : 1); i++) {
       const path = parts.slice(0, i + 1).join('/');
       let next = index.get(path);
       if (!next) {
@@ -38,7 +40,7 @@ function tree(paths: string[]): Dir {
       }
       dir = next;
     }
-    dir.files.push(p);
+    if (!folder) dir.files.push(p);
   }
   const sort = (d: Dir) => {
     d.dirs.sort((a, b) => a.name.localeCompare(b.name));
@@ -76,6 +78,9 @@ const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
 
 interface Props {
   files: string[] | null;
+  /// Ignored by git (or skipped outside a repo): shown dimmed. A folder is
+  /// in here as `path/`.
+  ignored: Set<string>;
   changes: Map<string, string>;
   active: string | null;
   open: Set<string>;
@@ -85,10 +90,11 @@ interface Props {
   filterRef: RefObject<HTMLInputElement | null>;
 }
 
-export function FileTree({ files, changes, active, open, onToggle, onOpen, onRefresh, filterRef }: Props) {
+export function FileTree({ files, ignored, changes, active, open, onToggle, onOpen, onRefresh, filterRef }: Props) {
   const [query, setQuery] = useState('');
   const root = useMemo(() => tree(files ?? []), [files]);
-  const found = useMemo(() => (query.trim() ? search(files ?? [], query.trim()) : null), [files, query]);
+  const plain = useMemo(() => (files ?? []).filter((p) => !p.endsWith('/')), [files]);
+  const found = useMemo(() => (query.trim() ? search(plain, query.trim()) : null), [plain, query]);
   // A folder holding a change shows it, so a change deep down can be found.
   const changedDirs = useMemo(() => {
     const s = new Set<string>();
@@ -123,7 +129,17 @@ export function FileTree({ files, changes, active, open, onToggle, onOpen, onRef
         {files?.length === 0 && <div className="side-empty">No files here</div>}
         {found
           ? found.map((p) => (
-              <FileRow key={p} path={p} label={basename(p)} hint={p} depth={0} code={changes.get(p)} active={p === active} onOpen={onOpen} />
+              <FileRow
+                key={p}
+                path={p}
+                label={basename(p)}
+                hint={p}
+                depth={0}
+                code={changes.get(p)}
+                ignored={ignored.has(p)}
+                active={p === active}
+                onOpen={onOpen}
+              />
             ))
           : files && (
               <DirRows
@@ -134,6 +150,7 @@ export function FileTree({ files, changes, active, open, onToggle, onOpen, onRef
                 onOpen={onOpen}
                 changes={changes}
                 changedDirs={changedDirs}
+                ignored={ignored}
                 active={active}
               />
             )}
@@ -151,6 +168,7 @@ function DirRows(p: {
   onOpen: (path: string) => void;
   changes: Map<string, string>;
   changedDirs: Set<string>;
+  ignored: Set<string>;
   active: string | null;
 }) {
   return (
@@ -161,7 +179,7 @@ function DirRows(p: {
           <div key={d.path} role="treeitem" aria-expanded={isOpen}>
             <button
               type="button"
-              className="tree-row"
+              className={`tree-row ${p.ignored.has(`${d.path}/`) ? 'ignored' : ''}`}
               style={{ paddingLeft: 10 + p.depth * 14 }}
               onClick={() => p.onToggle(d.path)}
             >
@@ -174,7 +192,16 @@ function DirRows(p: {
         );
       })}
       {p.dir.files.map((f) => (
-        <FileRow key={f} path={f} label={basename(f)} depth={p.depth} code={p.changes.get(f)} active={f === p.active} onOpen={p.onOpen} />
+        <FileRow
+          key={f}
+          path={f}
+          label={basename(f)}
+          depth={p.depth}
+          code={p.changes.get(f)}
+          ignored={p.ignored.has(f)}
+          active={f === p.active}
+          onOpen={p.onOpen}
+        />
       ))}
     </>
   );
@@ -186,6 +213,7 @@ const FileRow = memo(function FileRow(p: {
   hint?: string;
   depth: number;
   code: string | undefined;
+  ignored: boolean;
   active: boolean;
   onOpen: (path: string) => void;
 }) {
@@ -194,7 +222,7 @@ const FileRow = memo(function FileRow(p: {
     <button
       type="button"
       role="treeitem"
-      className={`tree-row file ${p.active ? 'active' : ''}`}
+      className={`tree-row file ${p.active ? 'active' : ''} ${p.ignored ? 'ignored' : ''}`}
       style={{ paddingLeft: 10 + p.depth * 14 + 13 }}
       title={p.path}
       onClick={() => p.onOpen(p.path)}
