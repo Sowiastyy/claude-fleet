@@ -570,11 +570,53 @@ const SHARED_DIRS: &[&str] = &[
 
 /// What an account's home keeps for itself.
 fn own_to_home(name: &str) -> bool {
-    name == ".credentials.json" || name == ".claude.json" || name == PROFILES || name.ends_with(".tmp")
+    name == ".credentials.json"
+        || name == ".claude.json"
+        || name == PROFILES
+        || name.ends_with(".tmp")
+        || refresh_lock(name)
+}
+
+/// Claude Code's lock around a token refresh (`.oauth_refresh.lock`, its
+/// `.owner`, the cloud sessions' one). It guards that config dir's own
+/// `.credentials.json`, so it has to be the home's: linked to `~/.claude`'s,
+/// the home's lock is held by whoever refreshes there, and dangles once they
+/// let go, so `claude` in the home can never take it and its token runs out
+/// unrefreshed.
+fn refresh_lock(name: &str) -> bool {
+    name.contains("oauth_refresh.lock")
+}
+
+/// Undo a link to `~/.claude`'s refresh lock made before it was the home's
+/// own. A lock the home took itself is a real folder, and an owner file it
+/// wrote differs from `~/.claude`'s; both stay.
+fn unlink_refresh_locks(claude: &Path, home: &Path) {
+    let Ok(entries) = fs::read_dir(home) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !refresh_lock(&name.to_string_lossy()) {
+            continue;
+        }
+        let at = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&at) else { continue };
+        if meta.file_type().is_symlink() {
+            // A junction goes with `remove_dir`, a symlink with
+            // `remove_file`; neither touches what it points at.
+            let _ = fs::remove_file(&at).or_else(|_| fs::remove_dir(&at));
+        } else if meta.is_file()
+            && let Ok(theirs) = fs::metadata(claude.join(&name))
+            && theirs.len() == meta.len()
+            && theirs.modified().ok() == meta.modified().ok()
+        {
+            // A hard link (or copy) of `~/.claude`'s owner file.
+            let _ = fs::remove_file(&at);
+        }
+    }
 }
 
 /// Link everything in `~/.claude` into `home`, but what the home keeps.
 fn link_shared(claude: &Path, home: &Path) -> Result<()> {
+    unlink_refresh_locks(claude, home);
     for d in SHARED_DIRS {
         let _ = fs::create_dir_all(claude.join(d));
     }
@@ -1122,6 +1164,39 @@ mod tests {
         accounts.forget("bbbb-2").unwrap();
         assert!(!b_dir.exists());
         assert!(p.claude.join("projects").join("t.jsonl").exists());
+    }
+
+    #[test]
+    fn a_home_takes_its_own_refresh_lock() {
+        let home = Scratch::new("lock");
+        home.sign_in("aaaa-1", "a@example.com", "a1");
+        let mut accounts = Accounts::with(home.paths());
+        let p = home.paths();
+        // Someone refreshing in `~/.claude` right now.
+        let lock = p.claude.join(".oauth_refresh.lock");
+        let owner = p.claude.join(".oauth_refresh.lock.owner");
+        fs::create_dir_all(&lock).unwrap();
+        fs::write(&owner, "{\"pid\":1}").unwrap();
+
+        let dir = accounts.config_dir_for("aaaa-1").unwrap();
+        assert!(fs::symlink_metadata(dir.join(".oauth_refresh.lock")).is_err());
+        assert!(fs::symlink_metadata(dir.join(".oauth_refresh.lock.owner")).is_err());
+
+        // Linked by an older fleet: undone, and `~/.claude`'s lock is left be.
+        link(&lock, &dir.join(".oauth_refresh.lock"), true).unwrap();
+        link(&owner, &dir.join(".oauth_refresh.lock.owner"), false).unwrap();
+        accounts.config_dir_for("aaaa-1").unwrap();
+        assert!(fs::symlink_metadata(dir.join(".oauth_refresh.lock")).is_err());
+        assert!(fs::symlink_metadata(dir.join(".oauth_refresh.lock.owner")).is_err());
+        assert!(lock.is_dir());
+        assert!(owner.is_file());
+
+        // The home's own lock, taken by a `claude` running there, stays.
+        fs::create_dir(dir.join(".oauth_refresh.lock")).unwrap();
+        fs::write(dir.join(".oauth_refresh.lock.owner"), "{\"pid\":22}").unwrap();
+        accounts.config_dir_for("aaaa-1").unwrap();
+        assert!(dir.join(".oauth_refresh.lock").is_dir());
+        assert!(dir.join(".oauth_refresh.lock.owner").is_file());
     }
 
     #[test]
