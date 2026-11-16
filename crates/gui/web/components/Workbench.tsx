@@ -111,19 +111,56 @@ export function Workbench({ base, git, intent, onError, onNotify }: Props) {
   const changes = useMemo(() => new Map((git?.changes ?? []).map((c) => [c.path, c.code])), [git?.changes]);
 
   // ----- the file list
-  const loadFiles = useCallback(() => {
-    api
-      .fileTree(base)
-      .then((f) => {
-        const l: Listing = { paths: [...f.files, ...f.ignored], ignored: new Set(f.ignored), read: new Set() };
-        fileLists.set(base, l);
-        setListing(l);
-      })
-      .catch(() => setListing(NOTHING));
+  // Read again while it shows, so files a session (or anything else) makes
+  // or deletes turn up without pressing refresh. Ignored folders open now
+  // are read in the same go, so they do not empty out and fill back in.
+  const loadingFiles = useRef(false);
+  const loadFiles = useCallback(async () => {
+    if (loadingFiles.current) return;
+    loadingFiles.current = true;
+    try {
+      const f = await api.fileTree(base).catch(() => null);
+      if (!f) {
+        if (!fileLists.has(base)) setListing(NOTHING);
+        return;
+      }
+      const open = benchRef.current.openDirs;
+      // A parent sorts before what is in it, so it is merged first.
+      const again = [...(fileLists.get(base)?.read ?? [])].filter((d) => open.has(d)).sort();
+      const entries = await Promise.all(again.map((d) => api.dirList(base, d).catch(() => [] as string[])));
+      const paths = [...f.files, ...f.ignored];
+      const ignored = new Set(f.ignored);
+      const read = new Set<string>();
+      again.forEach((dir, i) => {
+        if (!ignored.has(`${dir}/`)) return;
+        const fresh = entries[i].filter((e) => !ignored.has(e));
+        paths.push(...fresh);
+        for (const e of fresh) ignored.add(e);
+        read.add(dir);
+      });
+      const cur = fileLists.get(base);
+      if (cur && cur.paths.length === paths.length && cur.paths.every((p, i) => p === paths[i])) return;
+      const l: Listing = { paths, ignored, read };
+      fileLists.set(base, l);
+      setListing(l);
+    } finally {
+      loadingFiles.current = false;
+    }
   }, [base]);
+  const showingFiles = bench.side === 'files';
   useEffect(() => {
-    if (!fileLists.has(base)) loadFiles();
-  }, [base, loadFiles]);
+    if (!showingFiles) return;
+    void loadFiles();
+    const tick = () => {
+      if (!document.hidden) void loadFiles();
+    };
+    const t = window.setInterval(tick, 3000);
+    window.addEventListener('focus', tick);
+    return () => {
+      window.clearInterval(t);
+      window.removeEventListener('focus', tick);
+    };
+  }, [showingFiles, loadFiles]);
 
   // An open ignored folder not read yet — just opened, or open when the list
   // was read again — is read now; what is in it is ignored too.
@@ -427,7 +464,7 @@ export function Workbench({ base, git, intent, onError, onNotify }: Props) {
             open={bench.openDirs}
             onToggle={toggleDir}
             onOpen={(p) => void openFile(p)}
-            onRefresh={loadFiles}
+            onRefresh={() => void loadFiles()}
             filterRef={filter}
           />
         ) : git ? (
