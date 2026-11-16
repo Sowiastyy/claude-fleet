@@ -746,6 +746,33 @@ fn poll(handle: tauri::AppHandle, app: Arc<App>) {
     }
 }
 
+/// Limits older than this are asked for again.
+const LIMITS_EVERY: Duration = Duration::from_secs(3 * 60);
+
+/// Keep every account's limits fresh: Claude Code no longer leaves them
+/// anywhere to read (see `usage::fetch`). Accounts whose token has run out
+/// wait for one of their sessions to refresh it. The poller shows what lands
+/// in the profiles.
+fn fetch_limits(accounts: Arc<Mutex<Accounts>>) {
+    // When each account was last asked for, so one that fails is not asked
+    // again every round.
+    let mut asked: std::collections::HashMap<String, std::time::Instant> = Default::default();
+    loop {
+        // Asked for outside the lock: the poller needs it every second.
+        let due = accounts.lock().unwrap().usage_due(LIMITS_EVERY);
+        for (uuid, token) in due {
+            if asked.get(&uuid).is_some_and(|at| at.elapsed() < LIMITS_EVERY) {
+                continue;
+            }
+            asked.insert(uuid.clone(), std::time::Instant::now());
+            if let Ok(u) = usage::fetch(&token) {
+                let _ = accounts.lock().unwrap().save_usage(&uuid, u);
+            }
+        }
+        thread::sleep(Duration::from_secs(20));
+    }
+}
+
 /// The window from `tauri.conf.json`, kept on the app's own page: a link
 /// clicked anywhere in it (a chat message's, say) goes to the default
 /// browser instead of replacing the app, which has no browser controls to
@@ -820,6 +847,8 @@ fn main() {
             tauri_app.manage(app.clone());
             updater::reopen(&app.hub, &app.restore_path);
             updater::watch(handle.clone(), app.updater.clone());
+            let accounts = app.accounts.clone();
+            thread::spawn(move || fetch_limits(accounts));
             thread::spawn(move || poll(handle, app));
             Ok(())
         })

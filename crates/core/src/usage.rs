@@ -14,14 +14,61 @@
 //! asks Claude Code for new ones the only way that is documented: it drives a
 //! hidden session the way a person would — spawn `claude`, type `/usage`, wait
 //! for the file to move (`refresh_via_claude` in the terminal app).
+//!
+//! Claude Code no longer writes the cache at all (since 2.1.32x `/usage`
+//! shows the numbers and keeps them to itself), so the GUI asks the endpoint
+//! `/usage` reads, [`fetch`], with each account's access token, and keeps the
+//! answer in the account's profile in the cache's shape.
 
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
+
+use crate::repos::no_window;
+
+/// What Claude Code's `/usage` reads: the windows, as `cachedUsageUtilization`
+/// keeps them under `utilization`.
+const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+
+/// Ask for an account's limits with its access token. The token is only
+/// used, never refreshed: refreshing rotates it under the `claude` processes
+/// that hold it. One that has run out simply fails until a session of that
+/// account refreshes it.
+///
+/// Through `curl`, as the update check is; the headers go in on stdin so the
+/// token is not on a command line for anyone listing processes to read.
+pub fn fetch(access_token: &str) -> Result<Value> {
+    let mut child = no_window(Command::new("curl"))
+        .args(["-fsS", "--max-time", "20", "-H", "@-", ENDPOINT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("could not run curl")?;
+    {
+        let mut stdin = child.stdin.take().context("no stdin")?;
+        write!(
+            stdin,
+            "Authorization: Bearer {access_token}\r\nanthropic-beta: oauth-2025-04-20\r\nUser-Agent: claude-fleet\r\n"
+        )?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!("the usage endpoint did not answer");
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).context("unexpected answer about usage")?;
+    if !v.get("five_hour").is_some_and(Value::is_object) && !v.get("seven_day").is_some_and(Value::is_object) {
+        bail!("no limits in the answer about usage");
+    }
+    Ok(v)
+}
 
 /// One rate-limit window.
 #[derive(Clone, Debug, PartialEq)]

@@ -281,6 +281,7 @@ impl Accounts {
         if let Some(cached) = global
             .get("cachedUsageUtilization")
             .filter(|c| c.get("accountUuid").and_then(Value::as_str) == Some(uuid.as_str()))
+            .filter(|c| profile.get("usage").is_none_or(|u| fetched_at(c) > fetched_at(u)))
         {
             profile["usage"] = cached.clone();
         }
@@ -528,11 +529,9 @@ impl Accounts {
                 .as_ref()
                 .and_then(|c| c.get("cachedUsageUtilization"))
                 .filter(|c| c.get("accountUuid").and_then(Value::as_str) == Some(uuid.as_str()))
+                && profile.get("usage").is_none_or(|u| fetched_at(c) > fetched_at(u))
             {
-                let newer = |v: &Value| v.get("fetchedAt").and_then(Value::as_u64).unwrap_or(0);
-                if profile.get("usage").is_none_or(|u| newer(c) >= newer(u)) {
-                    profile["usage"] = c.clone();
-                }
+                profile["usage"] = c.clone();
             }
             if profile != before {
                 profile["savedAtMs"] = json!(now_ms());
@@ -545,6 +544,59 @@ impl Accounts {
         }
         Ok(())
     }
+}
+
+/// How long an access token has to stay good for a usage fetch to be worth
+/// starting with it.
+const TOKEN_MARGIN_MS: u64 = 60 * 1000;
+
+impl Accounts {
+    /// The accounts whose limits are older than `max_age` and can be asked
+    /// for now, with the access token to ask with: the freshest one about,
+    /// as [`Self::reconcile`] leaves it in the profile.
+    pub fn usage_due(&mut self, max_age: Duration) -> Vec<(String, String)> {
+        let _ = self.reconcile();
+        let now = now_ms();
+        let max_age = max_age.as_millis() as u64;
+        fs::read_dir(self.paths.profiles())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| read_json(&e.path()).ok().flatten())
+            .filter(|p| p.get("usage").is_none_or(|u| fetched_at(u) + max_age <= now))
+            .filter_map(|p| {
+                let uuid = p.pointer("/oauthAccount/accountUuid")?.as_str()?.to_owned();
+                let creds = p.get("claudeAiOauth")?;
+                if expires_at(creds) <= now + TOKEN_MARGIN_MS {
+                    return None;
+                }
+                let token = creds.get("accessToken")?.as_str()?.to_owned();
+                Some((uuid, token))
+            })
+            .collect()
+    }
+
+    /// Keep limits [`usage::fetch`] got for `uuid` in its profile, in the
+    /// shape Claude Code's own cache has.
+    pub fn save_usage(&mut self, uuid: &str, utilization: Value) -> Result<()> {
+        let path = self.paths.profile(uuid).context("not an account id")?;
+        let Some(mut profile) = read_json(&path)? else {
+            return Ok(());
+        };
+        profile["usage"] = json!({
+            "fetchedAtMs": now_ms(),
+            "accountUuid": uuid,
+            "utilization": utilization,
+        });
+        write_atomic(&path, serde_json::to_string_pretty(&profile)?.as_bytes(), true)?;
+        self.reload();
+        Ok(())
+    }
+}
+
+fn fetched_at(usage: &Value) -> u64 {
+    usage.get("fetchedAtMs").and_then(Value::as_u64).unwrap_or(0)
 }
 
 fn refresh_token(creds: &Value) -> Option<&str> {
@@ -1197,6 +1249,43 @@ mod tests {
         accounts.config_dir_for("aaaa-1").unwrap();
         assert!(dir.join(".oauth_refresh.lock").is_dir());
         assert!(dir.join(".oauth_refresh.lock.owner").is_file());
+    }
+
+    #[test]
+    fn limits_are_asked_for_when_old_and_kept_over_older_ones() {
+        let home = Scratch::new("limits");
+        home.sign_in("aaaa-1", "a@example.com", "a1");
+        let mut accounts = Accounts::with(home.paths());
+        let every = Duration::from_secs(180);
+
+        // Never fetched, token good: due, with the access token.
+        assert_eq!(accounts.usage_due(every), [("aaaa-1".to_string(), "at-a1".to_string())]);
+        let answer = json!({"five_hour": {"utilization": 47.0, "resets_at": "2099-01-01T00:00:00Z"}});
+        accounts.save_usage("aaaa-1", answer).unwrap();
+        assert_eq!(accounts.list[0].usage.as_ref().unwrap().session.as_ref().unwrap().pct, 47);
+        assert!(accounts.usage_due(every).is_empty(), "just fetched");
+
+        // A home still holding a cache from an older Claude Code does not
+        // put its older numbers back.
+        let dir = accounts.config_dir_for("aaaa-1").unwrap();
+        let mut cfg = read_json(&dir.join(".claude.json")).unwrap().unwrap();
+        cfg["cachedUsageUtilization"] = json!({
+            "fetchedAtMs": 1, "accountUuid": "aaaa-1",
+            "utilization": {"five_hour": {"utilization": 3.0}},
+        });
+        fs::write(dir.join(".claude.json"), cfg.to_string()).unwrap();
+        accounts.reconcile().unwrap();
+        accounts.sync(true).unwrap();
+        assert_eq!(accounts.list[0].usage.as_ref().unwrap().session.as_ref().unwrap().pct, 47);
+
+        // A token that has run out is left for a session to refresh.
+        let path = home.paths().profile("aaaa-1").unwrap();
+        let mut p = read_json(&path).unwrap().unwrap();
+        p["claudeAiOauth"]["expiresAt"] = json!(now_ms() - 1);
+        p["usage"]["fetchedAtMs"] = json!(1);
+        fs::write(&path, p.to_string()).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(accounts.usage_due(every).is_empty());
     }
 
     #[test]
