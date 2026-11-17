@@ -13,11 +13,11 @@
   localStorage.setItem('fleet.where', q.get('where') || 'local');
   const now = Date.now();
   const sessions = [
-    { id: 's1', name: 'web-checkout', cwd: 'C:\\code\\smartwood-web', conversation: 'a', view: 'chat', status: 'working', waitingFor: '', model: 'claude-opus-5-5', permissionMode: 'default', startedAt: now - 840e3 },
-    { id: 's2', name: 'orders-api', cwd: 'C:\\code\\smartwood-api', conversation: 'b', view: 'chat', status: 'waiting', waitingFor: 'permission', model: '', permissionMode: 'default', startedAt: now - 3720e3 },
-    { id: 's3', name: 'claude-fleet', cwd: 'C:\\code\\claude-fleet', conversation: 'c', view: 'terminal', status: 'idle', waitingFor: '', model: '', permissionMode: 'acceptEdits', startedAt: now - 2280e3 },
-    { id: 's4', name: 'smartwood-web', cwd: 'C:\\code\\smartwood-web', conversation: 'd', view: 'terminal', status: 'working', waitingFor: '', model: '', permissionMode: 'default', startedAt: now - 600e3, cloud: true, cloudId: 'cse_01HkV2m9', cloudUrl: 'https://claude.ai/code/cse_01HkV2m9', cloudTask: 'Upgrade the image pipeline to sharp 0.34' },
-    { id: 's5', name: 'claude-fleet terminal', cwd: 'C:\\code\\claude-fleet', conversation: 'e', view: 'terminal', status: 'idle', waitingFor: '', model: '', permissionMode: '', startedAt: now - 120e3, shell: true },
+    { id: 's1', name: 'web-checkout', cwd: 'C:\\code\\smartwood-web', conversation: 'a', view: 'chat', status: 'working', waitingFor: '', model: 'claude-opus-5-5', effort: '', permissionMode: 'default', startedAt: now - 840e3 },
+    { id: 's2', name: 'orders-api', cwd: 'C:\\code\\smartwood-api', conversation: 'b', view: 'chat', status: 'waiting', waitingFor: 'permission', model: '', effort: '', permissionMode: 'default', startedAt: now - 3720e3 },
+    { id: 's3', name: 'claude-fleet', cwd: 'C:\\code\\claude-fleet', conversation: 'c', view: 'terminal', status: 'idle', waitingFor: '', model: '', effort: '', permissionMode: 'acceptEdits', startedAt: now - 2280e3 },
+    { id: 's4', name: 'smartwood-web', cwd: 'C:\\code\\smartwood-web', conversation: 'd', view: 'terminal', status: 'working', waitingFor: '', model: '', effort: '', permissionMode: 'default', startedAt: now - 600e3, cloud: true, cloudId: 'cse_01HkV2m9', cloudUrl: 'https://claude.ai/code/cse_01HkV2m9', cloudTask: 'Upgrade the image pipeline to sharp 0.34' },
+    { id: 's5', name: 'claude-fleet terminal', cwd: 'C:\\code\\claude-fleet', conversation: 'e', view: 'terminal', status: 'idle', waitingFor: '', model: '', effort: '', permissionMode: '', startedAt: now - 120e3, shell: true },
   ].map((s, i) => ({ cloud: false, cloudId: '', cloudUrl: '', cloudTask: '', shell: false, alive: true, account: q.get('one') ? 'u1' : ['u1', 'u2', 'u1', 'u2', 'u1'][i], ...s }));
   const cmd = (name, description, argumentHint = '', terminal = false, aliases = []) => ({ name, description, argumentHint, aliases, terminal });
   const log = [

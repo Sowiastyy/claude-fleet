@@ -39,7 +39,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Accounts, Attachment, Event, GitState, Session, SlashCommand, View } from '../api';
-import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
+import { EFFORTS, MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
 import { commandsFor, routeSlash } from '../commands';
 import { copyText } from '../clipboard';
 import {
@@ -83,7 +83,7 @@ interface Props {
   onStop: () => void;
   onView: (v: View) => void;
   onAllow: (rule: string) => void;
-  onConfigure: (model: string | null, mode: string | null) => void;
+  onConfigure: (model: string | null, mode: string | null, effort?: string | null) => void;
   onToggleGit: () => void;
   onError: (text: string) => void;
   /// `/clear`: start over on a new conversation.
@@ -458,6 +458,14 @@ function ChatThread(p: Props) {
             display={s.model ? modelName(s.model) : 'Default'}
             choices={MODELS}
             onChange={(v) => p.onConfigure(v, null)}
+          />
+          <Picker
+            label="Effort"
+            variant="foot"
+            placement="up"
+            value={s.effort}
+            choices={EFFORTS}
+            onChange={(v) => p.onConfigure(null, null, v)}
           />
           <Picker
             label="Permissions"

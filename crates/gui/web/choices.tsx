@@ -1,5 +1,5 @@
-// The models and permission modes a session can run with.
-import { Feather, FilePen, Gem, ListChecks, Rabbit, Shield, ShieldOff, Sparkles, Wand2, Zap } from 'lucide-react';
+// The models, efforts and permission modes a session can run with.
+import { Crown, Feather, FilePen, Gauge, Gem, ListChecks, Rabbit, Shield, ShieldOff, Sparkles, Wand2, Zap } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Choice } from './components/Picker';
 
@@ -8,6 +8,7 @@ const I = 14;
 /// The current models by their full ids, so the name on each option is the
 /// model that runs, not whatever an alias points at today.
 const MODEL_IDS: Array<[string, ReactNode]> = [
+  ['claude-mythos-5-2', <Crown size={I} aria-hidden />],
   ['claude-fable-5-2', <Gem size={I} aria-hidden />],
   ['claude-opus-5-5', <Wand2 size={I} aria-hidden />],
   ['claude-opus-5-5[1m]', <Wand2 size={I} aria-hidden />],
@@ -30,6 +31,7 @@ export const MODELS: Choice[] = [
 /// What the options used to be, and what a session started with an alias
 /// reports before its first turn.
 const ALIASES: Record<string, string> = {
+  mythos: 'claude-mythos-5-2',
   fable: 'claude-fable-5-2',
   opus: 'claude-opus-5-5',
   'opus[1m]': 'claude-opus-5-5[1m]',
@@ -37,6 +39,18 @@ const ALIASES: Record<string, string> = {
   'sonnet[1m]': 'claude-sonnet-5-5[1m]',
   haiku: 'claude-haiku-5-5',
 };
+
+/// `--effort`; empty leaves it to Claude Code.
+export const EFFORTS: Choice[] = [
+  { value: '', label: 'Default effort', icon: <Sparkles size={I} aria-hidden /> },
+  ...[
+    ['low', 'Low'],
+    ['medium', 'Medium'],
+    ['high', 'High'],
+    ['xhigh', 'Extra high'],
+    ['max', 'Max'],
+  ].map(([value, label], i) => ({ value, label, icon: <Gauge size={I} aria-hidden />, divide: i === 0 })),
+];
 
 export const MODES: Choice[] = [
   { value: 'default', label: 'Ask first', icon: <Shield size={I} aria-hidden /> },

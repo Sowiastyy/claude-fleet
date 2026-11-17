@@ -4,7 +4,7 @@ import { ArrowUp, Cloud, Folder, FolderOpen, Laptop, SquareTerminal, X } from 'l
 import { api, type Accounts, type Attachment, type CloudRecent, type Session, type SlashCommand } from '../api';
 import { accountChoices } from './AccountPicker';
 import { accountColor, accountInitial, accountOf, accountShort } from '../accounts';
-import { MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
+import { EFFORTS, MODELS, MODES, modelChoice, modelName, nextMode } from '../choices';
 import { commandsFor, isCloudRef, routeSlash } from '../commands';
 import { fmtAgo } from '../messages';
 import { Composer } from './Composer';
@@ -27,6 +27,7 @@ export interface StartOpts {
   prompt: string;
   images: Attachment[];
   model: string;
+  effort: string;
   mode: string;
   terminal: boolean;
   /// Run it in the cloud: `prompt` is the task, or a cloud session's id or
@@ -74,6 +75,7 @@ export function Home(p: Props) {
   const [cwd, setCwd] = useState('');
   const [projects, setProjects] = useState<string[]>([]);
   const [model, setModel] = useState(() => modelChoice(stored('fleet.model', '')));
+  const [effort, setEffort] = useState(() => stored('fleet.effort', ''));
   const [mode, setMode] = useState(() => stored('fleet.mode', 'default'));
   const [clouds, setClouds] = useState<CloudRecent[]>([]);
   const [where, setWhere] = useState(() => (stored('fleet.where', 'local') === 'cloud' ? 'cloud' : 'local'));
@@ -133,7 +135,7 @@ export function Home(p: Props) {
         p.onError('A cloud session takes the task as text only');
         return;
       }
-      p.onStart({ cwd, prompt, images: [], model, mode, terminal: true, cloud: true, account });
+      p.onStart({ cwd, prompt, images: [], model, effort, mode, terminal: true, cloud: true, account });
       done();
       return;
     }
@@ -148,11 +150,11 @@ export function Home(p: Props) {
         done();
         return;
       case 'terminal':
-        p.onStart({ cwd, prompt: '', images: [], model, mode, terminal: true, cloud: false, typeIn: prompt, account });
+        p.onStart({ cwd, prompt: '', images: [], model, effort, mode, terminal: true, cloud: false, typeIn: prompt, account });
         done();
         return;
     }
-    p.onStart({ cwd, prompt, images, model, mode, terminal, cloud: false, account });
+    p.onStart({ cwd, prompt, images, model, effort, mode, terminal, cloud: false, account });
     done();
   };
   const chooseWhere = (v: string) => {
@@ -275,6 +277,17 @@ export function Home(p: Props) {
             onChange={(v) => {
               setModel(v);
               store('fleet.model', v);
+            }}
+          />
+          <Picker
+            label="Effort"
+            variant="pill"
+            placement="down"
+            value={effort}
+            choices={EFFORTS}
+            onChange={(v) => {
+              setEffort(v);
+              store('fleet.effort', v);
             }}
           />
           <Picker

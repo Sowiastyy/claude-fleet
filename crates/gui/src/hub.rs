@@ -76,6 +76,7 @@ pub struct SessionView {
     pub status: Status,
     pub waiting_for: String,
     pub model: String,
+    pub effort: String,
     pub permission_mode: String,
     pub started_at: u64,
     /// Runs in the cloud, through `claude --cloud`.
@@ -116,6 +117,8 @@ pub struct Session {
     /// process gets `--session-id`, every later one `--resume`.
     started: bool,
     pub model: String,
+    /// `--effort`; empty for Claude Code's default.
+    pub effort: String,
     pub permission_mode: String,
     allowed_tools: Vec<String>,
     pub view: View,
@@ -163,6 +166,7 @@ impl Session {
             status: self.status,
             waiting_for: self.waiting_for.clone(),
             model: self.model.clone(),
+            effort: self.effort.clone(),
             permission_mode: self.permission_mode.clone(),
             started_at: self.started_at,
             cloud: self.cloud,
@@ -222,6 +226,9 @@ impl Session {
         if !self.model.is_empty() {
             args.extend(["--model".to_string(), self.model.clone()]);
         }
+        if !self.effort.is_empty() {
+            args.extend(["--effort".to_string(), self.effort.clone()]);
+        }
         if !self.permission_mode.is_empty() && self.permission_mode != "default" {
             args.extend(["--permission-mode".to_string(), self.permission_mode.clone()]);
         }
@@ -274,6 +281,8 @@ pub struct NewSession {
     pub prompt: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
     #[serde(default)]
@@ -526,6 +535,7 @@ pub fn create(shared: &Shared, mut req: NewSession) -> Result<String> {
             conversation,
             started,
             model: req.model.clone().unwrap_or_default(),
+            effort: req.effort.clone().unwrap_or_default(),
             permission_mode: req.permission_mode.clone().unwrap_or_default(),
             allowed_tools: Vec::new(),
             view: if req.terminal {
@@ -1142,13 +1152,22 @@ pub fn allow_tool(shared: &Shared, id: &str, tool: &str) -> Result<()> {
     send(shared, id, &format!("{tool} is allowed now. Carry on."), &[])
 }
 
-/// Change the model or the permission mode. Both are start-up flags, so the
-/// chat process is replaced on the next message.
-pub fn configure(shared: &Shared, id: &str, model: Option<String>, mode: Option<String>) -> Result<()> {
+/// Change the model, the effort or the permission mode. All are start-up
+/// flags, so the chat process is replaced on the next message.
+pub fn configure(
+    shared: &Shared,
+    id: &str,
+    model: Option<String>,
+    effort: Option<String>,
+    mode: Option<String>,
+) -> Result<()> {
     let mut hub = shared.lock().unwrap();
     let s = hub.find_mut(id)?;
     if let Some(m) = model {
         s.model = m;
+    }
+    if let Some(e) = effort {
+        s.effort = e;
     }
     if let Some(m) = mode {
         s.permission_mode = m;

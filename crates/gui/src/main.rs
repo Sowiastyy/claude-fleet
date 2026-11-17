@@ -90,9 +90,10 @@ fn session_configure(
     app: State<'_, Arc<App>>,
     id: String,
     model: Option<String>,
+    effort: Option<String>,
     permission_mode: Option<String>,
 ) -> Res<()> {
-    hub::configure(&app.hub, &id, model, permission_mode).map_err(err)
+    hub::configure(&app.hub, &id, model, effort, permission_mode).map_err(err)
 }
 
 /// Run the session as another saved account.

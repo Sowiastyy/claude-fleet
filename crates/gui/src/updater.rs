@@ -138,6 +138,8 @@ struct Reopen {
     conversation: String,
     view: View,
     model: String,
+    #[serde(default)]
+    effort: String,
     permission_mode: String,
     /// A cloud session comes back attached to its id; one whose id never
     /// showed does not come back (it would start a second cloud session).
@@ -179,6 +181,7 @@ pub fn restart(app: &AppHandle, up: &SharedUpdater, shared: &Shared, restore_pat
                 conversation: s.conversation,
                 view: s.view,
                 model: s.model,
+                effort: s.effort,
                 permission_mode: s.permission_mode,
                 cloud: s.cloud,
                 cloud_id: s.cloud_id,
@@ -255,6 +258,7 @@ pub fn reopen(shared: &Shared, restore_path: &Path) {
                 cwd: s.cwd,
                 resume,
                 model: (!s.model.is_empty()).then_some(s.model),
+                effort: (!s.effort.is_empty()).then_some(s.effort),
                 permission_mode: (!s.permission_mode.is_empty()).then_some(s.permission_mode),
                 terminal: s.view == View::Terminal,
                 account: s.account,

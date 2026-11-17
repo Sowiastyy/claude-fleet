@@ -138,12 +138,13 @@ export function App() {
     const req: NewSession = o.cloud
       ? isCloudRef(o.prompt)
         ? { cwd: o.cwd, cloud: true, resume: o.prompt.trim() }
-        : { cwd: o.cwd, cloud: true, prompt: o.prompt, model: o.model || undefined, permissionMode: o.mode }
+        : { cwd: o.cwd, cloud: true, prompt: o.prompt, model: o.model || undefined, effort: o.effort || undefined, permissionMode: o.mode }
       : {
           cwd: o.cwd,
           prompt: o.terminal ? undefined : o.prompt,
           images: o.terminal ? [] : o.images,
           model: o.model || undefined,
+          effort: o.effort || undefined,
           permissionMode: o.mode,
           terminal: o.terminal,
           typeIn: o.typeIn,
@@ -442,7 +443,7 @@ export function App() {
               onStop={() => void api.interrupt(active.id)}
               onView={setView}
               onAllow={(rule) => api.allow(active.id, rule).catch((e) => notify(errorText(e), true))}
-              onConfigure={(model, mode) => api.configure(active.id, model, mode).catch((e) => notify(errorText(e), true))}
+              onConfigure={(model, mode, effort) => api.configure(active.id, model, mode, effort).catch((e) => notify(errorText(e), true))}
               onToggleGit={toggleGit}
               onError={(t) => notify(t, true)}
               onClear={() => void clearSession()}

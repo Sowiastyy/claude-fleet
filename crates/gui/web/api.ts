@@ -14,6 +14,7 @@ export interface Session {
   status: Status;
   waitingFor: string;
   model: string;
+  effort: string;
   permissionMode: string;
   startedAt: number;
   /// Runs in the cloud (`claude --cloud`): terminal only.
@@ -180,6 +181,7 @@ export interface NewSession {
   cwd: string;
   prompt?: string;
   model?: string;
+  effort?: string;
   permissionMode?: string;
   resume?: string;
   terminal?: boolean;
@@ -218,8 +220,8 @@ export const api = {
   setAccount: (id: string, account: string, rows: number, cols: number) =>
     invoke<void>('session_account', { id, account, rows, cols }),
   allow: (id: string, tool: string) => invoke<void>('session_allow', { id, tool }),
-  configure: (id: string, model: string | null, permissionMode: string | null) =>
-    invoke<void>('session_configure', { id, model, permissionMode }),
+  configure: (id: string, model: string | null, permissionMode: string | null, effort: string | null = null) =>
+    invoke<void>('session_configure', { id, model, effort, permissionMode }),
   close: (id: string) => invoke<void>('session_close', { id }),
   terminalCommand: (id: string, text: string, rows: number, cols: number) =>
     invoke<void>('session_terminal_command', { id, text, rows, cols }),
