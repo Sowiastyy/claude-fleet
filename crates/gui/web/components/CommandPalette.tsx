@@ -6,6 +6,8 @@ export interface Command {
   group: string;
   label: string;
   hint?: string;
+  /// Searched but not shown: a conversation's id, its folder's path.
+  keys?: string;
   icon?: ReactNode;
   run: () => void;
 }
@@ -16,15 +18,27 @@ function filter(commands: Command[], query: string): Command[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return commands;
   const hits = commands.filter((c) => {
-    const hay = `${c.label} ${c.group} ${c.hint ?? ''}`.toLowerCase();
+    const hay = `${c.label} ${c.group} ${c.hint ?? ''} ${c.keys ?? ''}`.toLowerCase();
     return words.every((w) => hay.includes(w));
   });
   const first = (c: Command) => (c.label.toLowerCase().startsWith(words[0]) ? 0 : 1);
   return hits.sort((a, b) => first(a) - first(b));
 }
 
-export function CommandPalette({ commands, onClose }: { commands: Command[]; onClose: () => void }) {
-  const [query, setQuery] = useState('');
+interface Props {
+  commands: Command[];
+  onClose: () => void;
+  /// What the dialog is for, to a screen reader and in the empty box.
+  label?: string;
+  placeholder?: string;
+  /// Typed in already: what followed `/resume`.
+  initialQuery?: string;
+  /// Shown while `commands` is still being read.
+  loading?: boolean;
+}
+
+export function CommandPalette({ commands, onClose, label = 'Commands', placeholder, initialQuery = '', loading }: Props) {
+  const [query, setQuery] = useState(initialQuery);
   const [hot, setHot] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -45,14 +59,14 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
   let lastGroup = '';
   return (
     <div className="palette-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="palette" role="dialog" aria-label="Commands">
+      <div className="palette" role="dialog" aria-label={label}>
         <div className="palette-input">
           <Search size={16} aria-hidden />
           <input
             ref={input}
             value={query}
-            placeholder="Search sessions, conversations, commands"
-            aria-label="Command"
+            placeholder={placeholder ?? 'Search sessions, conversations, commands'}
+            aria-label={label}
             aria-controls="palette-list"
             aria-activedescendant={shown[hot] ? `cmd-${shown[hot].id}` : undefined}
             onChange={(e) => setQuery(e.target.value)}
@@ -75,7 +89,7 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
           />
           <kbd>Esc</kbd>
         </div>
-        <ul id="palette-list" ref={list} role="listbox" aria-label="Commands">
+        <ul id="palette-list" ref={list} role="listbox" aria-label={label}>
           {shown.map((c, i) => {
             const head = c.group !== lastGroup ? c.group : null;
             lastGroup = c.group;
@@ -98,7 +112,7 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
               </li>
             );
           })}
-          {!shown.length && <li className="palette-empty">No match</li>}
+          {!shown.length && <li className="palette-empty">{loading ? 'Reading conversations…' : 'No match'}</li>}
         </ul>
       </div>
     </div>

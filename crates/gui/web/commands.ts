@@ -50,12 +50,20 @@ export function parseSlash(text: string): { name: string; args: string } | null 
 /// Where a message that is a slash command goes: some the app does itself
 /// (they change what it keeps about the session), the terminal-only ones to
 /// the session's terminal, everything else to Claude Code in the chat.
-export type Route = { kind: 'chat' } | { kind: 'terminal' } | { kind: 'clear' } | { kind: 'model'; model: string };
+export type Route =
+  | { kind: 'chat' }
+  | { kind: 'terminal' }
+  | { kind: 'clear' }
+  | { kind: 'model'; model: string }
+  | { kind: 'resume'; query: string };
 
 export function routeSlash(text: string, list: SlashCommand[]): Route {
   const c = parseSlash(text);
   if (!c) return { kind: 'chat' };
   if (c.name === 'clear' || c.name === 'reset' || c.name === 'new') return { kind: 'clear' };
+  // Claude Code's own picker leaves out every conversation `claude -p`
+  // started, which is every chat held here: the app lists them itself.
+  if (c.name === 'resume' || c.name === 'continue') return { kind: 'resume', query: c.args };
   // With no model named, Claude Code shows its picker, which only the
   // terminal can.
   if (c.name === 'model') return c.args ? { kind: 'model', model: c.args.split(/\s+/)[0] } : { kind: 'terminal' };

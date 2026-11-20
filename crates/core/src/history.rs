@@ -196,12 +196,23 @@ fn read_one(path: &Path, modified: SystemTime) -> Option<Conversation> {
         if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        // Tool results are user messages too, structurally. A real one is a
-        // string, and the first of those is what the session was asked for.
-        let Some(text) = v.pointer("/message/content").and_then(Value::as_str) else {
+        // What Claude Code says on the user's behalf: the caveat before a
+        // local command's output, "your response was cut off", a background
+        // task reporting back. Only a person's message names the session.
+        if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        if v
+            .pointer("/origin/kind")
+            .and_then(Value::as_str)
+            .is_some_and(|k| k != "human")
+        {
+            continue;
+        }
+        let Some(text) = v.pointer("/message/content").and_then(typed_text) else {
             continue;
         };
-        let summary = clean(text);
+        let summary = clean(&text);
         if summary.is_empty() {
             continue;
         }
@@ -214,6 +225,27 @@ fn read_one(path: &Path, modified: SystemTime) -> Option<Conversation> {
         });
     }
     None
+}
+
+/// What a person typed, out of a user message's `content`: a string from the
+/// terminal, a list of blocks from `claude -p` speaking stream-json (the
+/// desktop app's chat), where the text blocks are what was typed and an image
+/// is beside it. Tool results are user messages too, structurally, and a list
+/// holding one is not someone talking.
+fn typed_text(content: &Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    let blocks = content.as_array()?;
+    let mut text = Vec::new();
+    for b in blocks {
+        match b.get("type").and_then(Value::as_str) {
+            Some("text") => text.extend(b.get("text").and_then(Value::as_str)),
+            Some("tool_result") => return None,
+            _ => {}
+        }
+    }
+    (!text.is_empty()).then(|| text.join(" "))
 }
 
 /// A prompt as it reads in a list: one line, with the machinery taken out.
@@ -306,6 +338,27 @@ mod tests {
         let empty = dir.join("00000000-0000-0000-0000-000000000000.jsonl");
         fs::write(&empty, r#"{"type":"mode","mode":"normal"}"#).unwrap();
         assert!(read_one(&empty, SystemTime::UNIX_EPOCH).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chat_from_the_desktop_app_is_named_by_its_text_blocks() {
+        let dir = std::env::temp_dir().join(format!("fleet-history-sdk-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("22222222-2222-3333-4444-555555555555.jsonl");
+        let body = [
+            // Said for the user, not by them.
+            r#"{"type":"user","isMeta":true,"cwd":"C:\\x","message":{"content":"<local-command-caveat>Caveat</local-command-caveat>"}}"#,
+            r#"{"type":"user","origin":{"kind":"task-notification"},"cwd":"C:\\x","message":{"content":"<task-notification>done</task-notification>"}}"#,
+            r#"{"type":"user","origin":{"kind":"human"},"cwd":"C:\\x","message":{"content":[{"type":"image","source":{}},{"type":"text","text":"why is the"},{"type":"text","text":"list empty"}]}}"#,
+            r#"{"type":"user","cwd":"C:\\x","message":{"content":"later"}}"#,
+        ]
+        .join("\n");
+        fs::write(&path, body).unwrap();
+
+        let c = read_one(&path, SystemTime::UNIX_EPOCH).expect("transkrypt ma sie czytac");
+        assert_eq!(c.summary, "why is the list empty");
 
         let _ = fs::remove_dir_all(&dir);
     }

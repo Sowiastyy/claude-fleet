@@ -90,6 +90,8 @@ interface Props {
   onClear: () => void;
   /// Run a command only the interactive terminal has.
   onTerminalCommand: (text: string) => void;
+  /// `/resume`: pick a past conversation, `query` typed after it.
+  onResume: (query: string) => void;
   onOpenUrl: (url: string) => void;
   /// Pull this cloud session into a local session.
   onTeleport: () => void;
@@ -358,6 +360,10 @@ function ChatThread(p: Props) {
       case 'terminal':
         done();
         p.onTerminalCommand(text);
+        return;
+      case 'resume':
+        done();
+        p.onResume(route.query);
         return;
     }
     p.onSend(text, images);

@@ -243,7 +243,9 @@ export const api = {
   switchAccount: (uuid: string, carry: boolean) => invoke<string>('accounts_switch', { uuid, carry }),
   forgetAccount: (uuid: string) => invoke<void>('accounts_forget', { uuid }),
   addAccount: (cwd: string) => invoke<string>('accounts_add', { cwd }),
-  recent: () => invoke<Recent[]>('recent_conversations'),
+  /// The latest conversations, in `cwd` or anywhere, the desktop app's chats
+  /// included.
+  recent: (cwd?: string, limit?: number) => invoke<Recent[]>('recent_conversations', { cwd: cwd ?? null, limit: limit ?? null }),
   projects: () => invoke<string[]>('recent_projects'),
   home: () => invoke<string>('home_dir'),
   files: (cwd: string) => invoke<string[]>('files_list', { cwd }),

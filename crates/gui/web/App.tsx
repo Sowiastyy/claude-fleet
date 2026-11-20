@@ -31,6 +31,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { Titlebar } from './components/Titlebar';
 import { CommandPalette, type Command } from './components/CommandPalette';
 import { isCloudRef } from './commands';
+import { fmtAgo } from './messages';
 
 const DEFAULTS: Settings = { background: 'harbor', customImage: null, newChatDim: 65, chatDim: 85, theme: 'harbor', accent: '' };
 
@@ -53,6 +54,10 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [recent, setRecent] = useState<Recent[]>([]);
   const [clouds, setClouds] = useState<CloudRecent[]>([]);
+  // `/resume` typed: where, what came after it, and the account to run as;
+  // then the conversations it offers, the folder's own first.
+  const [resumeAsk, setResumeAsk] = useState<{ cwd: string; query: string; account?: string } | null>(null);
+  const [resumeList, setResumeList] = useState<{ here: Recent[]; elsewhere: Recent[] } | null>(null);
   const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   // Sessions showing the code view instead of their chat or terminal.
@@ -315,13 +320,62 @@ export function App() {
     api.cloudRecent().then(setClouds).catch(() => setClouds([]));
   }, [paletteOpen]);
 
-  const resume = async (r: Recent) => {
+  /// Carry on with a past conversation: the session already holding it, or
+  /// a new one resuming it.
+  const resume = async (r: Recent, account?: string) => {
+    const open = sessions.find((s) => s.conversation === r.id && !s.shell && !s.cloud);
+    if (open) {
+      select(open.id);
+      return;
+    }
+    const req: NewSession = { cwd: r.cwd, resume: r.id };
+    if (account) req.account = account;
     try {
-      select(await api.create({ cwd: r.cwd, resume: r.id }));
+      select(await api.create(req));
     } catch (e) {
       notify(errorText(e), true);
     }
   };
+
+  useEffect(() => {
+    if (!resumeAsk) return;
+    let live = true;
+    setResumeList(null);
+    const { cwd, query, account } = resumeAsk;
+    Promise.all([api.recent(cwd, 100), api.recent(undefined, 60)])
+      .then(([here, all]) => {
+        if (!live) return;
+        const mine = new Set(here.map((r) => r.id));
+        const elsewhere = all.filter((r) => !mine.has(r.id));
+        // `/resume <id>` is that conversation, no picking.
+        const exact = query && [...here, ...elsewhere].find((r) => r.id === query.trim());
+        if (exact) {
+          setResumeAsk(null);
+          void resume(exact, account);
+          return;
+        }
+        setResumeList({ here, elsewhere });
+      })
+      .catch(() => live && setResumeList({ here: [], elsewhere: [] }));
+    return () => {
+      live = false;
+    };
+  }, [resumeAsk]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resumeCommands: Command[] = resumeList
+    ? [
+        ...resumeList.here.map((r) => ({ r, here: true })),
+        ...resumeList.elsewhere.map((r) => ({ r, here: false })),
+      ].map(({ r, here }) => ({
+        id: `resume-${r.id}`,
+        group: here ? `In ${r.project}` : 'Elsewhere',
+        label: r.summary,
+        hint: here ? fmtAgo(r.agoSecs) : `${r.project} · ${fmtAgo(r.agoSecs)}`,
+        keys: `${r.id} ${r.cwd}`,
+        icon: sessions.some((s) => s.conversation === r.id) ? <MessageSquare size={15} /> : <History size={15} />,
+        run: () => void resume(r, resumeAsk?.account),
+      }))
+    : [];
 
   /// Show the code view for the active session, and what to open in it.
   const openCode = (ask?: Ask) => {
@@ -448,6 +502,7 @@ export function App() {
               onError={(t) => notify(t, true)}
               onClear={() => void clearSession()}
               onTerminalCommand={(t) => void runInTerminal(t)}
+              onResume={(q) => setResumeAsk({ cwd: active.cwd, query: q, account: active.account || undefined })}
               onOpenUrl={(u) => void openUrl(u)}
               onTeleport={() => void teleport(active)}
               onRestart={() => {
@@ -467,6 +522,7 @@ export function App() {
               sessions={sessions}
               onStart={start}
               onAttachCloud={(r) => void attachCloud(r)}
+              onResume={(cwd, q, account) => setResumeAsk({ cwd, query: q, account })}
               onError={(t) => notify(t, true)}
             />
           )}
@@ -510,6 +566,20 @@ export function App() {
         />
       )}
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
+      {resumeAsk && (resumeList || !resumeAsk.query) && (
+        <CommandPalette
+          key={`${resumeAsk.cwd} ${resumeAsk.query}`}
+          commands={resumeCommands}
+          label="Resume a conversation"
+          placeholder="Resume a conversation: search what was said, the folder or the id"
+          initialQuery={resumeAsk.query}
+          loading={!resumeList}
+          onClose={() => {
+            setResumeAsk(null);
+            setResumeList(null);
+          }}
+        />
+      )}
       {settingsOpen && (
         <SettingsDialog
           settings={settings}

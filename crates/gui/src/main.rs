@@ -403,19 +403,27 @@ struct Recent {
     ago_secs: u64,
 }
 
+/// The latest conversations: in `cwd` when one is given, else anywhere.
+/// Read from the transcripts themselves, so a chat the desktop app held is
+/// listed too — Claude Code's own `/resume` leaves out every conversation
+/// `claude -p` started.
 #[tauri::command]
-fn recent_conversations() -> Vec<Recent> {
+fn recent_conversations(cwd: Option<String>, limit: Option<usize>) -> Vec<Recent> {
     let now = SystemTime::now();
-    history::recent(12)
-        .into_iter()
-        .map(|c| Recent {
-            id: c.id.clone(),
-            cwd: c.cwd.display().to_string(),
-            project: c.cwd_label(),
-            summary: c.summary.clone(),
-            ago_secs: now.duration_since(c.modified).unwrap_or_default().as_secs(),
-        })
-        .collect()
+    let limit = limit.unwrap_or(12).min(200);
+    match cwd {
+        Some(dir) => history::latest_in(Path::new(&dir), limit),
+        None => history::recent(limit),
+    }
+    .into_iter()
+    .map(|c| Recent {
+        id: c.id.clone(),
+        cwd: c.cwd.display().to_string(),
+        project: c.cwd_label(),
+        summary: c.summary.clone(),
+        ago_secs: now.duration_since(c.modified).unwrap_or_default().as_secs(),
+    })
+    .collect()
 }
 
 #[tauri::command]

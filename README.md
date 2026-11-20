@@ -96,10 +96,17 @@ with Tauri and React from the same core (`crates/gui`).
   for that folder (built-ins, your own commands and skills, plugins), with
   their descriptions, as Claude Code reports them. The chat runs them
   (`/compact`, `/context`, `/review`, a skill); the ones only the
-  interactive terminal has (`/login`, `/resume`, `/permissions`, `/model`
-  with no model named) open the session's terminal and type themselves in.
+  interactive terminal has (`/login`, `/permissions`, `/model` with no
+  model named) open the session's terminal and type themselves in.
   `/clear` starts the session over on a new conversation, `/model opus`
   switches the model.
+- **`/resume`** (or `/continue`), in a session or on the new-chat screen,
+  lists past conversations, that folder's first, searchable by what was
+  said, the folder or the id; `/resume <id>` opens that one straight away. A
+  conversation already open in a session selects that session. Fleet reads
+  the list itself because Claude Code's own `/resume` leaves out every
+  conversation `claude -p` started (`"entrypoint":"sdk-cli"` in the
+  transcript), and every chat here is one. They are saved all the same.
 - **Cloud sessions.** **Where: Cloud** under the message box starts the task
   as a Claude Code cloud session (`claude --cloud`, the ones claude.ai/code
   shows). It starts in its terminal and, once Claude Code names the session,
@@ -754,8 +761,11 @@ the rest, including the case where that conversation happens to be running
 somewhere (it starts a copy and says so).
 
 A conversation's name is its **first real user message**: no
-`<system-reminder>`, no slash-command names, no tool results and no subagent
-lines (`isSidechain`). Rows without such a message do not reach the list at all
+`<system-reminder>`, no slash-command names, no tool results, no subagent
+lines (`isSidechain`) and nothing Claude Code says on the user's behalf
+(`isMeta`, an `origin` other than `human`, such as a background task
+reporting back). A chat from the desktop app stores what was typed as text
+blocks rather than a string; those count the same. Rows without such a message do not reach the list at all
 — a session opened and closed without a word has nothing to resume.
 
 Where the id comes from: the file name

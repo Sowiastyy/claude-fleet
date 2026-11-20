@@ -50,6 +50,9 @@ interface Props {
   sessions: Session[];
   onStart: (opts: StartOpts) => void;
   onAttachCloud: (r: CloudRecent) => void;
+  /// `/resume`: pick a past conversation in `cwd`, `query` typed after it,
+  /// to run as `account`.
+  onResume: (cwd: string, query: string, account?: string) => void;
   onError: (text: string) => void;
 }
 
@@ -151,6 +154,10 @@ export function Home(p: Props) {
         return;
       case 'terminal':
         p.onStart({ cwd, prompt: '', images: [], model, effort, mode, terminal: true, cloud: false, typeIn: prompt, account });
+        done();
+        return;
+      case 'resume':
+        p.onResume(cwd, route.query, account);
         done();
         return;
     }
